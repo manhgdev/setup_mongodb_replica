@@ -321,17 +321,12 @@ done
 # BƯỚC 5: Đếm số node đang chạy
 NODE_COUNT=0
 PRIMARY_PORT=""
-for i in {0..3}; do
+for i in $(seq 0 $((${#MONGODB_PORTS[@]}-1))); do
   if [ "${PORT_STATUS[$i]}" -eq 1 ]; then
     NODE_COUNT=$((NODE_COUNT+1))
     # Lưu lại port đầu tiên tìm thấy để khởi tạo replica set
     if [ -z "$PRIMARY_PORT" ]; then
-      case $i in
-        0) PRIMARY_PORT="${MONGODB_PORTS[0]}" ;;
-        1) PRIMARY_PORT="${MONGODB_PORTS[1]}" ;;
-        2) PRIMARY_PORT="${MONGODB_PORTS[2]}" ;;
-        3) PRIMARY_PORT="${MONGODB_PORTS[3]}" ;;
-      esac
+      PRIMARY_PORT="${MONGODB_PORTS[$i]}"
     fi
   fi
 done
