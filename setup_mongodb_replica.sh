@@ -100,8 +100,10 @@ done
 
 # Đảm bảo quyền truy cập đúng cho tất cả thư mục
 echo "Đảm bảo quyền truy cập cho các thư mục dữ liệu..."
-sudo chown -R mongodb:mongodb /data/rs{,0,1,2} /var/log/mongodb
-sudo chmod -R 777 /data/rs{,0,1,2} /var/log/mongodb
+for DIR in "${MONGODB_PATHS[@]}" "/var/log/mongodb"; do
+  sudo chown -R mongodb:mongodb "$DIR"
+  sudo chmod -R 777 "$DIR"
+done
 
 # BƯỚC 3: Tạo file cấu hình
 if [ ! -f /etc/mongod.conf.bak ]; then
@@ -604,8 +606,10 @@ else
   echo "Đảm bảo quyền truy cập đúng..."
   sudo chown -R mongodb:mongodb /etc/mongodb-keyfile
   sudo chmod 400 /etc/mongodb-keyfile
-  sudo chown -R mongodb:mongodb /data/rs{,0,1,2} /var/log/mongodb
-  sudo chmod -R 777 /data/rs{,0,1,2} /var/log/mongodb
+  for DIR in "${MONGODB_PATHS[@]}" "/var/log/mongodb"; do
+    sudo chown -R mongodb:mongodb "$DIR"
+    sudo chmod -R 777 "$DIR"
+  done
 
   # Khởi động lại với bảo mật
   echo "Khởi động lại các MongoDB instances với bảo mật..."
@@ -643,7 +647,7 @@ echo "Tóm tắt cấu hình:"
 echo "- Số lượng node đang chạy: $ACTIVE_COUNT"
 echo "- Port hoạt động: $(for PORT in "${MONGODB_PORTS[@]}"; do check_mongodb_running $PORT && echo -n "$PORT "; done)"
 echo "- Primary node: $PRIMARY_PORT_SECURE (hoặc được chọn tự động trong replica set)"
-echo "- Kết nối: mongosh --port 27017 --username $MONGODB_USER --password $MONGODB_PASSWORD --authenticationDatabase admin"
+echo "- Kết nối: mongosh --port ${MONGODB_PORTS[0]} --username $MONGODB_USER --password $MONGODB_PASSWORD --authenticationDatabase admin"
 echo "- Kết nối: mongosh --host 'rs0/localhost:$PRIMARY_PORT_SECURE' -u $MONGODB_USER -p $MONGODB_PASSWORD --authenticationDatabase admin"
 
 # Tạo chuỗi kết nối replica set với tất cả các port
