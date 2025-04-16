@@ -6,6 +6,8 @@
 # trên một máy duy nhất với các port khác nhau
 #============================================================
 
+# URL SETTING: https://www.mongodb.com/docs/manual/tutorial/install-mongodb-on-ubuntu/
+
 # Biến cấu hình
 SKIP_USER_CREATION=${SKIP_USER_CREATION:-false}  # Đặt thành true nếu đã tạo user từ trước
 USE_AUTH_FROM_START=${USE_AUTH_FROM_START:-false}  # Đặt thành true nếu muốn bật xác thực từ đầu
@@ -14,15 +16,46 @@ MONGODB_PASSWORD="manhdepzai"
 
 # BƯỚC 0: Cài đặt MongoDB nếu chưa có
 if ! command -v mongod &> /dev/null; then
+  echo "MongoDB chưa được cài đặt. Đang cài đặt MongoDB..."
   sudo apt update && sudo apt install -y curl gnupg netcat-openbsd
   sudo rm -f /usr/share/keyrings/mongodb-server-8.0.gpg
   curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | sudo gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor
   echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/8.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
+  sudo apt-get update
   sudo apt-get install -y mongodb-org
+  
+  # Khởi động dịch vụ MongoDB
+  sleep 1
+  sudo systemctl daemon-reload
   sudo systemctl start mongod 
   sudo systemctl enable mongod
-  sudo systemctl daemon-reload
-  sleep 5
+  
+  # Đợi MongoDB khởi động
+  echo "Đợi MongoDB khởi động..."
+  sleep 2
+  
+  # Xác nhận MongoDB đã được cài đặt
+  if command -v mongod &> /dev/null; then
+    echo "✅ MongoDB đã được cài đặt thành công"
+    mongod --version
+  else
+    echo "❌ Có lỗi trong quá trình cài đặt MongoDB"
+    echo "Kiểm tra đường dẫn của mongod:"
+    sudo find / -name mongod 2>/dev/null || echo "Không tìm thấy mongod"
+    
+    # Thử thêm đường dẫn vào PATH
+    export PATH=$PATH:/usr/bin:/usr/local/bin:/opt/mongodb/bin
+    echo "Đã thêm các đường dẫn phổ biến vào PATH"
+    
+    if command -v mongod &> /dev/null; then
+      echo "✅ Đã tìm thấy mongod sau khi cập nhật PATH"
+    else
+      echo "⚠️ Không thể tìm thấy mongod. Sẽ tiếp tục nhưng có thể gặp lỗi."
+    fi
+  fi
+else
+  echo "✅ MongoDB đã được cài đặt"
+  mongod --version
 fi
 
 # BƯỚC 1: Dọn dẹp môi trường 
@@ -31,7 +64,8 @@ sudo systemctl stop mongod 2>/dev/null || true
 sudo killall mongod 2>/dev/null || true
 sudo pkill -x mongod 2>/dev/null || true
 sleep 3
-sudo rm -f /tmp/mongodb-*.sock /data/rs*/mongod.lock /data/rs*/WiredTiger.lock
+# TODO: Nếu cài đặt lỗi thì mở comment dòng này
+# sudo rm -f /tmp/mongodb-*.sock /data/rs*/mongod.lock /data/rs*/WiredTiger.lock
 
 # Tạo KeyFile cho xác thực nếu chưa có
 if [ ! -f /etc/mongodb-keyfile ]; then
@@ -45,8 +79,19 @@ else
 fi
 
 # BƯỚC 2: Chuẩn bị thư mục dữ liệu
-echo "Chuẩn bị thư mục dữ liệu..."
-sudo mkdir -p /data/rs{,0,1,2} /var/log/mongodb
+echo "Kiểm tra thư mục dữ liệu..."
+# Tạo thư mục nếu chưa tồn tại
+for DIR in "/data/rs" "/data/rs0" "/data/rs1" "/data/rs2" "/var/log/mongodb"; do
+  if [ ! -d "$DIR" ]; then
+    echo "Tạo thư mục $DIR"
+    sudo mkdir -p "$DIR"
+  else
+    echo "Thư mục $DIR đã tồn tại"
+  fi
+done
+
+# Đảm bảo quyền truy cập đúng cho tất cả thư mục
+echo "Đảm bảo quyền truy cập cho các thư mục dữ liệu..."
 sudo chown -R mongodb:mongodb /data/rs{,0,1,2} /var/log/mongodb
 sudo chmod -R 777 /data/rs{,0,1,2} /var/log/mongodb
 
@@ -313,8 +358,8 @@ else
   echo "✅ Có $NODE_COUNT MongoDB instances đang chạy"
 fi
 
-echo "Đợi 10 giây để các instance ổn định..."
-sleep 10
+echo "Đợi 5 giây để các instance ổn định..."
+sleep 5
 
 # BƯỚC 6: Khởi tạo replica set
 echo "=== THIẾT LẬP REPLICA SET ==="
@@ -381,8 +426,8 @@ else
 fi
 
 # Đợi replica set ổn định
-echo "Đợi 20 giây để replica set ổn định..."
-sleep 20
+echo "Đợi 5 giây để replica set ổn định..."
+sleep 5
 
 # BƯỚC 7: Chờ cho node primary sẵn sàng và tìm node primary
 echo "Xác định node primary..."
