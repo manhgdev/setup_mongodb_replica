@@ -13,6 +13,14 @@ SKIP_USER_CREATION=${SKIP_USER_CREATION:-false}  # Đặt thành true nếu đã
 USE_AUTH_FROM_START=${USE_AUTH_FROM_START:-false}  # Đặt thành true nếu muốn bật xác thực từ đầu
 MONGODB_USER="manhgdev"
 MONGODB_PASSWORD="manhdepzai"
+# Danh sách các port MongoDB
+MONGODB_PORTS=(27017 27018 27019 27020)
+# Danh sách các đường dẫn dữ liệu tương ứng
+MONGODB_PATHS=("/data/rs0" "/data/rs1" "/data/rs2" "/data/rs")
+# Danh sách các file log tương ứng
+MONGODB_LOGS=("/var/log/mongodb/mongod.log" "/var/log/mongodb/mongod0.log" "/var/log/mongodb/mongod1.log" "/var/log/mongodb/mongod2.log")
+# Danh sách các file cấu hình tương ứng
+MONGODB_CONFIGS=("/etc/mongod.conf" "/etc/mongod0.conf" "/etc/mongod1.conf" "/etc/mongod2.conf")
 
 # BƯỚC 0: Cài đặt MongoDB nếu chưa có
 if ! command -v mongod &> /dev/null; then
@@ -81,7 +89,7 @@ fi
 # BƯỚC 2: Chuẩn bị thư mục dữ liệu
 echo "Kiểm tra thư mục dữ liệu..."
 # Tạo thư mục nếu chưa tồn tại
-for DIR in "/data/rs" "/data/rs0" "/data/rs1" "/data/rs2" "/var/log/mongodb"; do
+for DIR in "${MONGODB_PATHS[@]}" "/var/log/mongodb"; do
   if [ ! -d "$DIR" ]; then
     echo "Tạo thư mục $DIR"
     sudo mkdir -p "$DIR"
@@ -152,10 +160,9 @@ EOF
 
 # Tạo file cấu hình cho các node
 echo "Tạo file cấu hình cho các node..."
-create_config 27017 "/data/rs0" "/var/log/mongodb/mongod.log" "/etc/mongod.conf" "$USE_AUTH_FROM_START"
-create_config 27018 "/data/rs1" "/var/log/mongodb/mongod0.log" "/etc/mongod0.conf" "$USE_AUTH_FROM_START"
-create_config 27019 "/data/rs2" "/var/log/mongodb/mongod1.log" "/etc/mongod1.conf" "$USE_AUTH_FROM_START"
-create_config 27020 "/data/rs" "/var/log/mongodb/mongod2.log" "/etc/mongod2.conf" "$USE_AUTH_FROM_START"
+for i in "${!MONGODB_PORTS[@]}"; do
+  create_config "${MONGODB_PORTS[$i]}" "${MONGODB_PATHS[$i]}" "${MONGODB_LOGS[$i]}" "${MONGODB_CONFIGS[$i]}" "$USE_AUTH_FROM_START"
+done
 
 # BƯỚC 4: Kiểm tra liệu các port đã chạy sẵn chưa
 check_mongodb_running() {
@@ -288,44 +295,28 @@ start_secure_mongodb() {
 echo "=== KHỞI ĐỘNG CÁC NODE MONGODB ==="
 PORT_STATUS=()
 
-# Khởi động node chính (port 27017) - quan trọng nhất
-echo "Khởi động node chính (27017)..."
-start_mongodb "/data/rs0" 27017 "/var/log/mongodb/mongod.log"
-if check_mongodb_running 27017; then
+# Khởi động node chính (port đầu tiên) - quan trọng nhất
+echo "Khởi động node chính (${MONGODB_PORTS[0]})..."
+start_mongodb "${MONGODB_PATHS[0]}" "${MONGODB_PORTS[0]}" "${MONGODB_LOGS[0]}"
+if check_mongodb_running "${MONGODB_PORTS[0]}"; then
   PORT_STATUS[0]=1
-  echo "✅ Port 27017 hoạt động tốt (NODE CHÍNH)"
+  echo "✅ Port ${MONGODB_PORTS[0]} hoạt động tốt (NODE CHÍNH)"
 else
   PORT_STATUS[0]=0
-  echo "❌ Port 27017 KHÔNG HOẠT ĐỘNG - Node chính không khởi động được"
+  echo "❌ Port ${MONGODB_PORTS[0]} KHÔNG HOẠT ĐỘNG - Node chính không khởi động được"
 fi
 
 # Khởi động các node thứ cấp
-start_mongodb "/data/rs1" 27018 "/var/log/mongodb/mongod0.log"
-if check_mongodb_running 27018; then
-  PORT_STATUS[1]=1
-  echo "✅ Port 27018 hoạt động tốt"
-else
-  PORT_STATUS[1]=0
-  echo "❌ Port 27018 KHÔNG HOẠT ĐỘNG"
-fi
-
-start_mongodb "/data/rs2" 27019 "/var/log/mongodb/mongod1.log"
-if check_mongodb_running 27019; then
-  PORT_STATUS[2]=1
-  echo "✅ Port 27019 hoạt động tốt"
-else
-  PORT_STATUS[2]=0
-  echo "❌ Port 27019 KHÔNG HOẠT ĐỘNG"
-fi
-
-start_mongodb "/data/rs" 27020 "/var/log/mongodb/mongod2.log"
-if check_mongodb_running 27020; then
-  PORT_STATUS[3]=1
-  echo "✅ Port 27020 hoạt động tốt"
-else
-  PORT_STATUS[3]=0
-  echo "❌ Port 27020 KHÔNG HOẠT ĐỘNG"
-fi
+for i in $(seq 1 $((${#MONGODB_PORTS[@]}-1))); do
+  start_mongodb "${MONGODB_PATHS[$i]}" "${MONGODB_PORTS[$i]}" "${MONGODB_LOGS[$i]}"
+  if check_mongodb_running "${MONGODB_PORTS[$i]}"; then
+    PORT_STATUS[$i]=1
+    echo "✅ Port ${MONGODB_PORTS[$i]} hoạt động tốt"
+  else
+    PORT_STATUS[$i]=0
+    echo "❌ Port ${MONGODB_PORTS[$i]} KHÔNG HOẠT ĐỘNG"
+  fi
+done
 
 # BƯỚC 5: Đếm số node đang chạy
 NODE_COUNT=0
@@ -336,10 +327,10 @@ for i in {0..3}; do
     # Lưu lại port đầu tiên tìm thấy để khởi tạo replica set
     if [ -z "$PRIMARY_PORT" ]; then
       case $i in
-        0) PRIMARY_PORT="27017" ;;
-        1) PRIMARY_PORT="27018" ;;
-        2) PRIMARY_PORT="27019" ;;
-        3) PRIMARY_PORT="27020" ;;
+        0) PRIMARY_PORT="${MONGODB_PORTS[0]}" ;;
+        1) PRIMARY_PORT="${MONGODB_PORTS[1]}" ;;
+        2) PRIMARY_PORT="${MONGODB_PORTS[2]}" ;;
+        3) PRIMARY_PORT="${MONGODB_PORTS[3]}" ;;
       esac
     fi
   fi
@@ -368,13 +359,12 @@ echo "Sử dụng port $PRIMARY_PORT để khởi tạo replica set"
 # Tạo danh sách thành viên
 INIT_MEMBERS="["
 MEMBER_ID=0
-PORTS=(27017 27018 27019 27020)
-for i in {0..3}; do
-  PORT=${PORTS[$i]}
-  if check_mongodb_running $PORT; then
+for i in "${!MONGODB_PORTS[@]}"; do
+  PORT="${MONGODB_PORTS[$i]}"
+  if check_mongodb_running "$PORT"; then
     PRIORITY="1"
-    if [ "$PORT" = "27017" ]; then
-      PRIORITY="10"  # Ưu tiên 27017 làm primary
+    if [ "$PORT" = "${MONGODB_PORTS[0]}" ]; then
+      PRIORITY="10"  # Ưu tiên port đầu tiên làm primary
     fi
     if [ $MEMBER_ID -gt 0 ]; then
       INIT_MEMBERS="$INIT_MEMBERS,"
@@ -465,7 +455,7 @@ else
     echo "⚠️ Port $PRIMARY_PORT không hoạt động. Tìm port thay thế..."
     
     # Tìm port khác đang hoạt động
-    for PORT in 27017 27018 27019 27020; do
+    for PORT in "${MONGODB_PORTS[@]}"; do
       if check_mongodb_running $PORT; then
         PRIMARY_PORT=$PORT
         echo "✅ Đã tìm thấy port thay thế: $PRIMARY_PORT"
@@ -474,7 +464,7 @@ else
     done
     
     if ! check_mongodb_running $PRIMARY_PORT; then
-      echo "❌ Không tìm thấy port MongoDB nào đang hoạt động."
+      echo "❌ Không tìm thấy PRIMARY_PORT MongoDB nào đang hoạt động."
       PRIMARY_ERROR=true
     fi
   fi
@@ -500,7 +490,7 @@ else
     echo "❌ Không thể kết nối tới MongoDB qua port $PRIMARY_PORT để tạo user"
     echo "Cố gắng tìm port khác đang hoạt động..."
     
-    for PORT in 27017 27018 27019 27020; do
+    for PORT in "${MONGODB_PORTS[@]}"; do
       if check_mongodb_running $PORT; then
         PRIMARY_PORT=$PORT
         echo "✅ Đã tìm thấy port thay thế: $PRIMARY_PORT"
@@ -611,10 +601,9 @@ else
 
   # Cập nhật cấu hình với bảo mật
   echo "Cập nhật file cấu hình với bảo mật..."
-  create_config 27017 "/data/rs0" "/var/log/mongodb/mongod.log" "/etc/mongod.conf" true
-  create_config 27018 "/data/rs1" "/var/log/mongodb/mongod0.log" "/etc/mongod0.conf" true
-  create_config 27019 "/data/rs2" "/var/log/mongodb/mongod1.log" "/etc/mongod1.conf" true
-  create_config 27020 "/data/rs" "/var/log/mongodb/mongod2.log" "/etc/mongod2.conf" true
+  for i in "${!MONGODB_PORTS[@]}"; do
+    create_config "${MONGODB_PORTS[$i]}" "${MONGODB_PATHS[$i]}" "${MONGODB_LOGS[$i]}" "${MONGODB_CONFIGS[$i]}" true
+  done
 
   # Đảm bảo quyền truy cập đúng
   echo "Đảm bảo quyền truy cập đúng..."
@@ -625,16 +614,15 @@ else
 
   # Khởi động lại với bảo mật
   echo "Khởi động lại các MongoDB instances với bảo mật..."
-  start_secure_mongodb "/etc/mongod.conf" 27017 "/data/rs0" "/var/log/mongodb/mongod.log"
-  start_secure_mongodb "/etc/mongod0.conf" 27018 "/data/rs1" "/var/log/mongodb/mongod0.log"
-  start_secure_mongodb "/etc/mongod1.conf" 27019 "/data/rs2" "/var/log/mongodb/mongod1.log"
-  start_secure_mongodb "/etc/mongod2.conf" 27020 "/data/rs" "/var/log/mongodb/mongod2.log"
+  for i in "${!MONGODB_PORTS[@]}"; do
+    start_secure_mongodb "${MONGODB_CONFIGS[$i]}" "${MONGODB_PORTS[$i]}" "${MONGODB_PATHS[$i]}" "${MONGODB_LOGS[$i]}"
+  done
 fi
 
 # Kiểm tra các node sau khi khởi động lại
 ACTIVE_COUNT=0
 PRIMARY_PORT_SECURE=""
-for PORT in 27017 27018 27019 27020; do
+for PORT in "${MONGODB_PORTS[@]}"; do
   if check_mongodb_running $PORT; then
     echo "✅ Port $PORT: OK"
     ACTIVE_COUNT=$((ACTIVE_COUNT+1))
@@ -658,10 +646,25 @@ fi
 echo "=== THIẾT LẬP MONGODB REPLICA SET HOÀN TẤT ==="
 echo "Tóm tắt cấu hình:"
 echo "- Số lượng node đang chạy: $ACTIVE_COUNT"
-echo "- Port hoạt động: $(for PORT in 27017 27018 27019 27020; do check_mongodb_running $PORT && echo -n "$PORT "; done)"
+echo "- Port hoạt động: $(for PORT in "${MONGODB_PORTS[@]}"; do check_mongodb_running $PORT && echo -n "$PORT "; done)"
 echo "- Primary node: $PRIMARY_PORT_SECURE (hoặc được chọn tự động trong replica set)"
 echo "- Kết nối: mongosh --port 27017 --username $MONGODB_USER --password $MONGODB_PASSWORD --authenticationDatabase admin"
 echo "- Kết nối: mongosh --host 'rs0/localhost:$PRIMARY_PORT_SECURE' -u $MONGODB_USER -p $MONGODB_PASSWORD --authenticationDatabase admin"
-echo "- Kết nối với tất cả nodes: mongosh --host 'rs0/localhost:27017,localhost:27018,localhost:27019,localhost:27020' -u $MONGODB_USER -p $MONGODB_PASSWORD --authenticationDatabase admin"
+
+# Tạo chuỗi kết nối replica set với tất cả các port
+RS_CONNECTION="rs0/"
+first=true
+for PORT in "${MONGODB_PORTS[@]}"; do
+  if check_mongodb_running $PORT; then
+    if [ "$first" = true ]; then
+      RS_CONNECTION="${RS_CONNECTION}localhost:$PORT"
+      first=false
+    else
+      RS_CONNECTION="${RS_CONNECTION},localhost:$PORT"
+    fi
+  fi
+done
+
+echo "- Kết nối với tất cả nodes: mongosh --host '$RS_CONNECTION' -u $MONGODB_USER -p $MONGODB_PASSWORD --authenticationDatabase admin"
 echo "- Trạng thái replica set: rs.status()"
 echo "- Kiểm tra primary: rs.isMaster()"
