@@ -56,12 +56,11 @@ echo "1. Sửa lỗi quyền (exit code 14)"
 echo "2. Sửa lỗi port (exit code 48)"
 echo "3. Sửa lỗi keyfile không đồng bộ"
 echo "4. Sửa lỗi không thể bầu chọn primary"
-echo "5. Reset hoàn toàn MongoDB"
+echo "5. Xóa toàn bộ data và cài lại từ đầu"
 echo "6. Xem log chi tiết"
 echo "7. Kiểm tra trạng thái replica set"
 echo "8. Sửa lỗi xác thực (Authentication failed)"
-echo "9. Xóa toàn bộ data và cài lại từ đầu"
-echo "10. Thoát"
+echo "9. Thoát"
 read -p "Bạn muốn thực hiện sửa lỗi nào? (1-10): " choice
 
 case $choice in
