@@ -196,6 +196,9 @@ init_replica_set_multi() {
     echo -e "${YELLOW}Sử dụng IP local: $this_server_ip${NC}"
   fi
   
+  # Biến kiểm tra khởi tạo thành công
+  local init_success=false
+  
   # Kiểm tra xem replica set đã được khởi tạo chưa
   rs_status=$(mongosh --quiet --port $port --eval "try { rs.status(); print('EXISTS'); } catch(e) { print('NOT_INIT'); }")
   
@@ -209,88 +212,101 @@ init_replica_set_multi() {
     
     init_result=$(mongosh --port $port --eval "$init_command")
     
-    if [[ "$init_result" == *"\"ok\" : 1"* ]]; then
+    # Thay đổi: kiểm tra cả hai định dạng ok: 1 (không có dấu ngoặc kép) và "ok" : 1 (có dấu ngoặc kép)
+    if [[ "$init_result" == *"\"ok\" : 1"* || "$init_result" == *"ok: 1"* ]]; then
       echo -e "${GREEN}✓ Khởi tạo replica set thành công${NC}"
+      init_success=true
     else
       echo -e "${RED}✗ Khởi tạo replica set thất bại: $init_result${NC}"
       
-      # Thử lại lần 2 với localhost
-      echo -e "${YELLOW}Thử lại với localhost...${NC}"
-      retry_command="rs.initiate({_id: '$replica_set', members: [{_id: 0, host: 'localhost:$port', priority: 10}]});"
-      echo "Thực thi lệnh: $retry_command"
-      
-      init_result=$(mongosh --port $port --eval "$retry_command")
-      
-      if [[ "$init_result" == *"\"ok\" : 1"* ]]; then
-        echo -e "${GREEN}✓ Khởi tạo replica set thành công với localhost${NC}"
+      # Kiểm tra xem có phải đã khởi tạo trước đó không
+      if [[ "$init_result" == *"already initialized"* ]]; then
+        echo -e "${GREEN}✓ Replica set đã được khởi tạo trước đó${NC}"
+        init_success=true
       else
-        echo -e "${RED}✗ Khởi tạo replica set thất bại: $init_result${NC}"
-        
-        # Thử lại lần 3 với 127.0.0.1
-        echo -e "${YELLOW}Thử lại với 127.0.0.1...${NC}"
-        retry_command="rs.initiate({_id: '$replica_set', members: [{_id: 0, host: '127.0.0.1:$port', priority: 10}]});"
+        # Thử lại lần 2 với localhost
+        echo -e "${YELLOW}Thử lại với localhost...${NC}"
+        retry_command="rs.initiate({_id: '$replica_set', members: [{_id: 0, host: 'localhost:$port', priority: 10}]});"
         echo "Thực thi lệnh: $retry_command"
         
         init_result=$(mongosh --port $port --eval "$retry_command")
         
-        if [[ "$init_result" == *"\"ok\" : 1"* ]]; then
-          echo -e "${GREEN}✓ Khởi tạo replica set thành công với 127.0.0.1${NC}"
+        if [[ "$init_result" == *"\"ok\" : 1"* || "$init_result" == *"ok: 1"* || "$init_result" == *"already initialized"* ]]; then
+          echo -e "${GREEN}✓ Khởi tạo replica set thành công với localhost${NC}"
+          init_success=true
         else
-          echo -e "${RED}✗ Khởi tạo tất cả các phương pháp đều thất bại${NC}"
-          return 1
+          echo -e "${RED}✗ Khởi tạo replica set thất bại: $init_result${NC}"
+          
+          # Thử lại lần 3 với 127.0.0.1
+          echo -e "${YELLOW}Thử lại với 127.0.0.1...${NC}"
+          retry_command="rs.initiate({_id: '$replica_set', members: [{_id: 0, host: '127.0.0.1:$port', priority: 10}]});"
+          echo "Thực thi lệnh: $retry_command"
+          
+          init_result=$(mongosh --port $port --eval "$retry_command")
+          
+          if [[ "$init_result" == *"\"ok\" : 1"* || "$init_result" == *"ok: 1"* || "$init_result" == *"already initialized"* ]]; then
+            echo -e "${GREEN}✓ Khởi tạo replica set thành công với 127.0.0.1${NC}"
+            init_success=true
+          else
+            echo -e "${RED}✗ Khởi tạo tất cả các phương pháp đều thất bại${NC}"
+            return 1
+          fi
         fi
       fi
     fi
     
-    # Đợi replica set khởi tạo
-    echo "Đợi replica set khởi tạo..."
-    sleep 15
-    
-    # Tạo user admin
-    echo "Tạo user quản trị..."
-    create_user_result=$(mongosh --port $port --eval "
-    db = db.getSiblingDB('admin');
-    try {
-      db.createUser({
-        user: '$username',
-        pwd: '$password',
-        roles: [ { role: 'root', db: 'admin' } ]
-      });
-      print('✓ Tạo user thành công');
-    } catch(e) {
-      if(e.codeName === 'DuplicateKey') {
-        print('✓ User đã tồn tại');
-      } else {
-        print('⚠ Lỗi: ' + e.message);
+    # Nếu khởi tạo thành công, tiếp tục các bước còn lại
+    if [ "$init_success" = true ]; then
+      # Đợi replica set khởi tạo
+      echo "Đợi replica set khởi tạo..."
+      sleep 15
+      
+      # Tạo user admin
+      echo "Tạo user quản trị..."
+      create_user_result=$(mongosh --port $port --eval "
+      db = db.getSiblingDB('admin');
+      try {
+        db.createUser({
+          user: '$username',
+          pwd: '$password',
+          roles: [ { role: 'root', db: 'admin' } ]
+        });
+        print('✓ Tạo user thành công');
+      } catch(e) {
+        if(e.codeName === 'DuplicateKey') {
+          print('✓ User đã tồn tại');
+        } else {
+          print('⚠ Lỗi: ' + e.message);
+        }
       }
-    }
-    ")
-    
-    echo "$create_user_result"
-    
-    # Nếu đã khởi tạo replica set thành công với 1 node, thêm các node còn lại vào
-    if [ "$server_list" != "$this_server_ip" ]; then
-      echo -e "${YELLOW}Thêm các server khác vào replica set...${NC}"
+      ")
       
-      # Phân tách chuỗi server_list thành mảng
-      IFS=',' read -ra server_array <<< "$server_list"
+      echo "$create_user_result"
       
-      for server in "${server_array[@]}"; do
-        # Bỏ qua server hiện tại
-        if [[ "$server" != "$this_server_ip" && "$server" != "localhost" && "$server" != "127.0.0.1" ]]; then
-          echo -e "${YELLOW}Thêm server: $server${NC}"
-          
-          # Thêm server vào replica set
-          add_cmd="rs.add('$server:$port')"
-          add_result=$(mongosh --port $port --eval "$add_cmd")
-          
-          if [[ "$add_result" == *"\"ok\" : 1"* ]]; then
-            echo -e "${GREEN}✓ Đã thêm server $server vào replica set${NC}"
-          else
-            echo -e "${RED}✗ Không thể thêm server $server: $add_result${NC}"
+      # Nếu đã khởi tạo replica set thành công với 1 node, thêm các node còn lại vào
+      if [ "$server_list" != "$this_server_ip" ]; then
+        echo -e "${YELLOW}Thêm các server khác vào replica set...${NC}"
+        
+        # Phân tách chuỗi server_list thành mảng
+        IFS=',' read -ra server_array <<< "$server_list"
+        
+        for server in "${server_array[@]}"; do
+          # Bỏ qua server hiện tại và các alias của nó
+          if [[ "$server" != "$this_server_ip" && "$server" != "localhost" && "$server" != "127.0.0.1" ]]; then
+            echo -e "${YELLOW}Thêm server: $server${NC}"
+            
+            # Thêm server vào replica set
+            add_cmd="rs.add('$server:$port')"
+            add_result=$(mongosh --port $port --eval "$add_cmd")
+            
+            if [[ "$add_result" == *"\"ok\" : 1"* || "$add_result" == *"ok: 1"* || "$add_result" == *"already a member"* ]]; then
+              echo -e "${GREEN}✓ Đã thêm server $server vào replica set${NC}"
+            else
+              echo -e "${RED}✗ Không thể thêm server $server: $add_result${NC}"
+            fi
           fi
-        fi
-      done
+        done
+      fi
     fi
   else
     echo -e "${GREEN}✓ Replica set đã được khởi tạo trước đó${NC}"
@@ -324,7 +340,7 @@ add_to_replica_set() {
   rs.add('$this_server_ip:$port')
   ")
   
-  if [[ "$add_result" == *"\"ok\" : 1"* ]]; then
+  if [[ "$add_result" == *"\"ok\" : 1"* || "$add_result" == *"ok: 1"* ]]; then
     echo -e "${GREEN}✓ Đã thêm server này vào replica set${NC}"
   else
     echo -e "${RED}✗ Không thể thêm server vào replica set: $add_result${NC}"
