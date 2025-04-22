@@ -52,9 +52,20 @@ install_mongodb() {
       sudo gpg -o /usr/share/keyrings/mongodb-server-$version.gpg \
       --dearmor
     
-    # Tạo file list cho apt
-    echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-$version.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/$version multiverse" | \
-      sudo tee /etc/apt/sources.list.d/mongodb-org-$version.list
+    # Xác định phiên bản Ubuntu
+    UBUNTU_VERSION=$(lsb_release -cs)
+    echo -e "${YELLOW}Phiên bản Ubuntu: $UBUNTU_VERSION${NC}"
+    
+    # Sử dụng jammy cho Ubuntu 22.04, focal cho 20.04
+    if [ "$UBUNTU_VERSION" = "jammy" ] || [ "$UBUNTU_VERSION" = "focal" ]; then
+      # Tạo file list cho apt
+      echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-$version.gpg ] https://repo.mongodb.org/apt/ubuntu $UBUNTU_VERSION/mongodb-org/$version multiverse" | \
+        sudo tee /etc/apt/sources.list.d/mongodb-org-$version.list
+    else
+      # Fallback sang jammy nếu không phải Ubuntu 22.04 hoặc 20.04
+      echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-$version.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/$version multiverse" | \
+        sudo tee /etc/apt/sources.list.d/mongodb-org-$version.list
+    fi
     
     # Cài đặt MongoDB
     sudo apt-get update
@@ -80,7 +91,21 @@ create_keyfile() {
     # Tạo keyfile mới với nội dung ngẫu nhiên
     openssl rand -base64 756 | sudo tee $keyfile_path > /dev/null
     sudo chmod 400 $keyfile_path
-    sudo chown mongodb:mongodb $keyfile_path
+    
+    # Kiểm tra và tạo user mongodb nếu không tồn tại
+    if ! getent passwd mongodb > /dev/null; then
+      echo -e "${YELLOW}User mongodb không tồn tại. Sử dụng user mongod...${NC}"
+      if getent passwd mongod > /dev/null; then
+        sudo chown mongod:mongod $keyfile_path
+      else
+        echo -e "${YELLOW}User mongod cũng không tồn tại. Tạo user mongodb...${NC}"
+        sudo useradd -r -s /bin/false mongodb
+        sudo chown mongodb:mongodb $keyfile_path
+      fi
+    else
+      sudo chown mongodb:mongodb $keyfile_path
+    fi
+    
     echo -e "${GREEN}✓ Đã tạo keyfile tại $keyfile_path${NC}"
   else
     echo -e "${GREEN}✓ Keyfile đã tồn tại tại $keyfile_path${NC}"
@@ -101,15 +126,33 @@ create_mongodb_config() {
   
   sudo mkdir -p $dbpath
   sudo mkdir -p $(dirname $logpath)
-  sudo chown -R mongodb:mongodb $dbpath
-  sudo chown -R mongodb:mongodb $(dirname $logpath)
+  
+  # Xác định user mongodb hoặc mongod
+  local mongo_user="mongodb"
+  if ! getent passwd mongodb > /dev/null; then
+    if getent passwd mongod > /dev/null; then
+      mongo_user="mongod"
+    fi
+  fi
+  
+  sudo chown -R $mongo_user:$mongo_user $dbpath
+  sudo chown -R $mongo_user:$mongo_user $(dirname $logpath)
+  
+  # Sao lưu file cấu hình cũ nếu tồn tại
+  if [ -f "$config_file" ]; then
+    backup_file="${config_file}.$(date +%Y%m%d%H%M%S).bak"
+    sudo cp $config_file $backup_file
+    echo -e "${YELLOW}Đã sao lưu file cấu hình cũ tại $backup_file${NC}"
+  fi
   
   # Tạo file cấu hình
   sudo tee $config_file > /dev/null << EOF
 # MongoDB configuration file
 storage:
   dbPath: $dbpath
-  
+  journal:
+    enabled: true
+
 net:
   port: $port
   bindIp: 0.0.0.0
@@ -125,6 +168,11 @@ systemLog:
 security:
   keyFile: $keyfile
   authorization: enabled
+
+processManagement:
+  fork: true
+  pidFilePath: /var/run/mongodb/mongod.pid
+  timeZoneInfo: /usr/share/zoneinfo
 EOF
 
   echo -e "${GREEN}✓ Đã tạo file cấu hình tại $config_file${NC}"
@@ -134,22 +182,34 @@ EOF
 ensure_directory_permissions() {
   echo -e "${YELLOW}Đảm bảo quyền truy cập cho các thư mục MongoDB...${NC}"
   
+  # Xác định user mongodb hoặc mongod
+  local mongo_user="mongodb"
+  if ! getent passwd mongodb > /dev/null; then
+    if getent passwd mongod > /dev/null; then
+      mongo_user="mongod"
+    fi
+  fi
+  
   # Thư mục dữ liệu
   sudo mkdir -p $MONGODB_DATA_DIR
-  sudo chown -R mongodb:mongodb $MONGODB_DATA_DIR
+  sudo chown -R $mongo_user:$mongo_user $MONGODB_DATA_DIR
   sudo chmod -R 750 $MONGODB_DATA_DIR
   
   # Thư mục log
   sudo mkdir -p $(dirname $MONGODB_LOG_DIR)
-  sudo chown -R mongodb:mongodb $(dirname $MONGODB_LOG_DIR)
+  sudo chown -R $mongo_user:$mongo_user $(dirname $MONGODB_LOG_DIR)
   sudo chmod -R 755 $(dirname $MONGODB_LOG_DIR)
   
+  # Thư mục pid
+  sudo mkdir -p /var/run/mongodb
+  sudo chown -R $mongo_user:$mongo_user /var/run/mongodb
+  
   # KeyFile
-  sudo chown mongodb:mongodb $MONGODB_KEYFILE
+  sudo chown $mongo_user:$mongo_user $MONGODB_KEYFILE
   sudo chmod 400 $MONGODB_KEYFILE
   
   # Config file
-  sudo chown mongodb:mongodb $MONGODB_CONFIG_FILE
+  sudo chown $mongo_user:$mongo_user $MONGODB_CONFIG_FILE
   
   echo -e "${GREEN}✓ Đã thiết lập quyền truy cập chính xác${NC}"
 }
@@ -159,19 +219,85 @@ start_mongodb() {
   echo -e "${YELLOW}Khởi động MongoDB...${NC}"
   
   # Dừng MongoDB hiện tại nếu đang chạy
-  sudo systemctl stop mongod || true
+  if systemctl is-active --quiet mongod; then
+    echo -e "${YELLOW}Dừng MongoDB hiện tại...${NC}"
+    sudo systemctl stop mongod
+    sleep 3
+  fi
+  
+  # Tạo service file nếu cần
+  sudo bash -c 'cat > /lib/systemd/system/mongod.service << EOF
+[Unit]
+Description=MongoDB Database Server
+Documentation=https://docs.mongodb.org/manual
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=mongodb
+Group=mongodb
+EnvironmentFile=-/etc/default/mongod
+ExecStart=/usr/bin/mongod --config /etc/mongod.conf
+PIDFile=/var/run/mongodb/mongod.pid
+# file size
+LimitFSIZE=infinity
+# cpu time
+LimitCPU=infinity
+# virtual memory size
+LimitAS=infinity
+# open files
+LimitNOFILE=64000
+# processes/threads
+LimitNPROC=64000
+# locked memory
+LimitMEMLOCK=infinity
+# total threads (user+kernel)
+TasksMax=infinity
+TasksAccounting=false
+# Recommended limits for mongod as specified in
+# https://docs.mongodb.com/manual/reference/ulimit/#recommended-ulimit-settings
+
+[Install]
+WantedBy=multi-user.target
+EOF'
+  
+  # Đặt quyền service file
+  sudo chmod 644 /lib/systemd/system/mongod.service
+  
+  # Xác định user mongodb hoặc mongod trong service file
+  if ! getent passwd mongodb > /dev/null && getent passwd mongod > /dev/null; then
+    sudo sed -i 's/User=mongodb/User=mongod/g' /lib/systemd/system/mongod.service
+    sudo sed -i 's/Group=mongodb/Group=mongod/g' /lib/systemd/system/mongod.service
+  fi
+  
+  # Reload systemd để áp dụng thay đổi
+  sudo systemctl daemon-reload
   
   # Khởi động MongoDB với cấu hình mới
+  sudo systemctl enable mongod
   sudo systemctl start mongod
   
   # Kiểm tra trạng thái
-  sleep 3
+  sleep 5
   if sudo systemctl is-active mongod &> /dev/null; then
     echo -e "${GREEN}✓ MongoDB đã khởi động thành công${NC}"
     return 0
   else
     echo -e "${RED}✗ Không thể khởi động MongoDB${NC}"
     sudo systemctl status mongod
+    
+    # Kiểm tra thêm xem có lỗi gì không
+    echo -e "${YELLOW}Kiểm tra log MongoDB...${NC}"
+    sudo tail -n 20 $MONGODB_LOG_DIR/mongod.log
+    
+    echo -e "${YELLOW}Thử dùng mongod trực tiếp để xem lỗi...${NC}"
+    sudo mongod --config $MONGODB_CONFIG_FILE --fork
+    
+    echo -e "${RED}Nếu vẫn không khởi động được, hãy thử:${NC}"
+    echo "1. Kiểm tra quyền: ls -la $MONGODB_DATA_DIR"
+    echo "2. Kiểm tra disk space: df -h"
+    echo "3. Kiểm tra log: sudo tail -f $MONGODB_LOG_DIR/mongod.log"
+    
     return 1
   fi
 }
@@ -194,6 +320,32 @@ init_replica_set_multi() {
     echo -e "${RED}Lỗi: Địa chỉ IP server không hợp lệ ($this_server_ip)${NC}"
     this_server_ip=$(hostname -I | awk '{print $1}')
     echo -e "${YELLOW}Sử dụng IP local: $this_server_ip${NC}"
+  fi
+  
+  # Đảm bảo MongoDB đang chạy
+  if ! systemctl is-active --quiet mongod; then
+    echo -e "${YELLOW}MongoDB không chạy. Đang khởi động lại...${NC}"
+    sudo systemctl start mongod
+    sleep 5
+  fi
+  
+  # Kiểm tra MongoDB đã sẵn sàng chưa
+  echo -e "${YELLOW}Kiểm tra MongoDB đã sẵn sàng chưa...${NC}"
+  # Đợi tối đa 60 giây cho MongoDB sẵn sàng
+  mongo_ready=false
+  for i in {1..30}; do
+    if mongosh --port $port --eval "db.stats()" &>/dev/null; then
+      mongo_ready=true
+      break
+    fi
+    echo -e "${YELLOW}Đang đợi MongoDB khởi động (${i}/30)...${NC}"
+    sleep 2
+  done
+  
+  if [ "$mongo_ready" = false ]; then
+    echo -e "${RED}MongoDB không sẵn sàng sau thời gian chờ. Kiểm tra lại cài đặt.${NC}"
+    sudo systemctl status mongod
+    return 1
   fi
   
   # Biến kiểm tra khởi tạo thành công
@@ -234,6 +386,12 @@ init_replica_set_multi() {
         if [[ "$init_result" == *"\"ok\" : 1"* || "$init_result" == *"ok: 1"* || "$init_result" == *"already initialized"* ]]; then
           echo -e "${GREEN}✓ Khởi tạo replica set thành công với localhost${NC}"
           init_success=true
+          
+          # Cập nhật lại cấu hình với IP thật
+          echo -e "${YELLOW}Cập nhật lại cấu hình replica set với IP thật...${NC}"
+          update_cmd="cfg = rs.conf(); cfg.members[0].host='$this_server_ip:$port'; rs.reconfig(cfg);"
+          update_result=$(mongosh --port $port --eval "$update_cmd")
+          echo "Kết quả cập nhật: $update_result"
         else
           echo -e "${RED}✗ Khởi tạo replica set thất bại: $init_result${NC}"
           
@@ -247,6 +405,12 @@ init_replica_set_multi() {
           if [[ "$init_result" == *"\"ok\" : 1"* || "$init_result" == *"ok: 1"* || "$init_result" == *"already initialized"* ]]; then
             echo -e "${GREEN}✓ Khởi tạo replica set thành công với 127.0.0.1${NC}"
             init_success=true
+            
+            # Cập nhật lại cấu hình với IP thật
+            echo -e "${YELLOW}Cập nhật lại cấu hình replica set với IP thật...${NC}"
+            update_cmd="cfg = rs.conf(); cfg.members[0].host='$this_server_ip:$port'; rs.reconfig(cfg);"
+            update_result=$(mongosh --port $port --eval "$update_cmd")
+            echo "Kết quả cập nhật: $update_result"
           else
             echo -e "${RED}✗ Khởi tạo tất cả các phương pháp đều thất bại${NC}"
             return 1
@@ -295,9 +459,17 @@ init_replica_set_multi() {
           if [[ "$server" != "$this_server_ip" && "$server" != "localhost" && "$server" != "127.0.0.1" ]]; then
             echo -e "${YELLOW}Thêm server: $server${NC}"
             
+            # Kiểm tra kết nối đến server
+            if nc -z -w5 $server $port; then
+              echo -e "${GREEN}Server $server:$port đang lắng nghe${NC}"
+            else
+              echo -e "${RED}Không thể kết nối đến $server:$port. Đảm bảo MongoDB đang chạy và port đã mở.${NC}"
+              continue
+            fi
+            
             # Thêm server vào replica set
             add_cmd="rs.add('$server:$port')"
-            add_result=$(mongosh --port $port --eval "$add_cmd")
+            add_result=$(mongosh --port $port -u "$username" -p "$password" --authenticationDatabase "admin" --eval "$add_cmd")
             
             if [[ "$add_result" == *"\"ok\" : 1"* || "$add_result" == *"ok: 1"* || "$add_result" == *"already a member"* ]]; then
               echo -e "${GREEN}✓ Đã thêm server $server vào replica set${NC}"
@@ -310,6 +482,29 @@ init_replica_set_multi() {
     fi
   else
     echo -e "${GREEN}✓ Replica set đã được khởi tạo trước đó${NC}"
+    
+    # Kiểm tra user admin đã tồn tại chưa
+    admin_exists=$(mongosh --port $port -u "$username" -p "$password" --authenticationDatabase "admin" --eval "db.version()" 2>/dev/null)
+    
+    if [ $? -ne 0 ]; then
+      echo -e "${YELLOW}User admin chưa tồn tại hoặc mật khẩu không đúng. Đang tạo...${NC}"
+      create_user_result=$(mongosh --port $port --eval "
+      db = db.getSiblingDB('admin');
+      try {
+        db.createUser({
+          user: '$username',
+          pwd: '$password',
+          roles: [ { role: 'root', db: 'admin' } ]
+        });
+        print('✓ Tạo user thành công');
+      } catch(e) {
+        print('⚠ Lỗi: ' + e.message);
+      }
+      ")
+      echo "$create_user_result"
+    else
+      echo -e "${GREEN}✓ User admin đã tồn tại${NC}"
+    fi
   fi
 }
 
@@ -550,7 +745,7 @@ main() {
   
   # Đặt đường dẫn
   MONGODB_DATA_DIR="/var/lib/mongodb"
-  MONGODB_LOG_DIR="/var/log/mongodb"
+  MONGODB_LOG_DIR="/var/log/mongodb/mongod.log"
   MONGODB_CONFIG_FILE="/etc/mongod.conf"
   MONGODB_KEYFILE="/etc/mongodb-keyfile"
   
@@ -567,7 +762,7 @@ main() {
   create_keyfile $MONGODB_KEYFILE
   
   # 4. Tạo file cấu hình MongoDB
-  create_mongodb_config $MONGODB_CONFIG_FILE $MONGODB_DATA_DIR $MONGODB_LOG_DIR/mongod.log $MONGO_PORT $REPLICA_SET_NAME $MONGODB_KEYFILE "0.0.0.0"
+  create_mongodb_config $MONGODB_CONFIG_FILE $MONGODB_DATA_DIR $MONGODB_LOG_DIR $MONGO_PORT $REPLICA_SET_NAME $MONGODB_KEYFILE "0.0.0.0"
   
   # 4.5 Đảm bảo quyền truy cập đúng
   ensure_directory_permissions
@@ -576,7 +771,37 @@ main() {
   configure_firewall $MONGO_PORT
   
   # 6. Khởi động MongoDB
-  start_mongodb
+  if ! start_mongodb; then
+    echo -e "${RED}MongoDB không khởi động được. Đang kiểm tra các lỗi phổ biến...${NC}"
+    
+    # Kiểm tra SELinux
+    if command -v getenforce &> /dev/null && [ "$(getenforce)" = "Enforcing" ]; then
+      echo -e "${YELLOW}SELinux đang bật. Tạm thời tắt để kiểm tra...${NC}"
+      sudo setenforce 0
+      if start_mongodb; then
+        echo -e "${GREEN}MongoDB đã khởi động thành công sau khi tắt SELinux${NC}"
+        echo -e "${YELLOW}Đang cấu hình SELinux cho MongoDB...${NC}"
+        sudo setsebool -P mongod_bind_all_unreserved_ports 1
+      else
+        echo -e "${RED}Tắt SELinux không giải quyết được vấn đề${NC}"
+      fi
+    fi
+    
+    # Kiểm tra xem port đã được sử dụng chưa
+    if netstat -tuln | grep ":$MONGO_PORT " > /dev/null; then
+      echo -e "${RED}Port $MONGO_PORT đã được sử dụng bởi tiến trình khác${NC}"
+      netstat -tuln | grep ":$MONGO_PORT "
+      read -p "Bạn có muốn thử port khác không? (y/n): " TRY_OTHER_PORT
+      if [[ "$TRY_OTHER_PORT" =~ ^[Yy]$ ]]; then
+        read -p "Nhập port mới: " NEW_PORT
+        MONGO_PORT=$NEW_PORT
+        create_mongodb_config $MONGODB_CONFIG_FILE $MONGODB_DATA_DIR $MONGODB_LOG_DIR $MONGO_PORT $REPLICA_SET_NAME $MONGODB_KEYFILE "0.0.0.0"
+        ensure_directory_permissions
+        configure_firewall $MONGO_PORT
+        start_mongodb
+      fi
+    fi
+  fi
   
   # 7. Thiết lập replica set
   if [[ "$IS_PRIMARY" =~ ^[Yy]$ ]]; then
