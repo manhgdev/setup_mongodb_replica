@@ -148,3 +148,13 @@ Nếu hệ thống báo không đủ dung lượng lưu trữ:
 - Kiểm tra không gian đĩa: `df -h`
 - Xóa các backup cũ không cần thiết
 - Sử dụng nén để giảm kích thước backup 
+
+# Đăng nhập vào server cũ
+ssh root@157.66.46.252
+
+# Export database ExpressApiNew
+mongodump --host 127.0.0.1 --port 27018 -u manhg -p manhnk --authenticationDatabase admin --db ExpressApiNew --out /root/mongodb_backup
+
+# Nén lại để dễ chuyển
+cd /root
+tar -czf mongodb_backup.tar.gz mongodb_backup/ 
