@@ -189,48 +189,22 @@ init_replica_set_multi() {
   echo -e "${YELLOW}Server này: $this_server_ip${NC}"
   echo -e "${YELLOW}Danh sách server: $server_list${NC}"
   
+  # Kiểm tra đảm bảo IP server không bị lỗi
+  if [[ -z "$this_server_ip" || "$this_server_ip" == "địa" ]]; then
+    echo -e "${RED}Lỗi: Địa chỉ IP server không hợp lệ ($this_server_ip)${NC}"
+    this_server_ip=$(hostname -I | awk '{print $1}')
+    echo -e "${YELLOW}Sử dụng IP local: $this_server_ip${NC}"
+  fi
+  
   # Kiểm tra xem replica set đã được khởi tạo chưa
   rs_status=$(mongosh --quiet --port $port --eval "try { rs.status(); print('EXISTS'); } catch(e) { print('NOT_INIT'); }")
   
   if [[ "$rs_status" == *"NOT_INIT"* ]]; then
-    echo "Khởi tạo replica set mới với các server: $server_list"
+    echo "Khởi tạo replica set mới với server: $this_server_ip"
     
-    # Tạo chuỗi cấu hình cho các thành viên
-    local members="["
-    local server_id=0
-    local server_array=()
-    
-    # Phân tách chuỗi server_list thành mảng
-    IFS=',' read -ra server_array <<< "$server_list"
-    
-    # Lặp qua từng server để thêm vào cấu hình
-    for server in "${server_array[@]}"; do
-      local priority=1
-      
-      # Server hiện tại có priority cao hơn
-      if [[ "$server" == "$this_server_ip" ]]; then
-        priority=10
-      fi
-      
-      # Thêm dấu phẩy nếu không phải thành viên đầu tiên
-      if [[ $server_id -gt 0 ]]; then
-        members+=", "
-      fi
-      
-      # Đảm bảo server IP không rỗng hoặc không phải "địa"
-      if [[ -z "$server" || "$server" == "địa" ]]; then
-        server="$(hostname -I | awk '{print $1}')"
-        echo -e "${YELLOW}Sử dụng IP local: $server${NC}"
-      fi
-      
-      members+="{ _id: $server_id, host: '$server:$port', priority: $priority }"
-      ((server_id++))
-    done
-    
-    members+="]"
-    
-    # Khởi tạo replica set với cấu hình nhiều server
-    init_command="rs.initiate({ _id: '$replica_set', members: $members });"
+    # Sửa đổi - Sử dụng cách khởi tạo đơn giản nhất trước
+    echo "Sử dụng phương pháp khởi tạo đơn giản..."
+    init_command="rs.initiate({_id: '$replica_set', members: [{_id: 0, host: '$this_server_ip:$port', priority: 10}]});"
     echo "Thực thi lệnh: $init_command"
     
     init_result=$(mongosh --port $port --eval "$init_command")
@@ -240,23 +214,31 @@ init_replica_set_multi() {
     else
       echo -e "${RED}✗ Khởi tạo replica set thất bại: $init_result${NC}"
       
-      # Thử lại với hostname nếu chỉ có 1 server
-      if [[ "${#server_array[@]}" -eq 1 ]]; then
-        echo -e "${YELLOW}Thử lại với IP local...${NC}"
-        local local_ip=$(hostname -I | awk '{print $1}')
-        local retry_command="rs.initiate({ _id: '$replica_set', members: [{ _id: 0, host: '$local_ip:$port', priority: 10 }] });"
+      # Thử lại lần 2 với localhost
+      echo -e "${YELLOW}Thử lại với localhost...${NC}"
+      retry_command="rs.initiate({_id: '$replica_set', members: [{_id: 0, host: 'localhost:$port', priority: 10}]});"
+      echo "Thực thi lệnh: $retry_command"
+      
+      init_result=$(mongosh --port $port --eval "$retry_command")
+      
+      if [[ "$init_result" == *"\"ok\" : 1"* ]]; then
+        echo -e "${GREEN}✓ Khởi tạo replica set thành công với localhost${NC}"
+      else
+        echo -e "${RED}✗ Khởi tạo replica set thất bại: $init_result${NC}"
+        
+        # Thử lại lần 3 với 127.0.0.1
+        echo -e "${YELLOW}Thử lại với 127.0.0.1...${NC}"
+        retry_command="rs.initiate({_id: '$replica_set', members: [{_id: 0, host: '127.0.0.1:$port', priority: 10}]});"
         echo "Thực thi lệnh: $retry_command"
         
         init_result=$(mongosh --port $port --eval "$retry_command")
         
         if [[ "$init_result" == *"\"ok\" : 1"* ]]; then
-          echo -e "${GREEN}✓ Khởi tạo replica set thành công trong lần thử lại${NC}"
+          echo -e "${GREEN}✓ Khởi tạo replica set thành công với 127.0.0.1${NC}"
         else
-          echo -e "${RED}✗ Khởi tạo replica set thất bại: $init_result${NC}"
+          echo -e "${RED}✗ Khởi tạo tất cả các phương pháp đều thất bại${NC}"
           return 1
         fi
-      else
-        return 1
       fi
     fi
     
@@ -285,6 +267,31 @@ init_replica_set_multi() {
     ")
     
     echo "$create_user_result"
+    
+    # Nếu đã khởi tạo replica set thành công với 1 node, thêm các node còn lại vào
+    if [ "$server_list" != "$this_server_ip" ]; then
+      echo -e "${YELLOW}Thêm các server khác vào replica set...${NC}"
+      
+      # Phân tách chuỗi server_list thành mảng
+      IFS=',' read -ra server_array <<< "$server_list"
+      
+      for server in "${server_array[@]}"; do
+        # Bỏ qua server hiện tại
+        if [[ "$server" != "$this_server_ip" && "$server" != "localhost" && "$server" != "127.0.0.1" ]]; then
+          echo -e "${YELLOW}Thêm server: $server${NC}"
+          
+          # Thêm server vào replica set
+          add_cmd="rs.add('$server:$port')"
+          add_result=$(mongosh --port $port --eval "$add_cmd")
+          
+          if [[ "$add_result" == *"\"ok\" : 1"* ]]; then
+            echo -e "${GREEN}✓ Đã thêm server $server vào replica set${NC}"
+          else
+            echo -e "${RED}✗ Không thể thêm server $server: $add_result${NC}"
+          fi
+        fi
+      done
+    fi
   else
     echo -e "${GREEN}✓ Replica set đã được khởi tạo trước đó${NC}"
   fi
@@ -462,7 +469,21 @@ main() {
   echo -e "${BLUE}THÔNG TIN CẤU HÌNH${NC}"
   
   # Lấy IP public của server hiện tại
-  THIS_SERVER_IP=$(get_public_ip)
+  THIS_SERVER_IP=$(hostname -I | awk '{print $1}')
+  echo -e "${YELLOW}Địa chỉ IP của server này (local): $THIS_SERVER_IP${NC}"
+  
+  # Thử lấy IP public (nhưng ưu tiên IP local để đảm bảo kết nối được)
+  PUBLIC_IP=$(curl -s ifconfig.me 2>/dev/null || curl -s icanhazip.com 2>/dev/null || curl -s ipecho.net/plain 2>/dev/null)
+  if [ -n "$PUBLIC_IP" ]; then
+    echo -e "${YELLOW}Địa chỉ IP public: $PUBLIC_IP${NC}"
+    read -p "Sử dụng IP public thay vì IP local? (y/n) [n]: " USE_PUBLIC_IP
+    if [[ "$USE_PUBLIC_IP" =~ ^[Yy]$ ]]; then
+      THIS_SERVER_IP="$PUBLIC_IP"
+      echo -e "${GREEN}Sử dụng IP public: $THIS_SERVER_IP${NC}"
+    else
+      echo -e "${GREEN}Sử dụng IP local: $THIS_SERVER_IP${NC}" 
+    fi
+  fi
   
   read -p "Server này là primary? (y/n): " IS_PRIMARY
   
