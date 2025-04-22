@@ -150,7 +150,7 @@ Nếu hệ thống báo không đủ dung lượng lưu trữ:
 - Sử dụng nén để giảm kích thước backup 
 
 # Đăng nhập vào server cũ
-ssh root@157.66.46.252
+ssh root@127.0.0.1
 
 # Export database ExpressApiNew
 mongodump --host 127.0.0.1 --port 27018 -u manhg -p manhnk --authenticationDatabase admin --db ExpressApiNew --out /root/mongodb_backup
