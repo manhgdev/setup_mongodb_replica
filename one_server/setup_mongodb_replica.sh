@@ -11,8 +11,8 @@
 # Biến cấu hình
 SKIP_USER_CREATION=${SKIP_USER_CREATION:-false}  # Đặt thành true nếu đã tạo user từ trước
 USE_AUTH_FROM_START=${USE_AUTH_FROM_START:-false}  # Đặt thành true nếu muốn bật xác thực từ đầu
-MONGODB_USER="manhgdev"
-MONGODB_PASSWORD="manhdepzai"
+MONGODB_USER="manhg"
+MONGODB_PASSWORD="manhnk"
 # Danh sách các port MongoDB
 MONGODB_PORTS=(27017 27018 27019 27020)
 # Danh sách các đường dẫn dữ liệu tương ứng
@@ -73,7 +73,7 @@ sudo killall mongod 2>/dev/null || true
 sudo pkill -x mongod 2>/dev/null || true
 sleep 3
 # TODO: Nếu cài đặt lỗi thì mở comment dòng này
-# sudo rm -f /tmp/mongodb-*.sock /data/rs*/mongod.lock /data/rs*/WiredTiger.lock
+sudo rm -f /tmp/mongodb-*.sock /data/rs*/mongod.lock /data/rs*/WiredTiger.lock
 
 # Tạo KeyFile cho xác thực nếu chưa có
 if [ ! -f /etc/mongodb-keyfile ]; then
