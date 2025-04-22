@@ -150,8 +150,6 @@ create_mongodb_config() {
 # MongoDB configuration file
 storage:
   dbPath: $dbpath
-  journal:
-    enabled: true
 
 net:
   port: $port
