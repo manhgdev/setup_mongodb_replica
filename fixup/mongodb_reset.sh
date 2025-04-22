@@ -9,178 +9,240 @@ NC='\033[0m' # No Color
 
 # Biến cấu hình
 MONGO_VERSION="8.0"
-MONGO_PORT="27017"
-REPLICA_SET="rs0"
-MONGODB_USER="manhg"
-MONGODB_PASSWORD="manhnk"
-MONGODB_DATA_DIR="/var/lib/mongodb"
-MONGODB_LOG_DIR="/var/log/mongodb/mongod.log"
-MONGODB_CONFIG_FILE="/etc/mongod.conf"
-MONGODB_KEYFILE="/etc/mongodb-keyfile"
+DEFAULT_DATA_DIR="/var/lib/mongodb"
+DEFAULT_LOG_DIR="/var/log/mongodb"
+DEFAULT_CONFIG_FILE="/etc/mongod.conf"
+DEFAULT_KEYFILE="/etc/mongodb-keyfile"
 
-echo -e "${BLUE}====== KHẮC PHỤC VÀ CÀI ĐẶT LẠI MONGODB 8.0 ======${NC}"
-echo -e "${YELLOW}CẢNH BÁO: Script này sẽ xóa hoàn toàn dữ liệu MongoDB.${NC}"
-echo -e "${YELLOW}          Đảm bảo bạn đã sao lưu dữ liệu quan trọng trước khi tiếp tục.${NC}"
-read -p "Bạn chắc chắn muốn tiếp tục? (y/n): " CONFIRM
+clear
+echo -e "${BLUE}
+============================================================
+     RESET HOÀN TOÀN MONGODB - MANHG DEV
+============================================================${NC}"
 
-if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
-  echo -e "${YELLOW}Đã hủy thao tác.${NC}"
-  exit 0
+# Kiểm tra quyền root
+if [ "$(id -u)" != "0" ]; then
+   echo -e "${RED}Script này cần chạy với quyền root hoặc sudo${NC}"
+   echo "Vui lòng chạy lại với sudo: sudo $0"
+   exit 1
 fi
 
-# 1. Dừng tất cả các tiến trình MongoDB
-echo -e "${BLUE}1. Dừng tất cả các tiến trình MongoDB...${NC}"
-sudo systemctl stop mongod 2>/dev/null || true
-sudo killall mongod 2>/dev/null || true
-sudo pkill -f mongod 2>/dev/null || true
-sudo pkill -9 -f mongod 2>/dev/null || true
-sleep 3
-echo -e "${GREEN}✓ Đã dừng tất cả các tiến trình MongoDB${NC}"
+echo -e "${RED}CẢNH BÁO: Script này sẽ xóa hoàn toàn MongoDB, bao gồm:${NC}"
+echo -e "${RED}- Tất cả dữ liệu MongoDB${NC}"
+echo -e "${RED}- Tất cả cài đặt và cấu hình MongoDB${NC}"
+echo -e "${RED}- Tất cả các file keyfile và xác thực${NC}"
+echo
+echo -e "${RED}SAU KHI CHẠY SCRIPT NÀY, TẤT CẢ DỮ LIỆU SẼ BỊ MẤT VĨNH VIỄN!${NC}"
+echo
 
-# 2. Gỡ cài đặt MongoDB
-echo -e "${BLUE}2. Gỡ cài đặt MongoDB hoàn toàn...${NC}"
-sudo apt-get purge -y mongodb-org* mongodb*
-sudo apt-get autoremove -y
-sudo apt-get autoclean
+read -p "Bạn có chắc chắn muốn tiếp tục? (yes/no): " CONFIRM
+if [[ "$CONFIRM" != "yes" ]]; then
+   echo -e "${YELLOW}Hủy quá trình reset.${NC}"
+   exit 0
+fi
 
-# 3. Xóa dữ liệu và cấu hình MongoDB
-echo -e "${BLUE}3. Xóa dữ liệu và cấu hình MongoDB...${NC}"
-sudo rm -rf /var/lib/mongodb/*
-sudo rm -rf /var/log/mongodb/*
-sudo rm -f /etc/mongod.conf
-sudo rm -f /etc/mongodb-keyfile
-sudo rm -f /tmp/mongodb-*.sock
-sudo rm -f /tmp/*.pid
-sudo rm -rf /data/rs*/mongod.lock /data/rs*/WiredTiger.lock 2>/dev/null || true
-sudo rm -rf /data/rs*/* 2>/dev/null || true
-sudo rm -rf /data/* 2>/dev/null || true
-echo -e "${GREEN}✓ Đã xóa sạch dữ liệu và cấu hình MongoDB${NC}"
+echo -e "${YELLOW}Bắt đầu quá trình reset MongoDB...${NC}"
 
-# 4. Xóa systemd service
-echo -e "${BLUE}4. Xóa và làm mới systemd service...${NC}"
-sudo rm -f /lib/systemd/system/mongod.service
-sudo rm -f /etc/systemd/system/mongod.service
-sudo rm -f /etc/systemd/system/multi-user.target.wants/mongod.service
-sudo systemctl daemon-reload
-echo -e "${GREEN}✓ Đã làm mới systemd service${NC}"
+# 1. Dừng dịch vụ MongoDB nếu đang chạy
+echo -e "${YELLOW}1. Dừng dịch vụ MongoDB...${NC}"
+systemctl stop mongod || true
+sleep 2
 
-# 5. Tạo lại các thư mục cần thiết
-echo -e "${BLUE}5. Tạo lại các thư mục cần thiết...${NC}"
-sudo mkdir -p /var/lib/mongodb
-sudo mkdir -p $(dirname $MONGODB_LOG_DIR)
-sudo mkdir -p /data/rs0 /data/rs1 /data/rs2 /data/rs 2>/dev/null || true
-sudo chown -R mongodb:mongodb /var/lib/mongodb 2>/dev/null || true
-sudo chown -R mongodb:mongodb $(dirname $MONGODB_LOG_DIR) 2>/dev/null || true
-sudo chown -R mongodb:mongodb /data/rs* 2>/dev/null || true
-echo -e "${GREEN}✓ Đã tạo lại các thư mục cần thiết${NC}"
+# Kiểm tra xem có quá trình MongoDB nào còn chạy không và kill
+ps aux | grep mongo[d] > /dev/null
+if [ $? -eq 0 ]; then
+   echo -e "${YELLOW}Vẫn còn quá trình MongoDB đang chạy, đang dừng...${NC}"
+   pkill -f mongod || true
+   sleep 2
+fi
 
-# 6. Cài đặt MongoDB 8.0
-echo -e "${BLUE}6. Cài đặt MongoDB phiên bản $MONGO_VERSION...${NC}"
-sudo apt-get update
-sudo apt-get install -y curl gnupg netcat-openbsd
-sudo rm -f /usr/share/keyrings/mongodb-server-$MONGO_VERSION.gpg
-curl -fsSL https://www.mongodb.org/static/pgp/server-$MONGO_VERSION.asc | sudo gpg -o /usr/share/keyrings/mongodb-server-$MONGO_VERSION.gpg --dearmor
-echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-$MONGO_VERSION.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/$MONGO_VERSION multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-$MONGO_VERSION.list
-sudo apt-get update
-sudo apt-get install -y mongodb-org
-echo -e "${GREEN}✓ Đã cài đặt MongoDB $MONGO_VERSION${NC}"
+# 2. Gỡ cài đặt tất cả các gói MongoDB
+echo -e "${YELLOW}2. Gỡ cài đặt các gói MongoDB...${NC}"
+apt-get purge -y mongodb-org* || true
+apt-get purge -y mongodb* || true
 
-# 7. Tạo keyfile mới
-echo -e "${BLUE}7. Tạo keyfile mới...${NC}"
-sudo openssl rand -base64 756 > /tmp/mongodb-keyfile
-sudo mv /tmp/mongodb-keyfile $MONGODB_KEYFILE
-sudo chmod 400 $MONGODB_KEYFILE
-sudo chown mongodb:mongodb $MONGODB_KEYFILE 2>/dev/null || true
-echo -e "${GREEN}✓ Đã tạo keyfile mới tại $MONGODB_KEYFILE${NC}"
+# 3. Xóa các thư mục và tệp dữ liệu MongoDB
+echo -e "${YELLOW}3. Xóa tất cả dữ liệu và cấu hình MongoDB...${NC}"
+rm -rf $DEFAULT_DATA_DIR/*
+rm -rf $DEFAULT_LOG_DIR/*
+rm -f $DEFAULT_CONFIG_FILE
+rm -f $DEFAULT_KEYFILE
+rm -f /etc/apt/sources.list.d/mongodb*.list
+rm -f /usr/share/keyrings/mongodb*.gpg
+rm -rf /var/run/mongodb
+rm -rf /tmp/mongodb*
 
-# 8. Tạo file cấu hình mới
-echo -e "${BLUE}8. Tạo file cấu hình mới...${NC}"
-cat << EOF | sudo tee $MONGODB_CONFIG_FILE > /dev/null
+# 4. Xóa thư mục cấu hình
+echo -e "${YELLOW}4. Xóa thư mục cấu hình MongoDB...${NC}"
+rm -rf /etc/mongodb*
+
+# 5. Làm sạch apt
+echo -e "${YELLOW}5. Làm sạch apt cache...${NC}"
+apt-get autoremove -y
+apt-get clean
+apt-get update
+
+# 6. Cài đặt MongoDB lại
+echo -e "${YELLOW}6. Cài đặt lại MongoDB phiên bản $MONGO_VERSION...${NC}"
+
+# Cài đặt các công cụ cần thiết
+apt-get update
+apt-get install -y gnupg curl netcat-openbsd
+
+# Thêm repo MongoDB
+curl -fsSL https://www.mongodb.org/static/pgp/server-$MONGO_VERSION.asc | \
+  gpg -o /usr/share/keyrings/mongodb-server-$MONGO_VERSION.gpg \
+  --dearmor
+
+# Xác định phiên bản Ubuntu
+UBUNTU_VERSION=$(lsb_release -cs)
+echo -e "${YELLOW}Phiên bản Ubuntu: $UBUNTU_VERSION${NC}"
+
+# Sử dụng jammy cho Ubuntu 22.04, focal cho 20.04
+if [ "$UBUNTU_VERSION" = "jammy" ] || [ "$UBUNTU_VERSION" = "focal" ]; then
+  echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-$MONGO_VERSION.gpg ] https://repo.mongodb.org/apt/ubuntu $UBUNTU_VERSION/mongodb-org/$MONGO_VERSION multiverse" | \
+    tee /etc/apt/sources.list.d/mongodb-org-$MONGO_VERSION.list
+else
+  # Fallback sang jammy nếu không phải Ubuntu 22.04 hoặc 20.04
+  echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-$MONGO_VERSION.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/$MONGO_VERSION multiverse" | \
+    tee /etc/apt/sources.list.d/mongodb-org-$MONGO_VERSION.list
+fi
+
+# Cài đặt MongoDB
+apt-get update
+apt-get install -y mongodb-org
+
+# 7. Tạo thư mục dữ liệu và đặt quyền
+echo -e "${YELLOW}7. Tạo thư mục dữ liệu và cấu hình quyền...${NC}"
+mkdir -p $DEFAULT_DATA_DIR
+mkdir -p $(dirname $DEFAULT_LOG_DIR)
+mkdir -p /var/run/mongodb
+
+# Xác định user mongodb hoặc mongod
+if getent passwd mongodb > /dev/null; then
+  chown -R mongodb:mongodb $DEFAULT_DATA_DIR
+  chown -R mongodb:mongodb $(dirname $DEFAULT_LOG_DIR)
+  chown -R mongodb:mongodb /var/run/mongodb
+elif getent passwd mongod > /dev/null; then
+  chown -R mongod:mongod $DEFAULT_DATA_DIR
+  chown -R mongod:mongod $(dirname $DEFAULT_LOG_DIR)
+  chown -R mongod:mongod /var/run/mongodb
+else
+  # Tạo user mongodb nếu không tồn tại
+  useradd -r -s /bin/false mongodb
+  chown -R mongodb:mongodb $DEFAULT_DATA_DIR
+  chown -R mongodb:mongodb $(dirname $DEFAULT_LOG_DIR)
+  chown -R mongodb:mongodb /var/run/mongodb
+fi
+
+# 8. Tạo cấu hình mặc định
+echo -e "${YELLOW}8. Tạo cấu hình MongoDB mặc định...${NC}"
+cat > $DEFAULT_CONFIG_FILE << EOF
 # MongoDB configuration file
 storage:
-  dbPath: /var/lib/mongodb
-  
-net:
-  port: $MONGO_PORT
-  bindIp: 0.0.0.0
+  dbPath: $DEFAULT_DATA_DIR
+  journal:
+    enabled: true
 
-replication:
-  replSetName: $REPLICA_SET
+net:
+  port: 27017
+  bindIp: 0.0.0.0
 
 systemLog:
   destination: file
-  path: /var/log/mongodb/mongod.log
+  path: $DEFAULT_LOG_DIR
   logAppend: true
 
-security:
-  authorization: disabled
-
 processManagement:
+  fork: true
+  pidFilePath: /var/run/mongodb/mongod.pid
   timeZoneInfo: /usr/share/zoneinfo
 EOF
-echo -e "${GREEN}✓ Đã tạo file cấu hình mới tại $MONGODB_CONFIG_FILE${NC}"
 
-# 9. Cấp quyền và thiết lập service
-echo -e "${BLUE}9. Đặt quyền thích hợp...${NC}"
-sudo chown -R mongodb:mongodb /var/lib/mongodb
-sudo chown -R mongodb:mongodb $(dirname $MONGODB_LOG_DIR)
-sudo chown mongodb:mongodb $MONGODB_CONFIG_FILE
-sudo chmod 600 $MONGODB_CONFIG_FILE
-
-# 10. Khởi động MongoDB
-echo -e "${BLUE}10. Khởi động MongoDB...${NC}"
-sudo systemctl daemon-reload
-sudo systemctl enable mongod
-sudo systemctl start mongod
-sleep 5
-
-# 11. Kiểm tra trạng thái
-echo -e "${BLUE}11. Kiểm tra trạng thái MongoDB...${NC}"
-sudo systemctl status mongod --no-pager
-if sudo systemctl is-active mongod >/dev/null 2>&1; then
-  echo -e "${GREEN}✓ MongoDB đã khởi động thành công!${NC}"
-  mongod --version
-  
-  # 12. Khởi tạo replica set đơn giản
-  echo -e "${BLUE}12. Khởi tạo replica set đơn giản...${NC}"
-  sleep 5
-  mongosh --quiet --eval "rs.initiate({_id: '$REPLICA_SET', members: [{_id: 0, host: 'localhost:27017'}]})"
-  echo -e "${GREEN}✓ Đã khởi tạo replica set${NC}"
-  
-  # 13. Kiểm tra trạng thái replica set
-  echo -e "${BLUE}13. Kiểm tra trạng thái replica set...${NC}"
-  mongosh --quiet --eval "rs.status()" | grep -E "name|stateStr|health|state"
-  
-  echo -e "${GREEN}==================================================${NC}"
-  echo -e "${GREEN}✅ MONGODB ĐÃ ĐƯỢC KHÔI PHỤC THÀNH CÔNG!${NC}"
-  echo -e "${GREEN}==================================================${NC}"
-  echo -e "${YELLOW}Thông tin kết nối:${NC}"
-  echo -e "  - Port: $MONGO_PORT"
-  echo -e "  - Replica Set: $REPLICA_SET"
-  echo -e "${YELLOW}Bạn có thể tiếp tục thiết lập bằng script setup_mongodb_replica.sh${NC}"
-else
-  echo -e "${RED}✗ MongoDB không thể khởi động. Kiểm tra lỗi...${NC}"
-  
-  # Kiểm tra journal
-  echo -e "${YELLOW}Xem journal để tìm nguyên nhân:${NC}"
-  sudo journalctl -u mongod --no-pager | tail -n 20
-  
-  # Kiểm tra log
-  echo -e "${YELLOW}Xem log MongoDB:${NC}"
-  sudo cat /var/log/mongodb/mongod.log | tail -n 20
-  
-  # Kiểm tra port
-  echo -e "${YELLOW}Kiểm tra port $MONGO_PORT:${NC}"
-  sudo netstat -tulpn | grep $MONGO_PORT
-  
-  echo -e "${RED}==================================================${NC}"
-  echo -e "${RED}❌ MONGODB KHÔI PHỤC THẤT BẠI!${NC}"
-  echo -e "${RED}==================================================${NC}"
-  echo -e "${YELLOW}Các lỗi thường gặp:${NC}"
-  echo -e "  1. Port $MONGO_PORT đã được sử dụng bởi ứng dụng khác"
-  echo -e "  2. Thư mục dữ liệu không có quyền truy cập đúng"
-  echo -e "  3. File cấu hình không hợp lệ"
-  echo -e "${YELLOW}Vui lòng khắc phục lỗi và chạy lại script.${NC}"
+# Xác định user mongodb hoặc mongod
+if getent passwd mongodb > /dev/null; then
+  chown mongodb:mongodb $DEFAULT_CONFIG_FILE
+elif getent passwd mongod > /dev/null; then
+  chown mongod:mongod $DEFAULT_CONFIG_FILE
 fi
 
-exit 0 
+chmod 644 $DEFAULT_CONFIG_FILE
+
+# 9. Tạo service file
+echo -e "${YELLOW}9. Cấu hình systemd service...${NC}"
+cat > /lib/systemd/system/mongod.service << EOF
+[Unit]
+Description=MongoDB Database Server
+Documentation=https://docs.mongodb.org/manual
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=mongodb
+Group=mongodb
+EnvironmentFile=-/etc/default/mongod
+ExecStart=/usr/bin/mongod --config /etc/mongod.conf
+PIDFile=/var/run/mongodb/mongod.pid
+# file size
+LimitFSIZE=infinity
+# cpu time
+LimitCPU=infinity
+# virtual memory size
+LimitAS=infinity
+# open files
+LimitNOFILE=64000
+# processes/threads
+LimitNPROC=64000
+# locked memory
+LimitMEMLOCK=infinity
+# total threads (user+kernel)
+TasksMax=infinity
+TasksAccounting=false
+# Recommended limits for mongod as specified in
+# https://docs.mongodb.com/manual/reference/ulimit/#recommended-ulimit-settings
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Xác định user mongodb hoặc mongod trong service file
+if ! getent passwd mongodb > /dev/null && getent passwd mongod > /dev/null; then
+  sed -i 's/User=mongodb/User=mongod/g' /lib/systemd/system/mongod.service
+  sed -i 's/Group=mongodb/Group=mongod/g' /lib/systemd/system/mongod.service
+fi
+
+chmod 644 /lib/systemd/system/mongod.service
+
+# 10. Reload systemd, enable và start MongoDB
+echo -e "${YELLOW}10. Khởi động MongoDB...${NC}"
+systemctl daemon-reload
+systemctl enable mongod
+systemctl start mongod
+
+# 11. Kiểm tra trạng thái MongoDB
+echo -e "${YELLOW}11. Kiểm tra trạng thái MongoDB...${NC}"
+sleep 5
+
+if systemctl is-active --quiet mongod; then
+  echo -e "${GREEN}MongoDB đã được cài đặt lại và khởi động thành công!${NC}"
+  mongod --version
+  echo -e "${GREEN}MongoDB đang chạy và lắng nghe trên cổng 27017${NC}"
+else
+  echo -e "${RED}MongoDB khởi động thất bại. Kiểm tra log để biết thêm chi tiết:${NC}"
+  systemctl status mongod
+  echo -e "${RED}Xem logs: sudo tail -n 50 $DEFAULT_LOG_DIR${NC}"
+fi
+
+echo -e "${BLUE}
+============================================================
+     MONGODB ĐÃ ĐƯỢC RESET VÀ CÀI ĐẶT LẠI
+============================================================${NC}"
+
+echo -e "${YELLOW}Tiếp theo, bạn có thể:${NC}"
+echo "1. Cấu hình replica set bằng script 'setup_mongodb_distributed_replica.sh'"
+echo "2. Tạo keyfile để xác thực các thành viên replica set"
+echo "3. Tạo user admin và thiết lập xác thực"
+echo 
+echo -e "${YELLOW}Cấu hình MongoDB của bạn hiện là cấu hình mặc định (không replica set, không xác thực)${NC}"
+
+exit 0
