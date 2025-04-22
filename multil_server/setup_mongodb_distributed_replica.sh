@@ -612,262 +612,88 @@ configure_firewall() {
   echo -e "${GREEN}✓ Đã cấu hình tường lửa${NC}"
 }
 
-# Tham gia vào replica set đã tồn tại 
-join_existing_replica() {
+# Thêm node vào replica set đơn giản (chỉ xác thực và join)
+simple_join_replica() {
   local port=$1
-  local replica_set=$2
-  local this_server_ip=$3
-  local primary_server_ip=$4
-  local username=$5
-  local password=$6
+  local this_server_ip=$2
+  local primary_server_ip=$3
+  local username=$4
+  local password=$5
   
-  echo -e "${BLUE}=== THÊM MÁY SECONDARY VÀO REPLICA SET ĐÃ TỒN TẠI ===${NC}"
+  echo -e "${BLUE}=== THÊM SERVER VÀO REPLICA SET ĐƠN GIẢN ===${NC}"
   
-  # 1. Dừng MongoDB hiện tại
-  echo -e "${YELLOW}1. Dừng MongoDB hiện tại nếu đang chạy...${NC}"
-  if systemctl is-active --quiet mongod; then
-    sudo systemctl stop mongod
-  fi
-  
-  # 2. Lấy keyfile từ primary nếu cần
-  echo -e "${YELLOW}2. Lấy keyfile từ primary nếu có thể...${NC}"
-  
-  # Tạo thư mục tạm để lưu keyfile
-  TMP_KEYFILE="/tmp/mongodb-keyfile-tmp"
-  if [[ -n "$username" && -n "$password" ]]; then
-    echo -e "${YELLOW}Thử lấy keyfile từ primary thông qua SSH...${NC}"
-    read -p "Nhập SSH username cho primary server [$USER]: " SSH_USER
-    SSH_USER=${SSH_USER:-$USER}
-    
-    # Kiểm tra nếu có thể SSH tới primary
-    if ssh -o BatchMode=yes -o ConnectTimeout=5 $SSH_USER@$primary_server_ip echo "SSH OK" &>/dev/null; then
-      echo -e "${GREEN}Kết nối SSH thành công, đang sao chép keyfile...${NC}"
-      
-      # Sao chép keyfile từ primary server
-      scp $SSH_USER@$primary_server_ip:/etc/mongodb-keyfile $TMP_KEYFILE
-      
-      if [ -f "$TMP_KEYFILE" ]; then
-        echo -e "${GREEN}Đã sao chép keyfile từ primary.${NC}"
-        sudo cp $TMP_KEYFILE $MONGODB_KEYFILE
-        
-        # Xác định user mongodb hoặc mongod
-        local mongo_user="mongodb"
-        if ! getent passwd mongodb > /dev/null && getent passwd mongod > /dev/null; then
-          mongo_user="mongod"
-        fi
-        
-        sudo chown $mongo_user:$mongo_user $MONGODB_KEYFILE
-        sudo chmod 400 $MONGODB_KEYFILE
-        rm -f $TMP_KEYFILE
-      else
-        echo -e "${YELLOW}Không thể sao chép keyfile, sẽ tạo keyfile mới...${NC}"
-        create_keyfile $MONGODB_KEYFILE
-      fi
-    else
-      echo -e "${YELLOW}Không thể kết nối SSH tới primary, sẽ tạo keyfile mới...${NC}"
-      create_keyfile $MONGODB_KEYFILE
-      echo -e "${YELLOW}LƯU Ý: Có thể cần thủ công đồng bộ keyfile giữa các node.${NC}"
-    fi
-  else
-    echo -e "${YELLOW}Không có thông tin xác thực, sẽ tạo keyfile mới...${NC}"
-    create_keyfile $MONGODB_KEYFILE
-  fi
-  
-  # 3. Tạo lại cấu hình MongoDB cho secondary
-  echo -e "${YELLOW}3. Tạo cấu hình MongoDB cho secondary...${NC}"
-  create_mongodb_config $MONGODB_CONFIG_FILE $MONGODB_DATA_DIR $MONGODB_LOG_DIR $port $replica_set $MONGODB_KEYFILE
-  
-  # 4. Xóa dữ liệu local để tránh xung đột
-  echo -e "${YELLOW}4. Xóa dữ liệu local để tránh xung đột...${NC}"
-  read -p "Xóa dữ liệu MongoDB hiện tại? (y/n): " CLEAN_DATA
-  if [[ "$CLEAN_DATA" =~ ^[Yy]$ ]]; then
-    sudo rm -rf $MONGODB_DATA_DIR/*
-    echo -e "${GREEN}Đã xóa dữ liệu cũ.${NC}"
-  else
-    echo -e "${YELLOW}Giữ lại dữ liệu hiện tại.${NC}"
-  fi
-  
-  # 5. Đảm bảo quyền truy cập
-  ensure_directory_permissions
-  
-  # 6. Khởi động MongoDB
-  echo -e "${YELLOW}6. Khởi động MongoDB...${NC}"
-  sudo systemctl start mongod
-  sleep 5
-  
-  # 7. Kiểm tra kết nối tới primary server
-  echo -e "${YELLOW}7. Kiểm tra kết nối tới primary server...${NC}"
+  # 1. Kiểm tra kết nối tới primary
+  echo -e "${YELLOW}1. Kiểm tra kết nối tới primary server ${primary_server_ip}:${port}...${NC}"
   if ! nc -z -w5 $primary_server_ip $port; then
-    echo -e "${RED}Không thể kết nối tới primary server $primary_server_ip:$port${NC}"
-    echo -e "${YELLOW}Đảm bảo primary server đang chạy và port $port đã được mở.${NC}"
+    echo -e "${RED}Không thể kết nối tới primary server. Kiểm tra firewall và MongoDB đang chạy.${NC}"
     return 1
   fi
+  echo -e "${GREEN}✓ Kết nối tới primary server thành công${NC}"
   
-  # 8. Chờ MongoDB khởi động và kiểm tra trạng thái
-  echo -e "${YELLOW}8. Chờ MongoDB khởi động...${NC}"
-  local mongo_ready=false
-  for i in {1..15}; do
-    if mongosh --port $port --eval "db.stats()" &>/dev/null; then
-      mongo_ready=true
-      break
-    fi
-    echo -e "${YELLOW}Đang đợi MongoDB khởi động (${i}/15)...${NC}"
-    sleep 2
-  done
+  # 2. Thử thêm server vào replica set
+  echo -e "${YELLOW}2. Thêm server này (${this_server_ip}:${port}) vào replica set...${NC}"
+  echo -e "${YELLOW}Thử với thông tin xác thực...${NC}"
   
-  if [ "$mongo_ready" = false ]; then
-    echo -e "${RED}MongoDB không sẵn sàng sau khi khởi động lại${NC}"
-    sudo systemctl status mongod
-    echo -e "${YELLOW}Kiểm tra log: sudo tail -f $MONGODB_LOG_DIR${NC}"
-    return 1
-  fi
+  # Thêm với xác thực
+  add_result=$(mongosh --host "$primary_server_ip:$port" -u "$username" -p "$password" --authenticationDatabase admin --eval "rs.add('$this_server_ip:$port')")
   
-  # 9. Kiểm tra và sửa cấu hình replica set trên primary nếu cần
-  echo -e "${YELLOW}9. Kiểm tra cấu hình replica set trên primary...${NC}"
-  
-  # Thử kiểm tra status của primary (không xác thực)
-  echo -e "${YELLOW}Kiểm tra status của primary (không xác thực)...${NC}"
-  local status_check=$(mongosh --host "$primary_server_ip:$port" --eval "try { rs.status(); print('OK') } catch(e) { print(e.message) }")
-  
-  # Kiểm tra xem có cần xác thực không
-  local auth_needed=false
-  if [[ "$status_check" == *"not authorized"* || "$status_check" == *"Authentication failed"* ]]; then
-    auth_needed=true
-    echo -e "${YELLOW}Cần xác thực để kết nối tới primary.${NC}"
+  if [[ "$add_result" == *"\"ok\" : 1"* || "$add_result" == *"ok: 1"* || "$add_result" == *"already a member"* ]]; then
+    echo -e "${GREEN}✓ Đã thêm server vào replica set thành công${NC}"
+  else
+    echo -e "${RED}Thêm server thất bại: $add_result${NC}"
     
-    # Kiểm tra lại thông tin xác thực
-    if [[ -z "$username" || -z "$password" ]]; then
-      read -p "Nhập username MongoDB [manhg]: " username
-      username=${username:-manhg}
-      read -p "Nhập password MongoDB [manhnk]: " password
-      password=${password:-manhnk}
-    fi
-    
-    # Kiểm tra xác thực với primary
-    local auth_check=$(mongosh --host "$primary_server_ip:$port" -u "$username" -p "$password" --authenticationDatabase admin --eval "try { rs.status(); print('AUTH_OK') } catch(e) { print(e.message) }")
-    
-    if [[ "$auth_check" == *"AUTH_OK"* ]]; then
-      echo -e "${GREEN}Xác thực với primary thành công.${NC}"
-    else
-      echo -e "${RED}Xác thực với primary thất bại: $auth_check${NC}"
-      echo -e "${YELLOW}Đang thử tạo user admin trên máy local...${NC}"
+    # Xử lý lỗi duplidate
+    if [[ "$add_result" == *"same host field"* || "$add_result" == *"duplicate"* ]]; then
+      echo -e "${YELLOW}Phát hiện trùng lặp host. Sửa cấu hình...${NC}"
       
-      # Tạo user admin trên local node
-      local create_user_result=$(mongosh --port $port --eval "
+      fix_result=$(mongosh --host "$primary_server_ip:$port" -u "$username" -p "$password" --authenticationDatabase admin --eval "
       try {
-        use admin;
-        db.createUser({
-          user: '$username',
-          pwd: '$password',
-          roles: [ { role: 'root', db: 'admin' } ]
-        });
-        print('USER_CREATED');
+        const config = rs.conf();
+        const uniqueHosts = {};
+        const uniqueMembers = [];
+        let id = 0;
+        
+        for (const member of config.members) {
+          if (!uniqueHosts[member.host]) {
+            uniqueHosts[member.host] = true;
+            member._id = id++;
+            uniqueMembers.push(member);
+          }
+        }
+        
+        config.members = uniqueMembers;
+        
+        if (!uniqueHosts['$this_server_ip:$port']) {
+          config.members.push({
+            _id: id,
+            host: '$this_server_ip:$port',
+            priority: 1
+          });
+        }
+        
+        rs.reconfig(config, {force: true});
+        print('SUCCESS');
       } catch(e) {
-        print(e.message);
+        print('ERROR: ' + e.message);
       }
       ")
       
-      echo -e "${YELLOW}Kết quả tạo user: $create_user_result${NC}"
-    fi
-  else
-    echo -e "${GREEN}Kết nối tới primary không cần xác thực.${NC}"
-  fi
-  
-  # 10. Thêm server này vào replica set từ primary
-  echo -e "${YELLOW}10. Thêm server này vào replica set từ primary...${NC}"
-  
-  # Kiểm tra xem server này đã là thành viên của replica set chưa
-  local local_rs_check=$(mongosh --port $port --eval "try { rs.status().members.map(m => m.name).indexOf('$this_server_ip:$port') >= 0 ? 'MEMBER' : 'NOT_MEMBER' } catch(e) { print(e.message) }")
-  
-  if [[ "$local_rs_check" == "MEMBER" ]]; then
-    echo -e "${GREEN}Server này đã là thành viên của replica set.${NC}"
-  else
-    # Thêm server này vào replica set
-    local add_cmd="rs.add('$this_server_ip:$port')"
-    local add_result=""
-    
-    if [ "$auth_needed" = true ]; then
-      echo -e "${YELLOW}Thêm server với xác thực...${NC}"
-      add_result=$(mongosh --host "$primary_server_ip:$port" -u "$username" -p "$password" --authenticationDatabase admin --eval "$add_cmd")
-    else
-      echo -e "${YELLOW}Thêm server không cần xác thực...${NC}"
-      add_result=$(mongosh --host "$primary_server_ip:$port" --eval "$add_cmd")
-    fi
-    
-    if [[ "$add_result" == *"\"ok\" : 1"* || "$add_result" == *"ok: 1"* || "$add_result" == *"already a member"* ]]; then
-      echo -e "${GREEN}✓ Đã thêm server này vào replica set thành công${NC}"
-    else
-      echo -e "${RED}✗ Không thể thêm server vào replica set: $add_result${NC}"
-      
-      # 11. Xử lý lỗi hostnames trùng nhau
-      if [[ "$add_result" == *"same host field"* || "$add_result" == *"duplicate"* ]]; then
-        echo -e "${YELLOW}Phát hiện host trùng lặp. Sửa cấu hình...${NC}"
-        
-        local reconfig_cmd=$(cat << EOF
-        try {
-          const config = rs.conf();
-          const uniqueHosts = {};
-          const uniqueMembers = [];
-          let id = 0;
-          
-          for (const member of config.members) {
-            if (!uniqueHosts[member.host]) {
-              uniqueHosts[member.host] = true;
-              member._id = id++;
-              uniqueMembers.push(member);
-            }
-          }
-          
-          config.members = uniqueMembers;
-          
-          if (!uniqueHosts['$this_server_ip:$port']) {
-            config.members.push({
-              _id: id,
-              host: '$this_server_ip:$port',
-              priority: 1
-            });
-          }
-          
-          rs.reconfig(config, {force: true});
-          print('SUCCESS');
-        } catch(e) {
-          print('ERROR: ' + e.message);
-        }
-EOF
-        )
-        
-        local fix_result=""
-        if [ "$auth_needed" = true ]; then
-          fix_result=$(mongosh --host "$primary_server_ip:$port" -u "$username" -p "$password" --authenticationDatabase admin --eval "$reconfig_cmd")
-        else
-          fix_result=$(mongosh --host "$primary_server_ip:$port" --eval "$reconfig_cmd")
-        fi
-        
-        if [[ "$fix_result" == *"SUCCESS"* ]]; then
-          echo -e "${GREEN}✓ Đã sửa cấu hình và thêm server này vào replica set${NC}"
-        else
-          echo -e "${RED}✗ Không thể sửa cấu hình: $fix_result${NC}"
-          return 1
-        fi
+      if [[ "$fix_result" == *"SUCCESS"* ]]; then
+        echo -e "${GREEN}✓ Đã sửa cấu hình và thêm server này vào replica set${NC}"
+      else
+        echo -e "${RED}✗ Không thể sửa cấu hình: $fix_result${NC}"
+        return 1
       fi
     fi
   fi
   
-  # 12. Kiểm tra trạng thái replica set
-  echo -e "${YELLOW}12. Kiểm tra trạng thái replica set...${NC}"
-  sleep 10 # Đợi để replica set đồng bộ
+  # 3. Kiểm tra trạng thái
+  echo -e "${YELLOW}3. Kiểm tra trạng thái replica set...${NC}"
+  sleep 5
+  status_result=$(mongosh --host "$primary_server_ip:$port" -u "$username" -p "$password" --authenticationDatabase admin --eval "rs.status()")
+  echo "$status_result" | grep -E "name|stateStr|health" | grep -A 1 "$this_server_ip"
   
-  if [ "$auth_needed" = true ]; then
-    local check_cmd="rs.status()"
-    local check_result=$(mongosh --port $port -u "$username" -p "$password" --authenticationDatabase admin --eval "$check_cmd")
-    echo "$check_result" | grep -E "name|stateStr|health" | grep -A 1 "$this_server_ip"
-  else
-    local check_cmd="rs.status()"
-    local check_result=$(mongosh --port $port --eval "$check_cmd")
-    echo "$check_result" | grep -E "name|stateStr|health" | grep -A 1 "$this_server_ip"
-  fi
-  
-  echo -e "${GREEN}✓ Server đã tham gia thành công vào replica set hiện có!${NC}"
+  echo -e "${GREEN}✓ Thêm server vào replica set hoàn tất${NC}"
   return 0
 }
 
@@ -884,6 +710,9 @@ main() {
   # Nếu server này là secondary, hỏi có muốn cách đơn giản không
   if [[ "$IS_PRIMARY" =~ ^[Nn]$ ]]; then
     read -p "Sử dụng chức năng thêm secondary đơn giản? (y/n): " USE_SIMPLE_JOIN
+    if [[ "$USE_SIMPLE_JOIN" =~ ^[Yy]$ ]]; then
+      read -p "Chỉ thực hiện xác thực và join (super simple)? (y/n): " SUPER_SIMPLE_JOIN
+    fi
   fi
   
   # Xác định số lượng server
@@ -957,8 +786,13 @@ main() {
   else
     # Thiết lập SECONDARY
     if [[ "$USE_SIMPLE_JOIN" =~ ^[Yy]$ ]]; then
-      # Sử dụng phương pháp join đơn giản
-      join_existing_replica $MONGO_PORT $REPLICA_SET_NAME $THIS_SERVER_IP $PRIMARY_SERVER_IP $MONGODB_USER $MONGODB_PASSWORD
+      if [[ "$SUPER_SIMPLE_JOIN" =~ ^[Yy]$ ]]; then
+        # Sử dụng phương pháp join siêu đơn giản (chỉ xác thực và join)
+        simple_join_replica $MONGO_PORT $THIS_SERVER_IP $PRIMARY_SERVER_IP $MONGODB_USER $MONGODB_PASSWORD
+      else
+        # Sử dụng phương pháp join đơn giản
+        join_existing_replica $MONGO_PORT $REPLICA_SET_NAME $THIS_SERVER_IP $PRIMARY_SERVER_IP $MONGODB_USER $MONGODB_PASSWORD
+      fi
     else
       # Sử dụng phương pháp join truyền thống
       create_mongodb_config $MONGODB_CONFIG_FILE $MONGODB_DATA_DIR $MONGODB_LOG_DIR $MONGO_PORT $REPLICA_SET_NAME $MONGODB_KEYFILE
