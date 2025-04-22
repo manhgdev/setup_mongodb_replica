@@ -112,7 +112,7 @@ storage:
   
 net:
   port: $port
-  bindIp: $bind_ip
+  bindIp: 0.0.0.0
 
 replication:
   replSetName: $replica_set
@@ -186,6 +186,8 @@ init_replica_set_multi() {
   local password=$6
   
   echo -e "${YELLOW}Khởi tạo Replica Set...${NC}"
+  echo -e "${YELLOW}Server này: $this_server_ip${NC}"
+  echo -e "${YELLOW}Danh sách server: $server_list${NC}"
   
   # Kiểm tra xem replica set đã được khởi tạo chưa
   rs_status=$(mongosh --quiet --port $port --eval "try { rs.status(); print('EXISTS'); } catch(e) { print('NOT_INIT'); }")
@@ -215,6 +217,12 @@ init_replica_set_multi() {
         members+=", "
       fi
       
+      # Đảm bảo server IP không rỗng hoặc không phải "địa"
+      if [[ -z "$server" || "$server" == "địa" ]]; then
+        server="$(hostname -I | awk '{print $1}')"
+        echo -e "${YELLOW}Sử dụng IP local: $server${NC}"
+      fi
+      
       members+="{ _id: $server_id, host: '$server:$port', priority: $priority }"
       ((server_id++))
     done
@@ -231,7 +239,25 @@ init_replica_set_multi() {
       echo -e "${GREEN}✓ Khởi tạo replica set thành công${NC}"
     else
       echo -e "${RED}✗ Khởi tạo replica set thất bại: $init_result${NC}"
-      return 1
+      
+      # Thử lại với hostname nếu chỉ có 1 server
+      if [[ "${#server_array[@]}" -eq 1 ]]; then
+        echo -e "${YELLOW}Thử lại với IP local...${NC}"
+        local local_ip=$(hostname -I | awk '{print $1}')
+        local retry_command="rs.initiate({ _id: '$replica_set', members: [{ _id: 0, host: '$local_ip:$port', priority: 10 }] });"
+        echo "Thực thi lệnh: $retry_command"
+        
+        init_result=$(mongosh --port $port --eval "$retry_command")
+        
+        if [[ "$init_result" == *"\"ok\" : 1"* ]]; then
+          echo -e "${GREEN}✓ Khởi tạo replica set thành công trong lần thử lại${NC}"
+        else
+          echo -e "${RED}✗ Khởi tạo replica set thất bại: $init_result${NC}"
+          return 1
+        fi
+      else
+        return 1
+      fi
     fi
     
     # Đợi replica set khởi tạo
@@ -242,18 +268,23 @@ init_replica_set_multi() {
     echo "Tạo user quản trị..."
     create_user_result=$(mongosh --port $port --eval "
     db = db.getSiblingDB('admin');
-    db.createUser({
-      user: '$username',
-      pwd: '$password',
-      roles: [ { role: 'root', db: 'admin' } ]
-    });
+    try {
+      db.createUser({
+        user: '$username',
+        pwd: '$password',
+        roles: [ { role: 'root', db: 'admin' } ]
+      });
+      print('✓ Tạo user thành công');
+    } catch(e) {
+      if(e.codeName === 'DuplicateKey') {
+        print('✓ User đã tồn tại');
+      } else {
+        print('⚠ Lỗi: ' + e.message);
+      }
+    }
     ")
     
-    if [[ "$create_user_result" == *"Successfully added user"* ]]; then
-      echo -e "${GREEN}✓ Tạo user thành công${NC}"
-    else
-      echo -e "${YELLOW}⚠ Tạo user: $create_user_result${NC}"
-    fi
+    echo "$create_user_result"
   else
     echo -e "${GREEN}✓ Replica set đã được khởi tạo trước đó${NC}"
   fi
@@ -302,16 +333,40 @@ check_replica_status() {
   
   echo -e "${YELLOW}Kiểm tra trạng thái replica set...${NC}"
   
-  rs_status=$(mongosh --port $port -u "$username" -p "$password" --authenticationDatabase admin --eval "rs.status()")
+  # Kiểm tra xem cần xác thực hay không
+  local auth_status=$(mongosh --port $port --quiet --eval "db.serverCmdLineOpts().parsed.security && db.serverCmdLineOpts().parsed.security.authorization" 2>/dev/null)
+  
+  if [[ "$auth_status" == "enabled" && -n "$username" && -n "$password" ]]; then
+    # Sử dụng xác thực
+    rs_status=$(mongosh --port $port -u "$username" -p "$password" --authenticationDatabase admin --eval "try { rs.status(); } catch(e) { print('Lỗi: ' + e.message); }")
+  else
+    # Không sử dụng xác thực
+    rs_status=$(mongosh --port $port --eval "try { rs.status(); } catch(e) { print('Lỗi: ' + e.message); }")
+  fi
   
   echo -e "${BLUE}=== Trạng thái Replica Set ===${NC}"
   echo "$rs_status" | grep -E "name|stateStr|health|state"
   
   # Kiểm tra primary
-  primary_info=$(mongosh --port $port -u "$username" -p "$password" --authenticationDatabase admin --quiet --eval "
-  primary = rs.isMaster().primary;
-  if (primary) { print('Primary: ' + primary); } else { print('No primary found'); }
-  ")
+  if [[ "$auth_status" == "enabled" && -n "$username" && -n "$password" ]]; then
+    primary_info=$(mongosh --port $port -u "$username" -p "$password" --authenticationDatabase admin --quiet --eval "
+    try {
+      primary = rs.isMaster().primary;
+      if (primary) { print('Primary: ' + primary); } else { print('No primary found'); }
+    } catch(e) {
+      print('Lỗi: ' + e.message);
+    }
+    ")
+  else
+    primary_info=$(mongosh --port $port --quiet --eval "
+    try {
+      primary = rs.isMaster().primary;
+      if (primary) { print('Primary: ' + primary); } else { print('No primary found'); }
+    } catch(e) {
+      print('Lỗi: ' + e.message);
+    }
+    ")
+  fi
   
   echo -e "${BLUE}$primary_info${NC}"
 }
@@ -351,20 +406,29 @@ create_connection_string_multi() {
 get_public_ip() {
   echo -e "${YELLOW}Lấy địa chỉ IP public...${NC}"
   
-  public_ip=$(curl -s ifconfig.me || curl -s icanhazip.com || curl -s ipecho.net/plain)
+  # Thử nhiều cách để lấy IP
+  local public_ip=""
   
+  # Cách 1: Lấy từ dịch vụ bên ngoài
+  public_ip=$(curl -s ifconfig.me 2>/dev/null || curl -s icanhazip.com 2>/dev/null || curl -s ipecho.net/plain 2>/dev/null)
+  
+  # Cách 2: Nếu cách 1 thất bại, thử lấy IP local
   if [ -z "$public_ip" ]; then
-    echo -e "${RED}Không thể xác định địa chỉ IP public.${NC}"
-    read -p "Nhập địa chỉ IP public của server này: " public_ip
+    public_ip=$(hostname -I | awk '{print $1}')
+  fi
+  
+  # Cách 3: Nếu cả hai cách trên đều thất bại, yêu cầu nhập thủ công
+  if [ -z "$public_ip" ]; then
+    echo -e "${RED}Không thể xác định địa chỉ IP.${NC}"
+    read -p "Nhập địa chỉ IP của server này: " public_ip
     
     if [ -z "$public_ip" ]; then
       echo -e "${RED}Không có địa chỉ IP, không thể tiếp tục.${NC}"
       exit 1
     fi
-  else
-    echo -e "${GREEN}Địa chỉ IP public: $public_ip${NC}"
   fi
   
+  echo -e "${GREEN}Địa chỉ IP: $public_ip${NC}"
   echo "$public_ip"
 }
 
