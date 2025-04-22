@@ -33,6 +33,7 @@ MONGO_USER="manhgdev"
 MONGO_PASSWORD="manhdepzai"
 USE_PASSWORD_AUTH=false
 SCRIPT_PATH="./setup_mongodb_distributed_replica.sh"
+MONGO_VERSION="8.0"
 
 # Hàm hiển thị cách sử dụng
 show_usage() {
@@ -215,6 +216,28 @@ prepare_server() {
   local remote_script_path="/tmp/setup_mongodb_replica.sh"
   
   echo -e "${BLUE}Chuẩn bị server $server...${NC}"
+  
+  # Kiểm tra version MongoDB trong script triển khai từ xa
+  MONGO_VERSION="8.0"
+
+  # Cập nhật phần cài đặt MongoDB trong script
+  install_mongodb() {
+    ssh $SSH_USER@$SERVER_IP "
+      # Kiểm tra MongoDB đã được cài đặt chưa
+      if ! command -v mongod &> /dev/null; then 
+        echo 'MongoDB chưa được cài đặt. Đang cài đặt MongoDB $MONGO_VERSION...'
+        sudo apt update && sudo apt install -y curl gnupg netcat-openbsd
+        sudo rm -f /usr/share/keyrings/mongodb-server-$MONGO_VERSION.gpg
+        curl -fsSL https://www.mongodb.org/static/pgp/server-$MONGO_VERSION.asc | sudo gpg -o /usr/share/keyrings/mongodb-server-$MONGO_VERSION.gpg --dearmor
+        echo \"deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-$MONGO_VERSION.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/$MONGO_VERSION multiverse\" | sudo tee /etc/apt/sources.list.d/mongodb-org-$MONGO_VERSION.list
+        sudo apt-get update
+        sudo apt-get install -y mongodb-org
+      else
+        echo 'MongoDB đã được cài đặt'
+        mongod --version
+      fi
+    "
+  }
   
   # Sao chép script lên server
   copy_file_to_server "$SCRIPT_PATH" "$server" "$remote_script_path" || return 1

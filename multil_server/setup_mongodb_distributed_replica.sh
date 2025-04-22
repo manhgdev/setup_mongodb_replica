@@ -20,7 +20,7 @@ REPLICA_SET_NAME="rs0"
 MONGODB_USER="manhg"
 MONGODB_PASSWORD="manhnk"
 AUTH_DATABASE="admin"
-MONGO_VERSION="6.0"
+MONGO_VERSION="8.0"
 MAX_SERVERS=7 # Giới hạn tối đa số lượng server trong replica set
 
 # Hiển thị banner
@@ -40,12 +40,15 @@ install_mongodb() {
   else
     echo -e "${YELLOW}MongoDB chưa được cài đặt. Đang cài đặt MongoDB $version...${NC}"
     
-    # Cài đặt gnupg nếu chưa có
+    # Cài đặt các công cụ cần thiết
     sudo apt-get update
-    sudo apt-get install -y gnupg curl
+    sudo apt-get install -y gnupg curl netcat-openbsd
+    
+    # Xóa key cũ nếu có
+    sudo rm -f /usr/share/keyrings/mongodb-server-$version.gpg
     
     # Thêm repo MongoDB
-    curl -fsSL https://pgp.mongodb.com/server-$version.asc | \
+    curl -fsSL https://www.mongodb.org/static/pgp/server-$version.asc | \
       sudo gpg -o /usr/share/keyrings/mongodb-server-$version.gpg \
       --dearmor
     
