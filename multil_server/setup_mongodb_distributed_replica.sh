@@ -127,6 +127,7 @@ start_mongodb() {
   sudo systemctl enable mongod
   sudo systemctl start mongod
   
+  # Kiểm tra log sau khi khởi động để phát hiện lỗi
   sleep 5
   if sudo systemctl is-active mongod &> /dev/null; then
     echo -e "${GREEN}✓ MongoDB đã khởi động thành công${NC}"
@@ -134,8 +135,90 @@ start_mongodb() {
   else
     echo -e "${RED}✗ Không thể khởi động MongoDB${NC}"
     sudo systemctl status mongod
+    echo -e "${YELLOW}Kiểm tra log để tìm lỗi:${NC}"
+    sudo tail -n 20 /var/log/mongodb/mongod.log
     return 1
   fi
+}
+
+# Sửa lỗi "not reachable/healthy"
+fix_unreachable_node() {
+  local problem_node=$1
+  local port=$2
+  local primary_server=$3
+  local username=$4
+  local password=$5
+  local this_server=$6
+  
+  echo -e "${BLUE}=== SỬA LỖI NODE KHÔNG KHẢ DỤNG (not reachable/healthy) ===${NC}"
+  
+  # Kiểm tra xem node lỗi có phải là server hiện tại không
+  if [[ "$problem_node" == "$this_server:$port" ]]; then
+    echo -e "${YELLOW}Node gặp vấn đề là server hiện tại. Tiến hành sửa lỗi nội bộ...${NC}"
+    
+    # 1. Kiểm tra MongoDB có đang chạy không
+    echo -e "${YELLOW}1. Kiểm tra trạng thái MongoDB...${NC}"
+    if ! systemctl is-active --quiet mongod; then
+      echo -e "${RED}MongoDB không chạy. Khởi động lại...${NC}"
+      sudo systemctl start mongod
+      sleep 5
+    else
+      echo -e "${GREEN}✓ MongoDB đang chạy${NC}"
+    fi
+    
+    # 2. Kiểm tra log để tìm lỗi
+    echo -e "${YELLOW}2. Kiểm tra log MongoDB...${NC}"
+    sudo tail -n 30 /var/log/mongodb/mongod.log
+    
+    # 3. Kiểm tra kết nối mạng
+    echo -e "${YELLOW}3. Kiểm tra kết nối mạng...${NC}"
+    echo -e "Kiểm tra kết nối đến primary server $primary_server:$port"
+    if nc -z -w5 $primary_server $port; then
+      echo -e "${GREEN}✓ Kết nối đến primary server thành công${NC}"
+    else
+      echo -e "${RED}✗ Không thể kết nối đến primary server${NC}"
+      echo -e "Kiểm tra cấu hình mạng và tường lửa..."
+    fi
+    
+    # 4. Kiểm tra cấu hình
+    echo -e "${YELLOW}4. Kiểm tra cấu hình MongoDB...${NC}"
+    grep -A 20 "replication:" /etc/mongod.conf
+    
+    # 5. Khởi động lại MongoDB để áp dụng cấu hình
+    echo -e "${YELLOW}5. Khởi động lại MongoDB...${NC}"
+    sudo systemctl restart mongod
+    sleep 10
+    
+  else
+    echo -e "${YELLOW}Node gặp vấn đề là server khác ($problem_node). Tiến hành sửa lỗi từ xa...${NC}"
+    
+    # Thử xóa và thêm lại node vào replica set
+    echo -e "${YELLOW}1. Xóa node khỏi replica set...${NC}"
+    remove_result=$(mongosh --host "$primary_server:$port" -u "$username" -p "$password" --authenticationDatabase admin --eval "try { rs.remove('$problem_node'); print('REMOVED'); } catch(e) { print(e.message); }")
+    echo "$remove_result"
+    
+    echo -e "${YELLOW}2. Đợi cập nhật cấu hình replica set...${NC}"
+    sleep 5
+    
+    echo -e "${YELLOW}3. Thêm lại node vào replica set...${NC}"
+    add_result=$(mongosh --host "$primary_server:$port" -u "$username" -p "$password" --authenticationDatabase admin --eval "rs.add('$problem_node')")
+    echo "$add_result"
+  fi
+  
+  # Kiểm tra lại trạng thái
+  echo -e "${YELLOW}Kiểm tra lại trạng thái sau khi sửa...${NC}"
+  sleep 10
+  status_result=$(mongosh --host "$primary_server:$port" -u "$username" -p "$password" --authenticationDatabase admin --eval "rs.status()")
+  echo "$status_result" | grep -A 3 "$problem_node"
+  
+  echo -e "${YELLOW}HƯỚNG DẪN KHẮC PHỤC (not reachable/healthy):${NC}"
+  echo -e "1. Đảm bảo MongoDB đang chạy trên server $problem_node"
+  echo -e "2. Kiểm tra tường lửa cho phép kết nối port $port (sudo ufw status)"
+  echo -e "3. Đảm bảo keyfile giống nhau trên tất cả các node"
+  echo -e "4. Kiểm tra cấu hình bindIp trong file /etc/mongod.conf tại node $problem_node"
+  echo -e "5. Xác minh DNS và hostname có thể phân giải giữa các server"
+  echo -e "6. Sử dụng IP thay vì hostname nếu có vấn đề về DNS"
+  echo -e "7. Kiểm tra SELinux nếu được bật (getenforce, setenforce 0)"
 }
 
 # Mở port firewall
@@ -385,6 +468,16 @@ main() {
   
   # Khởi động MongoDB
   start_mongodb
+  
+  # Thêm tùy chọn fix node lỗi
+  read -p "Sửa lỗi node 'not reachable/healthy'? (y/n): " FIX_NODE
+  if [[ "$FIX_NODE" =~ ^[Yy]$ ]]; then
+    read -p "Nhập địa chỉ node có vấn đề (IP:port): " PROBLEM_NODE
+    read -p "Nhập địa chỉ primary server: " PRIMARY_SERVER
+    
+    fix_unreachable_node "$PROBLEM_NODE" "$MONGO_PORT" "$PRIMARY_SERVER" "$MONGODB_USER" "$MONGODB_PASSWORD" "$THIS_SERVER_IP"
+    exit 0
+  fi
   
   # Thiết lập replica set
   if [[ "$IS_PRIMARY" =~ ^[Yy]$ ]]; then
