@@ -28,8 +28,9 @@ ERROR_48_SCRIPT="$FIXUP_DIR/mongodb_fixup_code48.sh"
 KEYFILE_SCRIPT="$FIXUP_DIR/mongodb_fixup_keyfile.sh"
 PRIMARY_SCRIPT="$FIXUP_DIR/mongodb_fixup_primaryfailure.sh"
 RESET_SCRIPT="$FIXUP_DIR/mongodb_reset.sh"
+AUTH_SCRIPT="$FIXUP_DIR/mongodb_fixup_auth.sh"
 
-for script in "$ERROR_14_SCRIPT" "$ERROR_48_SCRIPT" "$KEYFILE_SCRIPT" "$PRIMARY_SCRIPT" "$RESET_SCRIPT"; do
+for script in "$ERROR_14_SCRIPT" "$ERROR_48_SCRIPT" "$KEYFILE_SCRIPT" "$PRIMARY_SCRIPT" "$RESET_SCRIPT" "$AUTH_SCRIPT"; do
     if [ ! -f "$script" ]; then
         echo -e "${YELLOW}Cảnh báo: Không tìm thấy script $script${NC}"
     fi
@@ -58,8 +59,9 @@ echo "4. Sửa lỗi không thể bầu chọn primary"
 echo "5. Reset hoàn toàn MongoDB"
 echo "6. Xem log chi tiết"
 echo "7. Kiểm tra trạng thái replica set"
-echo "8. Thoát"
-read -p "Bạn muốn thực hiện sửa lỗi nào? (1-8): " choice
+echo "8. Sửa lỗi xác thực (Authentication failed)"
+echo "9. Thoát"
+read -p "Bạn muốn thực hiện sửa lỗi nào? (1-9): " choice
 
 case $choice in
     1)
@@ -112,6 +114,11 @@ case $choice in
         mongosh -u "$USERNAME" -p "$PASSWORD" --authenticationDatabase admin --eval "rs.isMaster()" 2>/dev/null || true
         ;;
     8)
+        echo -e "${YELLOW}Đang chạy script sửa lỗi xác thực...${NC}"
+        chmod +x "$AUTH_SCRIPT"
+        sudo "$AUTH_SCRIPT"
+        ;;
+    9)
         echo -e "${YELLOW}Thoát.${NC}"
         exit 0
         ;;
