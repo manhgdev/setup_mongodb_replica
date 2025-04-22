@@ -39,46 +39,70 @@ if [[ "$ADD_RESULT" == *"\"ok\" : 1"* || "$ADD_RESULT" == *"ok: 1"* || "$ADD_RES
   echo -e "${GREEN}✓ Server đã được thêm vào replica set thành công!${NC}"
 else
   # Kiểm tra lỗi trùng lặp host
-  if [[ "$ADD_RESULT" == *"same host field"* || "$ADD_RESULT" == *"duplicate"* ]]; then
+  if [[ "$ADD_RESULT" == *"same host field"* || "$ADD_RESULT" == *"duplicate"* || "$ADD_RESULT" == *"Found two member"* || "$ADD_RESULT" == *"already exists"* ]]; then
     echo -e "${YELLOW}Phát hiện trùng lặp host. Đang sửa cấu hình...${NC}"
     
-    FIX_RESULT=$(mongosh --host "$PRIMARY_IP:$MONGO_PORT" -u "$MONGO_USER" -p "$MONGO_PASSWORD" --authenticationDatabase admin --eval "
+    # Thử xóa host hiện tại trước khi thêm lại
+    echo -e "${YELLOW}Thử xóa host hiện tại trước khi thêm lại...${NC}"
+    REMOVE_RESULT=$(mongosh --host "$PRIMARY_IP:$MONGO_PORT" -u "$MONGO_USER" -p "$MONGO_PASSWORD" --authenticationDatabase admin --eval "
     try {
-      const config = rs.conf();
-      const uniqueHosts = {};
-      const uniqueMembers = [];
-      let id = 0;
-      
-      for (const member of config.members) {
-        if (!uniqueHosts[member.host]) {
-          uniqueHosts[member.host] = true;
-          member._id = id++;
-          uniqueMembers.push(member);
-        }
-      }
-      
-      config.members = uniqueMembers;
-      
-      if (!uniqueHosts['$THIS_SERVER_IP:$MONGO_PORT']) {
-        config.members.push({
-          _id: id,
-          host: '$THIS_SERVER_IP:$MONGO_PORT',
-          priority: 1
-        });
-      }
-      
-      rs.reconfig(config, {force: true});
-      print('SUCCESS');
+      rs.remove('$THIS_SERVER_IP:$MONGO_PORT');
+      print('HOST_REMOVED');
     } catch(e) {
-      print('ERROR: ' + e.message);
+      print(e.message);
     }
     ")
+    echo "$REMOVE_RESULT"
     
-    if [[ "$FIX_RESULT" == *"SUCCESS"* ]]; then
-      echo -e "${GREEN}✓ Đã sửa cấu hình và thêm server vào replica set${NC}"
+    # Thử thêm lại sau khi xóa
+    echo -e "${YELLOW}Thử thêm lại sau khi xóa...${NC}"
+    ADD_RETRY=$(mongosh --host "$PRIMARY_IP:$MONGO_PORT" -u "$MONGO_USER" -p "$MONGO_PASSWORD" --authenticationDatabase admin --eval "rs.add('$THIS_SERVER_IP:$MONGO_PORT')")
+    echo "$ADD_RETRY"
+    
+    # Nếu vẫn thất bại, thực hiện reconfig
+    if [[ "$ADD_RETRY" != *"\"ok\" : 1"* && "$ADD_RETRY" != *"ok: 1"* && "$ADD_RETRY" != *"already a member"* ]]; then
+      echo -e "${YELLOW}Thực hiện tái cấu hình replica set...${NC}"
+      
+      FIX_RESULT=$(mongosh --host "$PRIMARY_IP:$MONGO_PORT" -u "$MONGO_USER" -p "$MONGO_PASSWORD" --authenticationDatabase admin --eval "
+      try {
+        const config = rs.conf();
+        const uniqueHosts = {};
+        const uniqueMembers = [];
+        let id = 0;
+        
+        for (const member of config.members) {
+          if (!uniqueHosts[member.host]) {
+            uniqueHosts[member.host] = true;
+            member._id = id++;
+            uniqueMembers.push(member);
+          }
+        }
+        
+        config.members = uniqueMembers;
+        
+        if (!uniqueHosts['$THIS_SERVER_IP:$MONGO_PORT']) {
+          config.members.push({
+            _id: id,
+            host: '$THIS_SERVER_IP:$MONGO_PORT',
+            priority: 1
+          });
+        }
+        
+        rs.reconfig(config, {force: true});
+        print('SUCCESS');
+      } catch(e) {
+        print('ERROR: ' + e.message);
+      }
+      ")
+      
+      if [[ "$FIX_RESULT" == *"SUCCESS"* ]]; then
+        echo -e "${GREEN}✓ Đã sửa cấu hình và thêm server vào replica set${NC}"
+      else
+        echo -e "${RED}✗ Không thể sửa cấu hình: $FIX_RESULT${NC}"
+        exit 1
+      fi
     else
-      echo -e "${RED}✗ Không thể sửa cấu hình: $FIX_RESULT${NC}"
-      exit 1
+      echo -e "${GREEN}✓ Đã thêm server vào replica set sau khi xóa bản ghi trùng lặp${NC}"
     fi
   else
     echo -e "${RED}✗ Không thể thêm server vào replica set. Xem lỗi bên trên.${NC}"
