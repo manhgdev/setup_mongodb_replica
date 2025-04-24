@@ -101,6 +101,7 @@ case $CHOICE in
         print('MEMBER:' + status.members[i].name + ':' + status.members[i].stateStr);
       }
       print('MASTER:' + (rs.isMaster().primary || 'NONE'));
+      print('STATE:' + rs.status().myState);
     } catch(e) {
       print('ERROR:' + e.message);
     }
@@ -109,32 +110,116 @@ case $CHOICE in
     echo -e "${BLUE}===== TRẠNG THÁI HIỆN TẠI =====${NC}"
     echo "$CURRENT_STATUS"
     
-    # Tăng priority của bản thân
-    RECONFIG_RESULT=$(mongosh --host $CURRENT_HOST --port $CURRENT_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --eval "
-    try {
-      config = rs.conf();
-      for (var i = 0; i < config.members.length; i++) {
-        if (config.members[i].host == '$CURRENT_HOST:$CURRENT_PORT') {
-          config.members[i].priority = 10;
-        } else {
-          config.members[i].priority = 1;
-        }
+    # Kiểm tra xem có phải là PRIMARY không
+    CURRENT_STATE=$(echo "$CURRENT_STATUS" | grep "STATE:" | cut -d':' -f2)
+    
+    if [ "$CURRENT_STATE" != "1" ]; then
+      echo -e "${YELLOW}Server hiện tại không phải là PRIMARY. Đang thực hiện step down PRIMARY hiện tại...${NC}"
+      
+      # Lấy PRIMARY hiện tại
+      CURRENT_PRIMARY=$(echo "$CURRENT_STATUS" | grep "MASTER:" | cut -d':' -f2)
+      
+      if [ "$CURRENT_PRIMARY" = "NONE" ]; then
+        echo -e "${RED}Không thể xác định PRIMARY hiện tại.${NC}"
+        exit 1
+      fi
+      
+      # Thực hiện step down PRIMARY hiện tại
+      STEP_DOWN_RESULT=$(mongosh --host $CURRENT_PRIMARY -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --eval "
+      try {
+        result = db.adminCommand({replSetStepDown: 60, force: true});
+        print(JSON.stringify(result));
+      } catch(e) {
+        print('ERROR: ' + e.message);
       }
-      result = rs.reconfig(config);
-      print(JSON.stringify(result));
+      ")
+      
+      echo "$STEP_DOWN_RESULT"
+      
+      if [[ "$STEP_DOWN_RESULT" == *"ERROR"* ]]; then
+        echo -e "${RED}Lỗi khi thực hiện step down.${NC}"
+        exit 1
+      fi
+      
+      echo -e "${GREEN}Đã thực hiện step down thành công. Chờ bầu PRIMARY mới...${NC}"
+      sleep 15
+    fi
+    
+    # Kiểm tra lại trạng thái sau khi step down
+    NEW_STATUS=$(mongosh --host $CURRENT_HOST --port $CURRENT_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
+    try {
+      status = rs.status();
+      for (var i = 0; i < status.members.length; i++) {
+        print('MEMBER:' + status.members[i].name + ':' + status.members[i].stateStr);
+      }
+      print('MASTER:' + (rs.isMaster().primary || 'NONE'));
+      print('STATE:' + rs.status().myState);
     } catch(e) {
-      print('ERROR: ' + e.message);
+      print('ERROR:' + e.message);
     }
     ")
     
-    echo "$RECONFIG_RESULT"
+    echo -e "${BLUE}===== TRẠNG THÁI SAU KHI STEP DOWN =====${NC}"
+    echo "$NEW_STATUS"
     
-    if [[ "$RECONFIG_RESULT" == *"ERROR"* ]]; then
-      echo -e "${RED}Lỗi khi thay đổi cấu hình replica set.${NC}"
-      exit 1
+    # Kiểm tra xem đã là PRIMARY chưa
+    NEW_STATE=$(echo "$NEW_STATUS" | grep "STATE:" | cut -d':' -f2)
+    
+    if [ "$NEW_STATE" != "1" ]; then
+      echo -e "${YELLOW}Server vẫn chưa là PRIMARY. Đang tăng priority...${NC}"
+      
+      # Tăng priority của bản thân
+      RECONFIG_RESULT=$(mongosh --host $CURRENT_HOST --port $CURRENT_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --eval "
+      try {
+        config = rs.conf();
+        for (var i = 0; i < config.members.length; i++) {
+          if (config.members[i].host == '$CURRENT_HOST:$CURRENT_PORT') {
+            config.members[i].priority = 10;
+          } else {
+            config.members[i].priority = 1;
+          }
+        }
+        result = rs.reconfig(config);
+        print(JSON.stringify(result));
+      } catch(e) {
+        print('ERROR: ' + e.message);
+      }
+      ")
+      
+      echo "$RECONFIG_RESULT"
+      
+      if [[ "$RECONFIG_RESULT" == *"ERROR"* ]]; then
+        echo -e "${RED}Lỗi khi thay đổi cấu hình replica set.${NC}"
+        exit 1
+      fi
+      
+      echo -e "${GREEN}Đã tăng priority của server hiện tại. Chờ bầu PRIMARY mới...${NC}"
+      sleep 15
     fi
     
-    echo -e "${GREEN}Đã tăng priority của server hiện tại.${NC}"
+    # Kiểm tra trạng thái cuối cùng
+    FINAL_STATUS=$(mongosh --host $CURRENT_HOST --port $CURRENT_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
+    try {
+      status = rs.status();
+      for (var i = 0; i < status.members.length; i++) {
+        print('MEMBER:' + status.members[i].name + ':' + status.members[i].stateStr);
+      }
+      print('MASTER:' + (rs.isMaster().primary || 'NONE'));
+      print('STATE:' + rs.status().myState);
+    } catch(e) {
+      print('ERROR:' + e.message);
+    }
+    ")
+    
+    echo -e "${BLUE}===== TRẠNG THÁI CUỐI CÙNG =====${NC}"
+    echo "$FINAL_STATUS"
+    
+    FINAL_STATE=$(echo "$FINAL_STATUS" | grep "STATE:" | cut -d':' -f2)
+    if [ "$FINAL_STATE" = "1" ]; then
+      echo -e "${GREEN}Server hiện tại đã trở thành PRIMARY!${NC}"
+    else
+      echo -e "${YELLOW}Server hiện tại vẫn chưa là PRIMARY. Vui lòng thử lại sau.${NC}"
+    fi
     ;;
     
   2)
