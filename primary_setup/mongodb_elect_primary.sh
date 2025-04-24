@@ -338,7 +338,36 @@ case $CHOICE in
     
     # Bước 1: Step down PRIMARY hiện tại
     echo -e "${YELLOW}Bước 1: Step down PRIMARY hiện tại...${NC}"
-    STEP_DOWN_RESULT=$(mongosh --host $PRIMARY_HOST --port $PRIMARY_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --eval "
+    
+    # Kiểm tra PRIMARY hiện tại
+    PRIMARY_STATUS=$(mongosh "mongodb://$USERNAME:$PASSWORD@$PRIMARY_HOST:$PRIMARY_PORT/admin" --quiet --eval "
+    try {
+      status = rs.status();
+      for (var i = 0; i < status.members.length; i++) {
+        if (status.members[i].stateStr == 'PRIMARY') {
+          print('PRIMARY:' + status.members[i].name);
+          break;
+        }
+      }
+    } catch(e) {
+      print('ERROR:' + e.message);
+    }
+    ")
+    
+    if [[ "$PRIMARY_STATUS" == *"ERROR"* ]]; then
+      echo -e "${RED}Lỗi khi kiểm tra PRIMARY:${NC}"
+      echo "$PRIMARY_STATUS"
+      exit 1
+    fi
+    
+    CURRENT_PRIMARY=$(echo "$PRIMARY_STATUS" | grep "PRIMARY:" | cut -d':' -f2)
+    if [ -z "$CURRENT_PRIMARY" ]; then
+      echo -e "${RED}Không tìm thấy PRIMARY hiện tại.${NC}"
+      exit 1
+    fi
+    
+    # Step down PRIMARY
+    STEP_DOWN_RESULT=$(mongosh "mongodb://$USERNAME:$PASSWORD@$CURRENT_PRIMARY/admin" --eval "
     try {
       result = db.adminCommand({replSetStepDown: 60, force: true});
       print(JSON.stringify(result));
@@ -352,7 +381,8 @@ case $CHOICE in
     ")
     
     if [[ "$STEP_DOWN_RESULT" == *"ERROR"* ]]; then
-      echo -e "${RED}Lỗi khi step down PRIMARY hiện tại.${NC}"
+      echo -e "${RED}Lỗi khi step down PRIMARY hiện tại:${NC}"
+      echo "$STEP_DOWN_RESULT"
       exit 1
     fi
     
@@ -364,7 +394,7 @@ case $CHOICE in
     
     # Bước 3: Kiểm tra trạng thái cuối cùng
     echo -e "${YELLOW}Bước 3: Kiểm tra trạng thái cuối cùng...${NC}"
-    FINAL_STATUS=$(mongosh --host $TARGET_HOST --port $TARGET_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
+    FINAL_STATUS=$(mongosh "mongodb://$USERNAME:$PASSWORD@$TARGET_HOST:$TARGET_PORT/admin" --quiet --eval "
     try {
       status = rs.status();
       for (var i = 0; i < status.members.length; i++) {
