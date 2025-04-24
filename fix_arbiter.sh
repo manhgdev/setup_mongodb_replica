@@ -176,10 +176,42 @@ echo -e "${YELLOW}11. Thêm arbiter vào replica set...${NC}"
 
 # Lấy địa chỉ IP của server
 SERVER_IP=$(hostname -I | awk '{print $1}')
-echo -e "${YELLOW}Địa chỉ IP: $SERVER_IP${NC}"
+echo -e "${YELLOW}Địa chỉ IP của server này: $SERVER_IP${NC}"
 
-# Thêm arbiter
-ADD_ARBITER_RESULT=$(mongosh --host 127.0.0.1:$MONGODB_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
+# Tìm PRIMARY trong replica set
+echo -e "${YELLOW}Tìm PRIMARY trong replica set...${NC}"
+RS_STATUS=$(mongosh --host 127.0.0.1:$MONGODB_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
+try {
+  status = rs.status();
+  for (var i = 0; i < status.members.length; i++) {
+    if (status.members[i].stateStr === 'PRIMARY') {
+      print('PRIMARY:' + status.members[i].name);
+      quit();
+    }
+  }
+  print('PRIMARY_NOT_FOUND');
+} catch (e) {
+  print('ERROR:' + e.message);
+}
+")
+
+if [[ "$RS_STATUS" == PRIMARY:* ]]; then
+  PRIMARY_HOST=$(echo "$RS_STATUS" | cut -d':' -f2-)
+  echo -e "${GREEN}✓ Tìm thấy PRIMARY tại: $PRIMARY_HOST${NC}"
+else
+  echo -e "${RED}Không tìm thấy PRIMARY trong replica set${NC}"
+  echo -e "${YELLOW}Vui lòng cung cấp địa chỉ của PRIMARY:${NC}"
+  read -p "IP:Port của PRIMARY (ví dụ: 157.66.46.252:27017): " PRIMARY_HOST
+  
+  if [ -z "$PRIMARY_HOST" ]; then
+    echo -e "${RED}Không có thông tin PRIMARY, không thể thêm arbiter${NC}"
+    exit 1
+  fi
+fi
+
+# Thêm arbiter vào replica set từ PRIMARY
+echo -e "${YELLOW}Thêm arbiter từ PRIMARY ($PRIMARY_HOST)...${NC}"
+ADD_ARBITER_RESULT=$(mongosh --host "$PRIMARY_HOST" -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
 try {
   result = rs.addArb('$SERVER_IP:$ARBITER_PORT');
   if (result.ok) {
@@ -205,7 +237,7 @@ fi
 
 # 12. Hiển thị trạng thái replica set
 echo -e "${YELLOW}12. Kiểm tra trạng thái replica set...${NC}"
-mongosh --host 127.0.0.1:$MONGODB_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "rs.status()" | grep -E "name|stateStr"
+mongosh --host "$PRIMARY_HOST" -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "rs.status()" | grep -E "name|stateStr"
 
 echo -e "${BLUE}
 ============================================================
