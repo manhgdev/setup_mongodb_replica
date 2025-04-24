@@ -345,7 +345,7 @@ case $CHOICE in
     
     # Force chuyển PRIMARY
     echo -e "${YELLOW}Thực hiện force chuyển PRIMARY...${NC}"
-    FORCE_RESULT=$(mongosh --host $PRIMARY_HOST --port $PRIMARY_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --eval "
+    FORCE_RESULT=$(mongosh "mongodb://$USERNAME:$PASSWORD@$PRIMARY_HOST:$PRIMARY_PORT/admin" --eval "
     try {
       config = rs.conf();
       for (var i = 0; i < config.members.length; i++) {
@@ -375,7 +375,7 @@ case $CHOICE in
     sleep 15
     
     # Kiểm tra trạng thái cuối cùng
-    FINAL_STATUS=$(mongosh --host $PRIMARY_HOST --port $PRIMARY_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
+    FINAL_STATUS=$(mongosh "mongodb://$USERNAME:$PASSWORD@$PRIMARY_HOST:$PRIMARY_PORT/admin" --quiet --eval "
     try {
       status = rs.status();
       for (var i = 0; i < status.members.length; i++) {
