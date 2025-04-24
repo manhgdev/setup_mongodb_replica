@@ -340,7 +340,7 @@ case $CHOICE in
     echo -e "${YELLOW}Bước 1: Step down PRIMARY hiện tại...${NC}"
     
     # Kiểm tra PRIMARY hiện tại
-    PRIMARY_STATUS=$(mongosh "mongodb://$USERNAME:$PASSWORD@$PRIMARY_HOST:$PRIMARY_PORT/admin" --quiet --eval "
+    PRIMARY_STATUS=$(mongosh "mongodb://$USERNAME:$PASSWORD@$CURRENT_HOST:$CURRENT_PORT/admin" --quiet --eval "
     try {
       status = rs.status();
       for (var i = 0; i < status.members.length; i++) {
@@ -366,8 +366,32 @@ case $CHOICE in
       exit 1
     fi
     
+    echo -e "${GREEN}✓ Đã tìm thấy PRIMARY hiện tại: $CURRENT_PRIMARY${NC}"
+    
+    # Tách host và port của PRIMARY
+    PRIMARY_HOST=$(echo $CURRENT_PRIMARY | cut -d':' -f1)
+    PRIMARY_PORT=$(echo $CURRENT_PRIMARY | cut -d':' -f2)
+    
+    # Kiểm tra kết nối đến PRIMARY
+    echo -e "${YELLOW}Kiểm tra kết nối đến PRIMARY...${NC}"
+    CONNECTION_TEST=$(mongosh "mongodb://$USERNAME:$PASSWORD@$PRIMARY_HOST:$PRIMARY_PORT/admin" --quiet --eval "
+    try {
+      print('OK');
+    } catch(e) {
+      print('ERROR:' + e.message);
+    }
+    ")
+    
+    if [[ "$CONNECTION_TEST" == *"ERROR"* ]]; then
+      echo -e "${RED}Không thể kết nối đến PRIMARY:${NC}"
+      echo "$CONNECTION_TEST"
+      exit 1
+    fi
+    
+    echo -e "${GREEN}✓ Kết nối đến PRIMARY thành công${NC}"
+    
     # Step down PRIMARY
-    STEP_DOWN_RESULT=$(mongosh "mongodb://$USERNAME:$PASSWORD@$CURRENT_PRIMARY/admin" --eval "
+    STEP_DOWN_RESULT=$(mongosh "mongodb://$USERNAME:$PASSWORD@$PRIMARY_HOST:$PRIMARY_PORT/admin" --eval "
     try {
       result = db.adminCommand({replSetStepDown: 60, force: true});
       print(JSON.stringify(result));
