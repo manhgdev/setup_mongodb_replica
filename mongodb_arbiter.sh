@@ -152,8 +152,6 @@ cat > /etc/mongod-arbiter.conf << EOF
 # Cấu hình MongoDB Arbiter
 storage:
   dbPath: /var/lib/mongodb-arbiter
-  journal:
-    enabled: true
 
 systemLog:
   destination: file
@@ -271,6 +269,27 @@ case $FUNCTION_CHOICE in
   1)
     # Thêm arbiter mới
     echo -e "${YELLOW}=== THÊM ARBITER MỚI ===${NC}"
+    
+    # Thiết lập write concern mặc định
+    echo -e "${YELLOW}Thiết lập write concern mặc định...${NC}"
+    SET_DEFAULT_WRITE_CONCERN=$(mongosh --host "$PRIMARY_HOST" -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
+    try {
+      result = db.adminCommand({
+        setDefaultRWConcern: 1,
+        defaultWriteConcern: { w: 'majority' }
+      });
+      if (result.ok) {
+        print('SUCCESS: Đã thiết lập write concern mặc định');
+      } else {
+        print('ERROR: ' + result.errmsg);
+      }
+    } catch (e) {
+      print('ERROR: ' + e.message);
+    }
+    ")
+    
+    echo "$SET_DEFAULT_WRITE_CONCERN"
+    
     echo -e "${YELLOW}Thêm arbiter từ PRIMARY ($PRIMARY_HOST)...${NC}"
     ADD_ARBITER_RESULT=$(mongosh --host "$PRIMARY_HOST" -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
     try {
@@ -300,6 +319,26 @@ case $FUNCTION_CHOICE in
     # Sửa lỗi arbiter
     echo -e "${YELLOW}=== SỬA LỖI ARBITER ===${NC}"
     echo -e "${YELLOW}Kiểm tra xem arbiter đã có trong replica set chưa...${NC}"
+    
+    # Thiết lập write concern mặc định
+    echo -e "${YELLOW}Thiết lập write concern mặc định...${NC}"
+    SET_DEFAULT_WRITE_CONCERN=$(mongosh --host "$PRIMARY_HOST" -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
+    try {
+      result = db.adminCommand({
+        setDefaultRWConcern: 1,
+        defaultWriteConcern: { w: 'majority' }
+      });
+      if (result.ok) {
+        print('SUCCESS: Đã thiết lập write concern mặc định');
+      } else {
+        print('ERROR: ' + result.errmsg);
+      }
+    } catch (e) {
+      print('ERROR: ' + e.message);
+    }
+    ")
+    
+    echo "$SET_DEFAULT_WRITE_CONCERN"
     
     CHECK_ARBITER=$(mongosh --host "$PRIMARY_HOST" -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
     try {
@@ -419,6 +458,26 @@ case $FUNCTION_CHOICE in
       echo -e "${YELLOW}Đã hủy thao tác gỡ bỏ.${NC}"
       exit 0
     fi
+    
+    # Thiết lập write concern mặc định
+    echo -e "${YELLOW}Thiết lập write concern mặc định...${NC}"
+    SET_DEFAULT_WRITE_CONCERN=$(mongosh --host "$PRIMARY_HOST" -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
+    try {
+      result = db.adminCommand({
+        setDefaultRWConcern: 1,
+        defaultWriteConcern: { w: 'majority' }
+      });
+      if (result.ok) {
+        print('SUCCESS: Đã thiết lập write concern mặc định');
+      } else {
+        print('ERROR: ' + result.errmsg);
+      }
+    } catch (e) {
+      print('ERROR: ' + e.message);
+    }
+    ")
+    
+    echo "$SET_DEFAULT_WRITE_CONCERN"
     
     echo -e "${YELLOW}Gỡ bỏ arbiter từ PRIMARY ($PRIMARY_HOST)...${NC}"
     REMOVE_RESULT=$(mongosh --host "$PRIMARY_HOST" -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
