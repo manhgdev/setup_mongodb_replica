@@ -82,9 +82,11 @@ echo -e "${YELLOW}1. Bầu bản thân làm PRIMARY${NC}"
 echo -e "${YELLOW}2. Bầu server khác làm PRIMARY${NC}"
 echo -e "${YELLOW}3. Chuyển PRIMARY sang server khác (không bầu)${NC}"
 echo -e "${YELLOW}4. Xem trạng thái replica set${NC}"
-echo -e "${YELLOW}5. Thoát${NC}"
+echo -e "${YELLOW}5. Sửa lỗi node không reachable/healthy${NC}"
+echo -e "${YELLOW}6. Thay đổi port của node trong replica set${NC}"
+echo -e "${YELLOW}7. Thoát${NC}"
 
-read -p "Chọn thao tác [1-5]: " CHOICE
+read -p "Chọn thao tác [1-7]: " CHOICE
 
 case $CHOICE in
   1)
@@ -248,9 +250,316 @@ case $CHOICE in
     ")
     
     echo "$STATUS"
+    
+    # Hiển thị thêm cấu hình replica set
+    CONFIG=$(mongosh --host $CURRENT_HOST --port $CURRENT_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
+    try {
+      config = rs.conf();
+      print('CONFIG_MEMBERS:' + config.members.length);
+      for (var i = 0; i < config.members.length; i++) {
+        print('CONFIG_MEMBER_' + i + ':' + config.members[i].host + ':' + 
+              'arbiter:' + (config.members[i].arbiterOnly || false) + ':' +
+              'priority:' + (config.members[i].priority || 1));
+      }
+    } catch(e) {
+      print('ERROR:' + e.message);
+    }
+    ")
+    
+    echo -e "${BLUE}===== CẤU HÌNH REPLICA SET =====${NC}"
+    echo "$CONFIG"
+    ;;
+
+  5)
+    # Sửa lỗi node không reachable/healthy
+    echo -e "${BLUE}===== SỬA LỖI NODE KHÔNG REACHABLE/HEALTHY =====${NC}"
+    
+    # Kiểm tra trạng thái replica set
+    STATUS=$(mongosh --host $CURRENT_HOST --port $CURRENT_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
+    try {
+      status = rs.status();
+      for (var i = 0; i < status.members.length; i++) {
+        print('MEMBER:' + status.members[i].name + ':' + status.members[i].stateStr);
+      }
+      print('MASTER:' + (rs.isMaster().primary || 'NONE'));
+    } catch(e) {
+      print('ERROR:' + e.message);
+    }
+    ")
+    
+    echo -e "${BLUE}===== TRẠNG THÁI REPLICA SET =====${NC}"
+    echo "$STATUS"
+    
+    # Tìm các node không reachable/healthy
+    UNREACHABLE_NODES=$(echo "$STATUS" | grep -i "not reachable/healthy" | awk -F':' '{print $2}' | sed 's/ //')
+    
+    if [ -z "$UNREACHABLE_NODES" ]; then
+      echo -e "${GREEN}Không có node nào không reachable/healthy.${NC}"
+      exit 0
+    fi
+    
+    echo -e "${YELLOW}Các node không reachable/healthy:${NC}"
+    echo "$UNREACHABLE_NODES"
+    
+    # Chọn node để sửa
+    read -p "Nhập node cần sửa (ví dụ: 36.50.134.16:27018): " UNREACHABLE_NODE
+    
+    # Tách host và port
+    UNREACHABLE_HOST=$(echo $UNREACHABLE_NODE | cut -d':' -f1)
+    UNREACHABLE_PORT=$(echo $UNREACHABLE_NODE | cut -d':' -f2)
+    
+    # Xóa node khỏi replica set
+    echo -e "${YELLOW}Đang xóa node $UNREACHABLE_NODE khỏi replica set...${NC}"
+    REMOVE_RESULT=$(mongosh --host $CURRENT_HOST --port $CURRENT_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --eval "
+    try {
+      result = rs.remove('$UNREACHABLE_NODE');
+      print(JSON.stringify(result));
+    } catch(e) {
+      print('ERROR: ' + e.message);
+    }
+    ")
+    
+    echo "$REMOVE_RESULT"
+    
+    if [[ "$REMOVE_RESULT" == *"ERROR"* ]]; then
+      echo -e "${RED}Lỗi khi xóa node khỏi replica set.${NC}"
+      echo -e "${YELLOW}Thử force remove...${NC}"
+      
+      # Force remove bằng cách reconfigure
+      FORCE_REMOVE_RESULT=$(mongosh --host $CURRENT_HOST --port $CURRENT_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --eval "
+      try {
+        config = rs.conf();
+        newMembers = [];
+        for (var i = 0; i < config.members.length; i++) {
+          if (config.members[i].host != '$UNREACHABLE_NODE') {
+            newMembers.push(config.members[i]);
+          }
+        }
+        // Reset _id values
+        for (var i = 0; i < newMembers.length; i++) {
+          newMembers[i]._id = i;
+        }
+        config.members = newMembers;
+        result = rs.reconfig(config, {force: true});
+        print(JSON.stringify(result));
+      } catch(e) {
+        print('ERROR: ' + e.message);
+      }
+      ")
+      
+      echo "$FORCE_REMOVE_RESULT"
+      
+      if [[ "$FORCE_REMOVE_RESULT" == *"ERROR"* ]]; then
+        echo -e "${RED}Không thể xóa node khỏi replica set.${NC}"
+        exit 1
+      fi
+    fi
+    
+    echo -e "${GREEN}Đã xóa node khỏi replica set.${NC}"
+    
+    # Hiển thị thông tin để sửa trên server không reachable
+    echo -e "${YELLOW}Hướng dẫn sửa lỗi trên server không reachable:${NC}"
+    echo -e "${YELLOW}1. Kiểm tra trạng thái MongoDB:${NC}"
+    echo "   systemctl status mongod"
+    echo -e "${YELLOW}2. Kiểm tra log MongoDB:${NC}"
+    echo "   tail -n 50 /var/log/mongodb/mongod.log"
+    echo -e "${YELLOW}3. Kiểm tra cấu hình MongoDB:${NC}"
+    echo "   cat /etc/mongod.conf"
+    echo -e "${YELLOW}4. Kiểm tra keyfile:${NC}"
+    echo "   ls -l /etc/mongodb-keyfile"
+    echo -e "${YELLOW}5. Kiểm tra quyền truy cập:${NC}"
+    echo "   ls -l /var/lib/mongodb"
+    echo "   ls -l /var/log/mongodb"
+    echo -e "${YELLOW}6. Khởi động lại MongoDB:${NC}"
+    echo "   systemctl restart mongod"
+    
+    # Hỏi xem có muốn thêm lại node không
+    read -p "Đã sửa xong lỗi? Thêm lại node vào replica set? [y/N]: " ADD_BACK
+    if [[ "$ADD_BACK" =~ ^[Yy]$ ]]; then
+      # Có phải là arbiter không?
+      read -p "Node này có phải là arbiter không? [y/N]: " IS_ARBITER
+      
+      if [[ "$IS_ARBITER" =~ ^[Yy]$ ]]; then
+        # Thêm lại dưới dạng arbiter
+        echo -e "${YELLOW}Thêm lại node dưới dạng arbiter...${NC}"
+        ADD_RESULT=$(mongosh --host $CURRENT_HOST --port $CURRENT_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --eval "
+        try {
+          result = rs.addArb('$UNREACHABLE_HOST:$UNREACHABLE_PORT');
+          print(JSON.stringify(result));
+        } catch(e) {
+          print('ERROR: ' + e.message);
+        }
+        ")
+      else
+        # Thêm lại dưới dạng thường
+        echo -e "${YELLOW}Thêm lại node dưới dạng thường...${NC}"
+        ADD_RESULT=$(mongosh --host $CURRENT_HOST --port $CURRENT_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --eval "
+        try {
+          result = rs.add('$UNREACHABLE_HOST:$UNREACHABLE_PORT');
+          print(JSON.stringify(result));
+        } catch(e) {
+          print('ERROR: ' + e.message);
+        }
+        ")
+      fi
+      
+      echo "$ADD_RESULT"
+      
+      if [[ "$ADD_RESULT" == *"ERROR"* ]]; then
+        echo -e "${RED}Lỗi khi thêm lại node vào replica set.${NC}"
+        exit 1
+      fi
+      
+      echo -e "${GREEN}Đã thêm lại node vào replica set.${NC}"
+    fi
     ;;
     
-  5)
+  6)
+    # Thay đổi port của node trong replica set
+    echo -e "${BLUE}===== THAY ĐỔI PORT CỦA NODE TRONG REPLICA SET =====${NC}"
+    
+    # Kiểm tra trạng thái replica set
+    STATUS=$(mongosh --host $CURRENT_HOST --port $CURRENT_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
+    try {
+      status = rs.status();
+      for (var i = 0; i < status.members.length; i++) {
+        print('MEMBER:' + status.members[i].name + ':' + status.members[i].stateStr);
+      }
+      print('MASTER:' + (rs.isMaster().primary || 'NONE'));
+    } catch(e) {
+      print('ERROR:' + e.message);
+    }
+    ")
+    
+    echo -e "${BLUE}===== TRẠNG THÁI REPLICA SET =====${NC}"
+    echo "$STATUS"
+    
+    # Hiển thị cấu hình replica set
+    CONFIG=$(mongosh --host $CURRENT_HOST --port $CURRENT_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
+    try {
+      config = rs.conf();
+      print('CONFIG_MEMBERS:' + config.members.length);
+      for (var i = 0; i < config.members.length; i++) {
+        print('CONFIG_MEMBER_' + i + ':' + config.members[i].host + ':' + 
+              'arbiter:' + (config.members[i].arbiterOnly || false) + ':' +
+              'priority:' + (config.members[i].priority || 1));
+      }
+    } catch(e) {
+      print('ERROR:' + e.message);
+    }
+    ")
+    
+    echo -e "${BLUE}===== CẤU HÌNH REPLICA SET =====${NC}"
+    echo "$CONFIG"
+    
+    # Chọn node để thay đổi port
+    read -p "Nhập node cần thay đổi port (ví dụ: 36.50.134.16:27018): " OLD_NODE
+    
+    # Tách host và port
+    NODE_HOST=$(echo $OLD_NODE | cut -d':' -f1)
+    OLD_PORT=$(echo $OLD_NODE | cut -d':' -f2)
+    
+    # Nhập port mới
+    read -p "Nhập port mới: " NEW_PORT
+    
+    # Xác định xem node có phải là PRIMARY không
+    IS_PRIMARY=$(echo "$STATUS" | grep "$OLD_NODE" | grep -i "PRIMARY")
+    
+    if [ -n "$IS_PRIMARY" ]; then
+      echo -e "${YELLOW}Cảnh báo: Node này là PRIMARY. Cần step down trước khi thay đổi.${NC}"
+      read -p "Tiếp tục? [y/N]: " CONTINUE_PRIMARY
+      if [[ ! "$CONTINUE_PRIMARY" =~ ^[Yy]$ ]]; then
+        echo -e "${YELLOW}Hủy thao tác.${NC}"
+        exit 0
+      fi
+      
+      # Step down PRIMARY
+      echo -e "${YELLOW}Thực hiện step down...${NC}"
+      STEP_DOWN_RESULT=$(mongosh --host $OLD_NODE -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --eval "
+      try {
+        result = db.adminCommand({replSetStepDown: 60, force: true});
+        print(JSON.stringify(result));
+      } catch(e) {
+        print('ERROR: ' + e.message);
+      }
+      ")
+      
+      echo "$STEP_DOWN_RESULT"
+    fi
+    
+    # Tìm _id của node
+    NODE_ID=$(mongosh --host $CURRENT_HOST --port $CURRENT_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
+    try {
+      config = rs.conf();
+      for (var i = 0; i < config.members.length; i++) {
+        if (config.members[i].host == '$OLD_NODE') {
+          print('ID:' + config.members[i]._id);
+          break;
+        }
+      }
+    } catch(e) {
+      print('ERROR:' + e.message);
+    }
+    " | grep "ID:" | cut -d':' -f2)
+    
+    if [ -z "$NODE_ID" ]; then
+      echo -e "${RED}Không tìm thấy node trong cấu hình replica set.${NC}"
+      exit 1
+    fi
+    
+    # Cập nhật cấu hình replica set
+    echo -e "${YELLOW}Cập nhật cấu hình replica set...${NC}"
+    UPDATE_RESULT=$(mongosh --host $CURRENT_HOST --port $CURRENT_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --eval "
+    try {
+      config = rs.conf();
+      for (var i = 0; i < config.members.length; i++) {
+        if (config.members[i]._id == $NODE_ID) {
+          config.members[i].host = '$NODE_HOST:$NEW_PORT';
+          break;
+        }
+      }
+      result = rs.reconfig(config);
+      print(JSON.stringify(result));
+    } catch(e) {
+      print('ERROR: ' + e.message);
+    }
+    ")
+    
+    echo "$UPDATE_RESULT"
+    
+    if [[ "$UPDATE_RESULT" == *"ERROR"* ]]; then
+      echo -e "${RED}Lỗi khi cập nhật cấu hình replica set.${NC}"
+      echo -e "${YELLOW}Thử force update...${NC}"
+      
+      UPDATE_RESULT=$(mongosh --host $CURRENT_HOST --port $CURRENT_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --eval "
+      try {
+        config = rs.conf();
+        for (var i = 0; i < config.members.length; i++) {
+          if (config.members[i]._id == $NODE_ID) {
+            config.members[i].host = '$NODE_HOST:$NEW_PORT';
+            break;
+          }
+        }
+        result = rs.reconfig(config, {force: true});
+        print(JSON.stringify(result));
+      } catch(e) {
+        print('ERROR: ' + e.message);
+      }
+      ")
+      
+      echo "$UPDATE_RESULT"
+      
+      if [[ "$UPDATE_RESULT" == *"ERROR"* ]]; then
+        echo -e "${RED}Không thể cập nhật cấu hình replica set.${NC}"
+        exit 1
+      fi
+    fi
+    
+    echo -e "${GREEN}Đã thay đổi port của node $OLD_NODE thành $NODE_HOST:$NEW_PORT.${NC}"
+    echo -e "${YELLOW}Lưu ý: Cần cập nhật cấu hình MongoDB trên server $NODE_HOST để sử dụng port $NEW_PORT.${NC}"
+    ;;
+    
+  7)
     echo -e "${YELLOW}Thoát chương trình.${NC}"
     exit 0
     ;;
