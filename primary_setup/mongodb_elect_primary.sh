@@ -10,7 +10,7 @@ NC='\033[0m' # No Color
 clear
 echo -e "${BLUE}
 ============================================================
-  BẦU PRIMARY TRONG MONGODB REPLICA SET - MANHG DEV
+  QUẢN LÝ PRIMARY TRONG MONGODB REPLICA SET - MANHG DEV
 ============================================================${NC}"
 
 # Kiểm tra cài đặt MongoDB client
@@ -31,180 +31,135 @@ read -p "Database xác thực [admin]: " AUTH_DB
 AUTH_DB=${AUTH_DB:-admin}
 
 echo -e "${YELLOW}Thông tin về server hiện tại:${NC}"
-read -p "Địa chỉ IP/hostname của server hiện tại: " CURRENT_HOST
+
+# Thử nhiều cách để lấy IP
+CURRENT_IP=""
+
+# Phương pháp 1: hostname -I
+if [ -z "$CURRENT_IP" ]; then
+  IP_RESULT=$(hostname -I 2>/dev/null | awk '{print $1}')
+  if [ -n "$IP_RESULT" ]; then
+    CURRENT_IP=$IP_RESULT
+  fi
+fi
+
+# Phương pháp 2: ip addr
+if [ -z "$CURRENT_IP" ]; then
+  IP_RESULT=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v "127.0.0.1" | head -n1)
+  if [ -n "$IP_RESULT" ]; then
+    CURRENT_IP=$IP_RESULT
+  fi
+fi
+
+# Phương pháp 3: ifconfig
+if [ -z "$CURRENT_IP" ]; then
+  IP_RESULT=$(ifconfig 2>/dev/null | grep -Eo 'inet (addr:)?([0-9]*\.){3}[0-9]*' | grep -Eo '([0-9]*\.){3}[0-9]*' | grep -v '127.0.0.1' | head -n1)
+  if [ -n "$IP_RESULT" ]; then
+    CURRENT_IP=$IP_RESULT
+  fi
+fi
+
+# Thông báo nếu phát hiện được IP
+if [ -n "$CURRENT_IP" ]; then
+  echo -e "${GREEN}✓ Đã phát hiện IP: $CURRENT_IP${NC}"
+else
+  echo -e "${YELLOW}⚠️ Không thể tự động phát hiện IP${NC}"
+  CURRENT_IP="127.0.0.1"
+fi
+
+read -p "Địa chỉ IP/hostname của server hiện tại [$CURRENT_IP]: " USER_CURRENT_HOST
+CURRENT_HOST=${USER_CURRENT_HOST:-$CURRENT_IP}
 
 read -p "Port của server hiện tại [27017]: " CURRENT_PORT
 CURRENT_PORT=${CURRENT_PORT:-27017}
 
-echo -e "${YELLOW}Thông tin về server khác (server sẽ trở thành PRIMARY):${NC}"
-read -p "Địa chỉ IP/hostname của server mới: " TARGET_HOST
+# Hiển thị menu lựa chọn
+echo -e "${BLUE}
+============================================================
+  LỰA CHỌN THAO TÁC
+============================================================${NC}"
+echo -e "${YELLOW}1. Bầu bản thân làm PRIMARY${NC}"
+echo -e "${YELLOW}2. Bầu server khác làm PRIMARY${NC}"
+echo -e "${YELLOW}3. Chuyển PRIMARY sang server khác (không bầu)${NC}"
+echo -e "${YELLOW}4. Xem trạng thái replica set${NC}"
+echo -e "${YELLOW}5. Thoát${NC}"
 
-read -p "Port của server mới [27017]: " TARGET_PORT
-TARGET_PORT=${TARGET_PORT:-27017}
+read -p "Chọn thao tác [1-5]: " CHOICE
 
-# Kiểm tra tên replica set
-echo -e "${YELLOW}Kiểm tra thông tin replica set...${NC}"
-
-# Kiểm tra server hiện tại
-CURRENT_RS_INFO=$(mongosh --host $CURRENT_HOST --port $CURRENT_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
-try {
-  info = rs.conf();
-  print('RS_NAME:' + info._id);
-  print('RS_ID:' + info.settings.replicaSetId);
-  status = rs.status();
-  for (var i = 0; i < status.members.length; i++) {
-    print('MEMBER:' + status.members[i].name + ':' + status.members[i].stateStr);
-  }
-  print('MASTER:' + (rs.isMaster().primary || 'NONE'));
-} catch(e) {
-  print('ERROR:' + e.message);
-}
-")
-
-echo -e "${BLUE}===== THÔNG TIN REPLICA SET (SERVER HIỆN TẠI) =====${NC}"
-echo "$CURRENT_RS_INFO"
-
-# Lấy tên replica set từ output
-CURRENT_RS_NAME=$(echo "$CURRENT_RS_INFO" | grep RS_NAME | cut -d':' -f2)
-if [ -z "$CURRENT_RS_NAME" ]; then
-  echo -e "${RED}Không thể xác định tên replica set của server hiện tại${NC}"
-  read -p "Nhập tên replica set [rs0]: " CURRENT_RS_NAME
-  CURRENT_RS_NAME=${CURRENT_RS_NAME:-rs0}
-fi
-
-# Kiểm tra server đích
-TARGET_RS_INFO=$(mongosh --host $TARGET_HOST --port $TARGET_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
-try {
-  info = rs.conf();
-  print('RS_NAME:' + info._id);
-  print('RS_ID:' + info.settings.replicaSetId);
-  status = rs.status();
-  for (var i = 0; i < status.members.length; i++) {
-    print('MEMBER:' + status.members[i].name + ':' + status.members[i].stateStr);
-  }
-  print('MASTER:' + (rs.isMaster().primary || 'NONE'));
-} catch(e) {
-  print('ERROR:' + e.message);
-}
-")
-
-echo -e "${BLUE}===== THÔNG TIN REPLICA SET (SERVER ĐÍCH) =====${NC}"
-echo "$TARGET_RS_INFO"
-
-# Lấy tên replica set từ output
-TARGET_RS_NAME=$(echo "$TARGET_RS_INFO" | grep RS_NAME | cut -d':' -f2)
-if [ -z "$TARGET_RS_NAME" ]; then
-  echo -e "${RED}Không thể xác định tên replica set của server đích${NC}"
-  read -p "Nhập tên replica set [rs0]: " TARGET_RS_NAME
-  TARGET_RS_NAME=${TARGET_RS_NAME:-rs0}
-fi
-
-# Kiểm tra xem các server có cùng replica set không
-if [ "$CURRENT_RS_NAME" != "$TARGET_RS_NAME" ]; then
-  echo -e "${RED}Cảnh báo: Hai server thuộc các replica set khác nhau (${CURRENT_RS_NAME} vs ${TARGET_RS_NAME})!${NC}"
-  echo -e "${YELLOW}Để bầu PRIMARY, các server phải thuộc cùng một replica set.${NC}"
-  
-  read -p "Bạn muốn gộp replica set thành một? Dữ liệu trên server SECONDARY sẽ bị mất [y/N]: " MERGE_RS
-  if [[ ! "$MERGE_RS" =~ ^[Yy]$ ]]; then
-    echo -e "${YELLOW}Hủy thao tác.${NC}"
-    exit 0
-  fi
-  
-  read -p "Server nào sẽ là PRIMARY (giữ nguyên dữ liệu)? [1: $CURRENT_HOST, 2: $TARGET_HOST]: " PRIMARY_CHOICE
-  
-  if [ "$PRIMARY_CHOICE" = "1" ]; then
-    PRIMARY_HOST=$CURRENT_HOST
-    PRIMARY_PORT=$CURRENT_PORT
-    PRIMARY_RS_NAME=$CURRENT_RS_NAME
-    SECONDARY_HOST=$TARGET_HOST
-    SECONDARY_PORT=$TARGET_PORT
-  elif [ "$PRIMARY_CHOICE" = "2" ]; then
-    PRIMARY_HOST=$TARGET_HOST
-    PRIMARY_PORT=$TARGET_PORT
-    PRIMARY_RS_NAME=$TARGET_RS_NAME
-    SECONDARY_HOST=$CURRENT_HOST
-    SECONDARY_PORT=$CURRENT_PORT
-  else
-    echo -e "${RED}Lựa chọn không hợp lệ.${NC}"
-    exit 1
-  fi
-  
-  echo -e "${BLUE}===== THIẾT LẬP LẠI REPLICA SET =====${NC}"
-  echo -e "${YELLOW}PRIMARY: $PRIMARY_HOST:$PRIMARY_PORT (giữ nguyên dữ liệu)${NC}"
-  echo -e "${YELLOW}SECONDARY: $SECONDARY_HOST:$SECONDARY_PORT (sẽ xóa dữ liệu và cấu hình)${NC}"
-  
-  read -p "Tiếp tục? CẢNH BÁO: Thao tác không thể hoàn tác [y/N]: " CONFIRM
-  if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
-    echo -e "${YELLOW}Hủy thao tác.${NC}"
-    exit 0
-  fi
-  
-  # Dừng MongoDB trên server SECONDARY
-  echo -e "${YELLOW}Kết nối SSH đến server SECONDARY ($SECONDARY_HOST) để dừng và xóa dữ liệu...${NC}"
-  echo -e "${RED}Đoạn này cần thực hiện thủ công trên server $SECONDARY_HOST:${NC}"
-  echo "1. Dừng MongoDB: sudo systemctl stop mongod"
-  echo "2. Xóa dữ liệu: sudo rm -rf /var/lib/mongodb/*"
-  echo "3. Tạo lại file cấu hình MongoDB với cùng tên replica set \"$PRIMARY_RS_NAME\""
-  echo "4. Khởi động lại MongoDB: sudo systemctl start mongod"
-  
-  read -p "Đã thực hiện các bước trên? [y/N]: " SECONDARY_READY
-  if [[ ! "$SECONDARY_READY" =~ ^[Yy]$ ]]; then
-    echo -e "${YELLOW}Hãy thực hiện các bước trên trên server SECONDARY trước khi tiếp tục.${NC}"
-    exit 0
-  fi
-  
-  # Thêm server SECONDARY vào replica set PRIMARY
-  echo -e "${YELLOW}Thêm server SECONDARY vào replica set...${NC}"
-  ADD_RESULT=$(mongosh --host $PRIMARY_HOST --port $PRIMARY_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --eval "
-  try {
-    result = rs.add('$SECONDARY_HOST:$SECONDARY_PORT');
-    print(JSON.stringify(result));
-  } catch(e) {
-    print('ERROR: ' + e.message);
-  }
-  ")
-  
-  echo "$ADD_RESULT"
-  
-  if [[ "$ADD_RESULT" == *"ERROR"* ]]; then
-    echo -e "${RED}Lỗi khi thêm server SECONDARY vào replica set.${NC}"
-    exit 1
-  fi
-  
-  echo -e "${GREEN}Server SECONDARY đã được thêm vào replica set.${NC}"
-  
-else
-  # Nếu cùng replica set, thực hiện việc bầu PRIMARY
-  echo -e "${BLUE}===== BẦU PRIMARY MỚI =====${NC}"
-  echo -e "${YELLOW}Thực hiện step down trên PRIMARY hiện tại...${NC}"
-  
-  # Xác định PRIMARY hiện tại
-  CURRENT_PRIMARY=$(echo "$CURRENT_RS_INFO $TARGET_RS_INFO" | grep MASTER | grep -v NONE | cut -d':' -f2- | tr -d '\n')
-  
-  echo -e "${YELLOW}PRIMARY hiện tại: $CURRENT_PRIMARY${NC}"
-  
-  if [ -z "$CURRENT_PRIMARY" ]; then
-    echo -e "${RED}Không thể xác định PRIMARY hiện tại.${NC}"
-    exit 1
-  fi
-  
-  # Thực hiện step down
-  STEP_DOWN_RESULT=$(mongosh --host $CURRENT_PRIMARY -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --eval "
-  try {
-    result = db.adminCommand({replSetStepDown: 60, force: true});
-    print(JSON.stringify(result));
-  } catch(e) {
-    print('ERROR: ' + e.message);
-  }
-  ")
-  
-  echo "$STEP_DOWN_RESULT"
-  
-  if [[ "$STEP_DOWN_RESULT" == *"ERROR"* ]]; then
-    echo -e "${RED}Lỗi khi thực hiện step down.${NC}"
-    echo -e "${YELLOW}Thử force PRIMARY trên server đích...${NC}"
+case $CHOICE in
+  1)
+    # Bầu bản thân làm PRIMARY
+    echo -e "${BLUE}===== BẦU BẢN THÂN LÀM PRIMARY =====${NC}"
     
-    # Tăng priority của server đích để ưu tiên làm PRIMARY
+    # Kiểm tra trạng thái hiện tại
+    CURRENT_STATUS=$(mongosh --host $CURRENT_HOST --port $CURRENT_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
+    try {
+      status = rs.status();
+      for (var i = 0; i < status.members.length; i++) {
+        print('MEMBER:' + status.members[i].name + ':' + status.members[i].stateStr);
+      }
+      print('MASTER:' + (rs.isMaster().primary || 'NONE'));
+    } catch(e) {
+      print('ERROR:' + e.message);
+    }
+    ")
+    
+    echo -e "${BLUE}===== TRẠNG THÁI HIỆN TẠI =====${NC}"
+    echo "$CURRENT_STATUS"
+    
+    # Tăng priority của bản thân
+    RECONFIG_RESULT=$(mongosh --host $CURRENT_HOST --port $CURRENT_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --eval "
+    try {
+      config = rs.conf();
+      for (var i = 0; i < config.members.length; i++) {
+        if (config.members[i].host == '$CURRENT_HOST:$CURRENT_PORT') {
+          config.members[i].priority = 10;
+        } else {
+          config.members[i].priority = 1;
+        }
+      }
+      result = rs.reconfig(config);
+      print(JSON.stringify(result));
+    } catch(e) {
+      print('ERROR: ' + e.message);
+    }
+    ")
+    
+    echo "$RECONFIG_RESULT"
+    
+    if [[ "$RECONFIG_RESULT" == *"ERROR"* ]]; then
+      echo -e "${RED}Lỗi khi thay đổi cấu hình replica set.${NC}"
+      exit 1
+    fi
+    
+    echo -e "${GREEN}Đã tăng priority của server hiện tại.${NC}"
+    ;;
+    
+  2)
+    # Bầu server khác làm PRIMARY
+    echo -e "${YELLOW}Thông tin về server sẽ làm PRIMARY:${NC}"
+    read -p "Địa chỉ IP/hostname của server mới: " TARGET_HOST
+    
+    read -p "Port của server mới [27017]: " TARGET_PORT
+    TARGET_PORT=${TARGET_PORT:-27017}
+    
+    # Kiểm tra server đích
+    TARGET_STATUS=$(mongosh --host $TARGET_HOST --port $TARGET_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
+    try {
+      status = rs.status();
+      for (var i = 0; i < status.members.length; i++) {
+        print('MEMBER:' + status.members[i].name + ':' + status.members[i].stateStr);
+      }
+      print('MASTER:' + (rs.isMaster().primary || 'NONE'));
+    } catch(e) {
+      print('ERROR:' + e.message);
+    }
+    ")
+    
+    echo -e "${BLUE}===== TRẠNG THÁI SERVER ĐÍCH =====${NC}"
+    echo "$TARGET_STATUS"
+    
+    # Tăng priority của server đích
     RECONFIG_RESULT=$(mongosh --host $TARGET_HOST --port $TARGET_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --eval "
     try {
       config = rs.conf();
@@ -228,55 +183,104 @@ else
       echo -e "${RED}Lỗi khi thay đổi cấu hình replica set.${NC}"
       exit 1
     fi
-  fi
+    
+    echo -e "${GREEN}Đã tăng priority của server đích.${NC}"
+    ;;
+    
+  3)
+    # Chuyển PRIMARY sang server khác (không bầu)
+    echo -e "${YELLOW}Thông tin về server sẽ nhận PRIMARY:${NC}"
+    read -p "Địa chỉ IP/hostname của server mới: " TARGET_HOST
+    
+    read -p "Port của server mới [27017]: " TARGET_PORT
+    TARGET_PORT=${TARGET_PORT:-27017}
+    
+    # Kiểm tra PRIMARY hiện tại
+    CURRENT_PRIMARY=$(mongosh --host $CURRENT_HOST --port $CURRENT_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
+    try {
+      print(rs.isMaster().primary || 'NONE');
+    } catch(e) {
+      print('ERROR:' + e.message);
+    }
+    ")
+    
+    if [ "$CURRENT_PRIMARY" = "NONE" ]; then
+      echo -e "${RED}Không thể xác định PRIMARY hiện tại.${NC}"
+      exit 1
+    fi
+    
+    echo -e "${YELLOW}PRIMARY hiện tại: $CURRENT_PRIMARY${NC}"
+    
+    # Thực hiện step down
+    STEP_DOWN_RESULT=$(mongosh --host $CURRENT_PRIMARY -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --eval "
+    try {
+      result = db.adminCommand({replSetStepDown: 60, force: true});
+      print(JSON.stringify(result));
+    } catch(e) {
+      print('ERROR: ' + e.message);
+    }
+    ")
+    
+    echo "$STEP_DOWN_RESULT"
+    
+    if [[ "$STEP_DOWN_RESULT" == *"ERROR"* ]]; then
+      echo -e "${RED}Lỗi khi thực hiện step down.${NC}"
+      exit 1
+    fi
+    
+    echo -e "${GREEN}Đã thực hiện step down thành công.${NC}"
+    ;;
+    
+  4)
+    # Xem trạng thái replica set
+    echo -e "${BLUE}===== TRẠNG THÁI REPLICA SET =====${NC}"
+    
+    STATUS=$(mongosh --host $CURRENT_HOST --port $CURRENT_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
+    try {
+      status = rs.status();
+      for (var i = 0; i < status.members.length; i++) {
+        print('MEMBER:' + status.members[i].name + ':' + status.members[i].stateStr);
+      }
+      print('MASTER:' + (rs.isMaster().primary || 'NONE'));
+    } catch(e) {
+      print('ERROR:' + e.message);
+    }
+    ")
+    
+    echo "$STATUS"
+    ;;
+    
+  5)
+    echo -e "${YELLOW}Thoát chương trình.${NC}"
+    exit 0
+    ;;
+    
+  *)
+    echo -e "${RED}Lựa chọn không hợp lệ.${NC}"
+    exit 1
+    ;;
+esac
+
+# Chờ bầu PRIMARY mới (nếu có)
+if [ "$CHOICE" = "1" ] || [ "$CHOICE" = "2" ] || [ "$CHOICE" = "3" ]; then
+  echo -e "${YELLOW}Chờ bầu PRIMARY mới...${NC}"
+  sleep 15
+  
+  # Kiểm tra PRIMARY mới
+  FINAL_STATUS=$(mongosh --host $CURRENT_HOST --port $CURRENT_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
+  try {
+    status = rs.status();
+    for (var i = 0; i < status.members.length; i++) {
+      print('MEMBER:' + status.members[i].name + ':' + status.members[i].stateStr);
+    }
+    print('MASTER:' + (rs.isMaster().primary || 'NONE'));
+  } catch(e) {
+    print('ERROR:' + e.message);
+  }
+  ")
+  
+  echo -e "${BLUE}===== TRẠNG THÁI CUỐI CÙNG =====${NC}"
+  echo "$FINAL_STATUS"
 fi
 
-# Chờ bầu PRIMARY mới
-echo -e "${YELLOW}Chờ bầu PRIMARY mới...${NC}"
-sleep 15
-
-# Kiểm tra PRIMARY mới
-echo -e "${YELLOW}Kiểm tra PRIMARY mới...${NC}"
-
-# Kiểm tra server hiện tại
-FINAL_CURRENT_STATUS=$(mongosh --host $CURRENT_HOST --port $CURRENT_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
-try {
-  status = rs.status();
-  for (var i = 0; i < status.members.length; i++) {
-    print('MEMBER:' + status.members[i].name + ':' + status.members[i].stateStr);
-  }
-  print('MASTER:' + (rs.isMaster().primary || 'NONE'));
-} catch(e) {
-  print('ERROR:' + e.message);
-}
-")
-
-echo -e "${BLUE}===== TRẠNG THÁI REPLICA SET HIỆN TẠI =====${NC}"
-echo "$FINAL_CURRENT_STATUS"
-
-# Kiểm tra server đích
-FINAL_TARGET_STATUS=$(mongosh --host $TARGET_HOST --port $TARGET_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
-try {
-  status = rs.status();
-  for (var i = 0; i < status.members.length; i++) {
-    print('MEMBER:' + status.members[i].name + ':' + status.members[i].stateStr);
-  }
-  print('MASTER:' + (rs.isMaster().primary || 'NONE'));
-} catch(e) {
-  print('ERROR:' + e.message);
-}
-")
-
-echo -e "${BLUE}===== TRẠNG THÁI REPLICA SET ĐÍCH =====${NC}"
-echo "$FINAL_TARGET_STATUS"
-
-echo -e "${GREEN}Hoàn thành quá trình bầu PRIMARY!${NC}"
-
-# Tạo chuỗi kết nối cho ứng dụng
-CURRENT_MEMBER=$(echo "$FINAL_CURRENT_STATUS" | grep MEMBER | cut -d':' -f2 | cut -d':' -f1)
-TARGET_MEMBER=$(echo "$FINAL_TARGET_STATUS" | grep MEMBER | cut -d':' -f2 | cut -d':' -f1)
-
-if [ -n "$CURRENT_MEMBER" ] && [ -n "$TARGET_MEMBER" ]; then
-  echo -e "${BLUE}===== CHUỖI KẾT NỐI MONGODB =====${NC}"
-  echo -e "${GREEN}mongodb://$USERNAME:$PASSWORD@$CURRENT_MEMBER:$CURRENT_PORT,$TARGET_MEMBER:$TARGET_PORT/admin?replicaSet=$CURRENT_RS_NAME${NC}"
-fi 
+echo -e "${GREEN}Hoàn thành thao tác!${NC}" 

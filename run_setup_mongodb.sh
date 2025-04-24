@@ -10,8 +10,10 @@ NC='\033[0m' # No Color
 # Đường dẫn script
 SINGLE_SERVER_SCRIPT="one_server/setup_mongodb_replica.sh"
 MULTI_SERVER_SCRIPT="multil_server/setup_mongodb_distributed_replica.sh"
+ARBITER_SCRIPT="multil_server/mongodb_arbiter.sh"
 DEPLOY_SCRIPT="ssh/deploy_mongodb_replica.sh"
 PRIMARY_SCRIPT="primary_setup/mongodb_elect_primary.sh"
+REPLICA_SCRIPT="primary_setup/setup_replica_config.sh"
 FIX_SCRIPT="run_fix_all_configs.sh"
 
 clear
@@ -27,6 +29,10 @@ fi
 
 if [ ! -f "$MULTI_SERVER_SCRIPT" ]; then
     echo -e "${RED}Lỗi: Không tìm thấy script $MULTI_SERVER_SCRIPT${NC}"
+fi
+
+if [ ! -f "$ARBITER_SCRIPT" ]; then
+    echo -e "${RED}Lỗi: Không tìm thấy script $ARBITER_SCRIPT${NC}"
 fi
 
 if [ ! -f "$DEPLOY_SCRIPT" ]; then
@@ -65,11 +71,13 @@ fi
 echo -e "${BLUE}===== MENU =====${NC}"
 echo "1. Thiết lập Replica Set trên một máy chủ (3 node cùng một server)"
 echo "2. Thiết lập Replica Set phân tán (nhiều máy chủ khác nhau)"
-echo "3. Triển khai Replica Set từ xa (qua SSH)"
+echo "3. Thêm Arbiter"
 echo "4. Bầu chọn PRIMARY node mới"
-echo "5. Sửa lỗi và khôi phục"
-echo "6. Thoát"
-read -p "Lựa chọn của bạn (1-6): " choice
+echo "5. Thiết lập cấu hình Replica Set"
+echo "6. Triển khai Replica Set từ xa (qua SSH)"
+echo "7. Sửa lỗi và khôi phục"
+echo "8. Thoát"
+read -p "Lựa chọn của bạn (1-8): " choice
 
 case $choice in
     1)
@@ -83,12 +91,12 @@ case $choice in
         "./$MULTI_SERVER_SCRIPT"
         ;;
     3)
-        if [ -f "$DEPLOY_SCRIPT" ]; then
-            echo -e "${YELLOW}Đang chạy script triển khai từ xa...${NC}"
-            chmod +x "$DEPLOY_SCRIPT"
-            "./$DEPLOY_SCRIPT"
+        if [ -f "$ARBITER_SCRIPT" ]; then
+            echo -e "${YELLOW}Đang chạy script thêm Arbiter...${NC}"
+            chmod +x "$ARBITER_SCRIPT"
+            "./$ARBITER_SCRIPT"
         else
-            echo -e "${RED}Không tìm thấy script triển khai từ xa. Vui lòng kiểm tra lại đường dẫn.${NC}"
+            echo -e "${RED}Không tìm thấy script thêm Arbiter. Vui lòng kiểm tra lại đường dẫn.${NC}"
             exit 1
         fi
         ;;
@@ -103,6 +111,26 @@ case $choice in
         fi
         ;;
     5)
+        if [ -f "$REPLICA_SCRIPT" ]; then
+            echo -e "${YELLOW}Đang chạy script thiết lập cấu hình Replica Set...${NC}"
+            chmod +x "$REPLICA_SCRIPT"
+            "./$REPLICA_SCRIPT"
+        else
+            echo -e "${RED}Không tìm thấy script thiết lập cấu hình Replica Set. Vui lòng kiểm tra lại đường dẫn.${NC}"
+            exit 1
+        fi
+        ;;
+    6)
+        if [ -f "$DEPLOY_SCRIPT" ]; then
+            echo -e "${YELLOW}Đang chạy script triển khai từ xa...${NC}"
+            chmod +x "$DEPLOY_SCRIPT"
+            "./$DEPLOY_SCRIPT"
+        else
+            echo -e "${RED}Không tìm thấy script triển khai từ xa. Vui lòng kiểm tra lại đường dẫn.${NC}"
+            exit 1
+        fi
+        ;;
+    7)
         if [ -f "$FIX_SCRIPT" ]; then
             echo -e "${YELLOW}Đang chạy script sửa lỗi và khôi phục...${NC}"
             chmod +x "$FIX_SCRIPT"
@@ -112,7 +140,7 @@ case $choice in
             exit 1
         fi
         ;;
-    6)
+    8)
         echo -e "${YELLOW}Thoát.${NC}"
         exit 0
         ;;
