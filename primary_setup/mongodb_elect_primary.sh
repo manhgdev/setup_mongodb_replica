@@ -282,20 +282,17 @@ case $CHOICE in
     CURRENT_STATUS=$(mongosh --host $CURRENT_HOST --port $CURRENT_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
     try {
       status = rs.status();
-      config = rs.conf();
-      print('CONFIG:' + JSON.stringify(config));
       for (var i = 0; i < status.members.length; i++) {
         print('MEMBER:' + status.members[i].name + ':' + status.members[i].stateStr);
       }
       print('MASTER:' + (rs.isMaster().primary || 'NONE'));
-      print('STATE:' + rs.status().myState);
     } catch(e) {
       print('ERROR:' + e.message);
     }
     ")
     
     echo -e "${BLUE}===== TRẠNG THÁI HIỆN TẠI =====${NC}"
-    echo "$CURRENT_STATUS" | grep -v "CONFIG:"
+    echo "$CURRENT_STATUS"
     
     # Lấy PRIMARY hiện tại
     CURRENT_PRIMARY=$(echo "$CURRENT_STATUS" | grep "MASTER:" | cut -d':' -f2)
@@ -339,36 +336,8 @@ case $CHOICE in
     # Force chuyển PRIMARY
     echo -e "${YELLOW}Thực hiện force chuyển PRIMARY...${NC}"
     
-    # Bước 1: Tăng priority của target node
-    echo -e "${YELLOW}Bước 1: Tăng priority của target node...${NC}"
-    PRIORITY_RESULT=$(mongosh --host $PRIMARY_HOST --port $PRIMARY_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --eval "
-    try {
-      config = rs.conf();
-      for (var i = 0; i < config.members.length; i++) {
-        if (config.members[i].host == '$TARGET_HOST:$TARGET_PORT') {
-          config.members[i].priority = 10;
-          config.members[i].votes = 1;
-        } else {
-          config.members[i].priority = 1;
-          config.members[i].votes = 1;
-        }
-      }
-      result = rs.reconfig(config, {force: true});
-      print(JSON.stringify(result));
-    } catch(e) {
-      print('ERROR: ' + e.message);
-    }
-    ")
-    
-    if [[ "$PRIORITY_RESULT" == *"ERROR"* ]]; then
-      echo -e "${RED}Lỗi khi thay đổi priority.${NC}"
-      exit 1
-    fi
-    
-    echo -e "${GREEN}✓ Đã thay đổi priority thành công${NC}"
-    
-    # Bước 2: Step down PRIMARY hiện tại
-    echo -e "${YELLOW}Bước 2: Step down PRIMARY hiện tại...${NC}"
+    # Bước 1: Step down PRIMARY hiện tại
+    echo -e "${YELLOW}Bước 1: Step down PRIMARY hiện tại...${NC}"
     STEP_DOWN_RESULT=$(mongosh --host $PRIMARY_HOST --port $PRIMARY_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --eval "
     try {
       result = db.adminCommand({replSetStepDown: 60, force: true});
@@ -384,17 +353,17 @@ case $CHOICE in
     
     if [[ "$STEP_DOWN_RESULT" == *"ERROR"* ]]; then
       echo -e "${RED}Lỗi khi step down PRIMARY hiện tại.${NC}"
-      echo -e "${YELLOW}Tiếp tục thực hiện...${NC}"
-    else
-      echo -e "${GREEN}✓ Đã step down PRIMARY hiện tại${NC}"
+      exit 1
     fi
     
-    # Bước 3: Chờ bầu PRIMARY mới
-    echo -e "${YELLOW}Bước 3: Chờ bầu PRIMARY mới...${NC}"
+    echo -e "${GREEN}✓ Đã step down PRIMARY hiện tại${NC}"
+    
+    # Bước 2: Chờ bầu PRIMARY mới
+    echo -e "${YELLOW}Bước 2: Chờ bầu PRIMARY mới...${NC}"
     sleep 15
     
-    # Bước 4: Kiểm tra trạng thái cuối cùng
-    echo -e "${YELLOW}Bước 4: Kiểm tra trạng thái cuối cùng...${NC}"
+    # Bước 3: Kiểm tra trạng thái cuối cùng
+    echo -e "${YELLOW}Bước 3: Kiểm tra trạng thái cuối cùng...${NC}"
     FINAL_STATUS=$(mongosh --host $TARGET_HOST --port $TARGET_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
     try {
       status = rs.status();
@@ -403,7 +372,7 @@ case $CHOICE in
       }
       print('MASTER:' + (rs.isMaster().primary || 'NONE'));
     } catch(e) {
-      print('ERROR: ' + e.message);
+      print('ERROR:' + e.message);
     }
     ")
     
