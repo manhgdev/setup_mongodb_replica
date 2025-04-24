@@ -80,7 +80,7 @@ echo -e "${BLUE}
 ============================================================${NC}"
 echo -e "${YELLOW}1. Bầu bản thân làm PRIMARY${NC}"
 echo -e "${YELLOW}2. Bầu server khác làm PRIMARY${NC}"
-echo -e "${YELLOW}3. Chuyển PRIMARY sang server khác (không bầu)${NC}"
+echo -e "${YELLOW}3. Chuyển PRIMARY sang server khác (force)${NC}"
 echo -e "${YELLOW}4. Xem trạng thái replica set${NC}"
 echo -e "${YELLOW}5. Sửa lỗi node không reachable/healthy${NC}"
 echo -e "${YELLOW}6. Thay đổi port của node trong replica set${NC}"
@@ -275,47 +275,120 @@ case $CHOICE in
     ;;
     
   3)
-    # Chuyển PRIMARY sang server khác (không bầu)
+    # Chuyển PRIMARY sang server khác (force)
+    echo -e "${BLUE}===== FORCE CHUYỂN PRIMARY SANG SERVER KHÁC =====${NC}"
+    
+    # Kiểm tra trạng thái hiện tại
+    CURRENT_STATUS=$(mongosh --host $CURRENT_HOST --port $CURRENT_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
+    try {
+      status = rs.status();
+      for (var i = 0; i < status.members.length; i++) {
+        print('MEMBER:' + status.members[i].name + ':' + status.members[i].stateStr);
+      }
+      print('MASTER:' + (rs.isMaster().primary || 'NONE'));
+      print('STATE:' + rs.status().myState);
+    } catch(e) {
+      print('ERROR:' + e.message);
+    }
+    ")
+    
+    echo -e "${BLUE}===== TRẠNG THÁI HIỆN TẠI =====${NC}"
+    echo "$CURRENT_STATUS"
+    
+    # Kiểm tra xem có phải là PRIMARY không
+    CURRENT_STATE=$(echo "$CURRENT_STATUS" | grep "STATE:" | cut -d':' -f2)
+    
+    if [ "$CURRENT_STATE" != "1" ]; then
+      echo -e "${YELLOW}Server hiện tại không phải là PRIMARY. Đang kết nối đến PRIMARY...${NC}"
+      
+      # Lấy PRIMARY hiện tại
+      CURRENT_PRIMARY=$(echo "$CURRENT_STATUS" | grep "MASTER:" | cut -d':' -f2)
+      
+      if [ "$CURRENT_PRIMARY" = "NONE" ]; then
+        echo -e "${RED}Không thể xác định PRIMARY hiện tại.${NC}"
+        exit 1
+      fi
+      
+      # Cập nhật thông tin kết nối
+      CURRENT_HOST=$(echo $CURRENT_PRIMARY | cut -d':' -f1)
+      CURRENT_PORT=$(echo $CURRENT_PRIMARY | cut -d':' -f2)
+    fi
+    
     echo -e "${YELLOW}Thông tin về server sẽ nhận PRIMARY:${NC}"
     read -p "Địa chỉ IP/hostname của server mới: " TARGET_HOST
     
     read -p "Port của server mới [27017]: " TARGET_PORT
     TARGET_PORT=${TARGET_PORT:-27017}
     
-    # Kiểm tra PRIMARY hiện tại
-    CURRENT_PRIMARY=$(mongosh --host $CURRENT_HOST --port $CURRENT_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
+    # Kiểm tra server đích
+    TARGET_STATUS=$(mongosh --host $TARGET_HOST --port $TARGET_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
     try {
-      print(rs.isMaster().primary || 'NONE');
+      status = rs.status();
+      for (var i = 0; i < status.members.length; i++) {
+        print('MEMBER:' + status.members[i].name + ':' + status.members[i].stateStr);
+      }
+      print('MASTER:' + (rs.isMaster().primary || 'NONE'));
     } catch(e) {
       print('ERROR:' + e.message);
     }
     ")
     
-    if [ "$CURRENT_PRIMARY" = "NONE" ]; then
-      echo -e "${RED}Không thể xác định PRIMARY hiện tại.${NC}"
-      exit 1
-    fi
+    echo -e "${BLUE}===== TRẠNG THÁI SERVER ĐÍCH =====${NC}"
+    echo "$TARGET_STATUS"
     
-    echo -e "${YELLOW}PRIMARY hiện tại: $CURRENT_PRIMARY${NC}"
-    
-    # Thực hiện step down
-    STEP_DOWN_RESULT=$(mongosh --host $CURRENT_PRIMARY -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --eval "
+    # Force chuyển PRIMARY
+    echo -e "${YELLOW}Thực hiện force chuyển PRIMARY...${NC}"
+    FORCE_RESULT=$(mongosh --host $CURRENT_HOST --port $CURRENT_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --eval "
     try {
-      result = db.adminCommand({replSetStepDown: 60, force: true});
+      config = rs.conf();
+      for (var i = 0; i < config.members.length; i++) {
+        if (config.members[i].host == '$TARGET_HOST:$TARGET_PORT') {
+          config.members[i].priority = 10;
+          config.members[i].votes = 1;
+        } else {
+          config.members[i].priority = 1;
+          config.members[i].votes = 1;
+        }
+      }
+      result = rs.reconfig(config, {force: true});
       print(JSON.stringify(result));
     } catch(e) {
       print('ERROR: ' + e.message);
     }
     ")
     
-    echo "$STEP_DOWN_RESULT"
+    echo "$FORCE_RESULT"
     
-    if [[ "$STEP_DOWN_RESULT" == *"ERROR"* ]]; then
-      echo -e "${RED}Lỗi khi thực hiện step down.${NC}"
+    if [[ "$FORCE_RESULT" == *"ERROR"* ]]; then
+      echo -e "${RED}Lỗi khi force chuyển PRIMARY.${NC}"
       exit 1
     fi
     
-    echo -e "${GREEN}Đã thực hiện step down thành công.${NC}"
+    echo -e "${GREEN}Đã force chuyển PRIMARY thành công. Chờ xác nhận...${NC}"
+    sleep 15
+    
+    # Kiểm tra trạng thái cuối cùng
+    FINAL_STATUS=$(mongosh --host $CURRENT_HOST --port $CURRENT_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
+    try {
+      status = rs.status();
+      for (var i = 0; i < status.members.length; i++) {
+        print('MEMBER:' + status.members[i].name + ':' + status.members[i].stateStr);
+      }
+      print('MASTER:' + (rs.isMaster().primary || 'NONE'));
+    } catch(e) {
+      print('ERROR:' + e.message);
+    }
+    ")
+    
+    echo -e "${BLUE}===== TRẠNG THÁI CUỐI CÙNG =====${NC}"
+    echo "$FINAL_STATUS"
+    
+    NEW_PRIMARY=$(echo "$FINAL_STATUS" | grep "MASTER:" | cut -d':' -f2)
+    if [ "$NEW_PRIMARY" = "$TARGET_HOST:$TARGET_PORT" ]; then
+      echo -e "${GREEN}Server $TARGET_HOST:$TARGET_PORT đã trở thành PRIMARY!${NC}"
+    else
+      echo -e "${YELLOW}Server $TARGET_HOST:$TARGET_PORT chưa trở thành PRIMARY. Vui lòng thử lại sau.${NC}"
+    fi
     ;;
     
   4)
