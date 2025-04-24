@@ -295,24 +295,17 @@ case $CHOICE in
     echo -e "${BLUE}===== TRẠNG THÁI HIỆN TẠI =====${NC}"
     echo "$CURRENT_STATUS"
     
-    # Kiểm tra xem có phải là PRIMARY không
-    CURRENT_STATE=$(echo "$CURRENT_STATUS" | grep "STATE:" | cut -d':' -f2)
+    # Lấy PRIMARY hiện tại
+    CURRENT_PRIMARY=$(echo "$CURRENT_STATUS" | grep "MASTER:" | cut -d':' -f2)
     
-    if [ "$CURRENT_STATE" != "1" ]; then
-      echo -e "${YELLOW}Server hiện tại không phải là PRIMARY. Đang kết nối đến PRIMARY...${NC}"
-      
-      # Lấy PRIMARY hiện tại
-      CURRENT_PRIMARY=$(echo "$CURRENT_STATUS" | grep "MASTER:" | cut -d':' -f2)
-      
-      if [ "$CURRENT_PRIMARY" = "NONE" ]; then
-        echo -e "${RED}Không thể xác định PRIMARY hiện tại.${NC}"
-        exit 1
-      fi
-      
-      # Cập nhật thông tin kết nối
-      CURRENT_HOST=$(echo $CURRENT_PRIMARY | cut -d':' -f1)
-      CURRENT_PORT=$(echo $CURRENT_PRIMARY | cut -d':' -f2)
+    if [ "$CURRENT_PRIMARY" = "NONE" ]; then
+      echo -e "${RED}Không thể xác định PRIMARY hiện tại.${NC}"
+      exit 1
     fi
+    
+    # Cập nhật thông tin kết nối
+    PRIMARY_HOST=$(echo $CURRENT_PRIMARY | cut -d':' -f1)
+    PRIMARY_PORT=$(echo $CURRENT_PRIMARY | cut -d':' -f2)
     
     echo -e "${YELLOW}Thông tin về server sẽ nhận PRIMARY:${NC}"
     read -p "Địa chỉ IP/hostname của server mới: " TARGET_HOST
@@ -338,7 +331,7 @@ case $CHOICE in
     
     # Force chuyển PRIMARY
     echo -e "${YELLOW}Thực hiện force chuyển PRIMARY...${NC}"
-    FORCE_RESULT=$(mongosh --host $CURRENT_HOST --port $CURRENT_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --eval "
+    FORCE_RESULT=$(mongosh --host $PRIMARY_HOST --port $PRIMARY_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --eval "
     try {
       config = rs.conf();
       for (var i = 0; i < config.members.length; i++) {
@@ -368,7 +361,7 @@ case $CHOICE in
     sleep 15
     
     # Kiểm tra trạng thái cuối cùng
-    FINAL_STATUS=$(mongosh --host $CURRENT_HOST --port $CURRENT_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
+    FINAL_STATUS=$(mongosh --host $PRIMARY_HOST --port $PRIMARY_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
     try {
       status = rs.status();
       for (var i = 0; i < status.members.length; i++) {
