@@ -379,6 +379,15 @@ setup_secondary() {
     read -p "Nhập IP của SERVER PRIMARY: " PRIMARY_IP
     [ -z "$PRIMARY_IP" ] && echo -e "${RED}❌ Cần IP PRIMARY${NC}" && return 1
     
+    # Kiểm tra kết nối - gộp thông báo
+    echo -n "→ Kiểm tra kết nối đến PRIMARY... "
+    if ! nc -z $PRIMARY_IP 27017 &>/dev/null; then 
+        echo -e "${RED}KHÔNG KẾT NỐI ĐƯỢC${NC}" 
+        return 1
+    else
+        echo -e "${GREEN}OK${NC}"
+    fi
+    
     # Thông báo dọn dẹp
     echo "→ Dọn dẹp môi trường MongoDB..."
     # Tắt dịch vụ và xóa tiến trình - không hiển thị output
@@ -401,41 +410,23 @@ setup_secondary() {
     } &>/dev/null
     echo "  ✓ Đã dọn dẹp xong"
     
-    # Kiểm tra và sao chép keyfile từ PRIMARY nếu cần
-    echo -n "→ Kiểm tra keyfile... "
-    if [ "$SERVER_IP" != "$PRIMARY_IP" ]; then
-        echo ""
-        echo "  + Lấy keyfile từ PRIMARY server..."
-        scp root@$PRIMARY_IP:/etc/mongodb.keyfile /tmp/mongodb.keyfile.remote
-        if [ -f "/tmp/mongodb.keyfile.remote" ]; then
-            sudo cp /tmp/mongodb.keyfile.remote /etc/mongodb.keyfile
-            sudo chmod 400 /etc/mongodb.keyfile
-            sudo chown mongodb:mongodb /etc/mongodb.keyfile
-            rm -f /tmp/mongodb.keyfile.remote
-            echo "  ✓ Đã sao chép keyfile từ PRIMARY"
-        else
-            echo -e "${YELLOW}  ⚠️ Không lấy được keyfile từ PRIMARY, tạo keyfile mới${NC}"
-            sudo bash -c "openssl rand -base64 756 > /etc/mongodb.keyfile"
-            sudo chmod 400 /etc/mongodb.keyfile
-            sudo chown mongodb:mongodb /etc/mongodb.keyfile
-        fi
-    else
-        echo -e "${GREEN}OK${NC} (Đây là PRIMARY server)"
-    fi
-    
-    # Tạo thư mục - gộp thông báo
+    # Tạo thư mục
     echo "→ Chuẩn bị môi trường..."
     {
-        # Tạo thư mục
         for port in $SECONDARY_PORT $ARBITER1_PORT $ARBITER2_PORT; do
             sudo mkdir -p /var/lib/mongodb_${port} /var/log/mongodb
             sudo chmod 770 /var/lib/mongodb_${port}
             sudo chown -R mongodb:mongodb /var/lib/mongodb_${port}
             sudo chown -R mongodb:mongodb /var/log/mongodb
         done
-        
-        # Tạo file cấu hình
-        sudo bash -c "cat > /etc/mongod_27017.conf << EOF
+    } &>/dev/null
+    echo "  ✓ Thư mục đã sẵn sàng"
+    
+    ############### BƯỚC 1: KHỞI ĐỘNG KHÔNG AUTHENTICATION ##################
+    echo "→ Bước 1: Tạo cấu hình tạm thời (không xác thực)..."
+    # Tạo cấu hình MongoDB tạm thời (không có xác thực)
+    {
+        sudo bash -c "cat > /etc/mongod_27017_temp.conf << EOF
 storage:
   dbPath: /var/lib/mongodb_27017
 systemLog:
@@ -445,6 +436,72 @@ systemLog:
 net:
   port: 27017
   bindIp: 0.0.0.0
+replication:
+  replSetName: rs0
+setParameter:
+  allowMultipleArbiters: true
+EOF"
+        sudo chown mongodb:mongodb /etc/mongod_27017_temp.conf
+        sudo chmod 644 /etc/mongod_27017_temp.conf
+    } &>/dev/null
+    echo "  ✓ Cấu hình tạm thời đã tạo"
+    
+    # Khởi động MongoDB tạm thời (không xác thực)
+    echo "→ Đang khởi động MongoDB tạm thời (không xác thực)..."
+    sudo -u mongodb mongod --config /etc/mongod_27017_temp.conf --fork &>/dev/null
+    sleep 5
+    
+    # Kiểm tra xem MongoDB đã chạy chưa
+    if ! pgrep -f "mongod.*27017" > /dev/null; then
+        echo -e "${RED}❌ Không thể khởi động MongoDB tạm thời${NC}"
+        sudo cat /var/log/mongodb/mongod_27017.log | tail -n 20
+        return 1
+    fi
+    echo "  ✓ MongoDB đã khởi động (không xác thực)"
+    
+    # Khởi tạo replica set nếu chưa
+    echo "→ Khởi tạo replica set cục bộ..."
+    mongosh --port 27017 --eval "rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'localhost:27017'}]})" --quiet
+    sleep 2
+    echo "  ✓ Replica set đã khởi tạo cục bộ"
+    
+    # Tạo admin user
+    echo "→ Tạo admin user..."
+    mongosh --port 27017 --eval "
+    db.getSiblingDB('admin').createUser({
+        user: '$ADMIN_USER',
+        pwd: '$ADMIN_PASS',
+        roles: [
+            { role: 'root', db: 'admin' },
+            { role: 'clusterAdmin', db: 'admin' },
+            { role: 'userAdminAnyDatabase', db: 'admin' },
+            { role: 'dbAdminAnyDatabase', db: 'admin' },
+            { role: 'readWriteAnyDatabase', db: 'admin' }
+        ]
+    })" --quiet
+    sleep 2
+    echo "  ✓ Đã tạo admin user"
+    
+    # Shutdown server tạm thời
+    echo "→ Đang tắt MongoDB tạm thời..."
+    mongosh --port 27017 --eval "db.adminCommand({shutdown:1})" --quiet || sudo pkill -f "mongod.*27017"
+    sleep 3
+    echo "  ✓ Đã tắt server tạm thời"
+    
+    ############### BƯỚC 2: TẠO CẤU HÌNH CHÍNH THỨC ##################
+    echo "→ Bước 2: Tạo cấu hình chính thức (có xác thực)..."
+    {
+        # Tạo file cấu hình SECONDARY (có xác thực)
+        sudo bash -c "cat > /etc/mongod_27017.conf << EOF
+storage:
+  dbPath: /var/lib/mongodb_27017
+systemLog:
+  destination: file
+  logAppend: true
+  path: /var/log/mongodb/mongod_27017.log
+net:
+  port: 27017
+  bindIp: 0.0.0.0,127.0.0.1
 security:
   keyFile: /etc/mongodb.keyfile
   authorization: enabled
@@ -454,7 +511,7 @@ setParameter:
   allowMultipleArbiters: true
 EOF"
 
-        # Tạo 2 file cấu hình còn lại tương tự
+        # Tạo 2 file cấu hình cho ARBITER (có xác thực)
         sudo cp /etc/mongod_27017.conf /etc/mongod_27018.conf
         sudo cp /etc/mongod_27017.conf /etc/mongod_27019.conf
         
@@ -488,21 +545,42 @@ EOF"
         
         sudo systemctl daemon-reload
     } &>/dev/null
-    echo "  ✓ Môi trường đã sẵn sàng"
+    echo "  ✓ Cấu hình chính thức đã tạo"
     
-    # Khởi động MongoDB
-    echo "→ Khởi động MongoDB..."
+    ############### BƯỚC 3: KHỞI ĐỘNG VỚI AUTHENTICATION ##################
+    echo "→ Bước 3: Khởi động MongoDB chính thức (có xác thực)..."
     {
         sudo systemctl start mongod_27017
         sleep 3
-        sudo systemctl start mongod_27018
-        sudo systemctl start mongod_27019
+    } &>/dev/null
+    
+    # Kiểm tra xem MongoDB đã chạy chưa
+    if ! pgrep -f "mongod.*27017" > /dev/null; then
+        echo -e "${RED}❌ Không thể khởi động MongoDB chính thức${NC}"
+        sudo cat /var/log/mongodb/mongod_27017.log | tail -n 20
+        return 1
+    fi
+    echo "  ✓ MongoDB SECONDARY đã khởi động thành công"
+    
+    # Kiểm tra kết nối đến SECONDARY với admin
+    echo -n "→ Kiểm tra kết nối local với xác thực... "
+    if ! mongosh --host 127.0.0.1 --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db.version()" --quiet &>/dev/null; then
+        echo -e "${RED}LỖI${NC}"
+        return 1
+    else
+        echo -e "${GREEN}OK${NC}"
+    fi
+    
+    # Khởi động các ARBITER
+    echo "→ Khởi động các ARBITER..."
+    {
+        sudo systemctl start mongod_27018 mongod_27019
         sleep 3
     } &>/dev/null
-    echo "  ✓ Dịch vụ đã khởi động"
+    echo "  ✓ Các ARBITER đã khởi động"
     
     # Kiểm tra kết nối đến PRIMARY
-    echo -n "→ Kiểm tra kết nối đến PRIMARY... "
+    echo -n "→ Kiểm tra kết nối đến PRIMARY (có xác thực)... "
     if ! mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db.version()" --quiet &>/dev/null; then
         echo -e "${RED}LỖI${NC}"
         return 1
@@ -510,7 +588,7 @@ EOF"
         echo -e "${GREEN}OK${NC}"
     fi
     
-    # Thêm node vào replica set
+    ############### BƯỚC 4: THÊM VÀO REPLICA SET ##################
     echo "→ Thêm các node vào replica set..."
     {
         echo "  + Thêm SECONDARY node: $SERVER_IP:27017"
@@ -525,6 +603,20 @@ EOF"
     }
     echo "  ✓ Đã thêm các node vào replica set"
     
+    # Đăng ký service khởi động tự động
+    echo "→ Đăng ký service khởi động tự động..."
+    {
+        sudo systemctl enable mongod_27017 mongod_27018 mongod_27019
+    } &>/dev/null
+    echo "  ✓ Đã đăng ký service khởi động tự động"
+    
+    # Xóa file cấu hình tạm thời
+    sudo rm -f /etc/mongod_27017_temp.conf &>/dev/null
+    
+    # Hiển thị trạng thái replica set
+    echo "→ Trạng thái replica set hiện tại:"
+    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()"
+    
     # Hoàn tất
     echo ""
     echo -e "${GREEN}=== THIẾT LẬP THÀNH CÔNG ===${NC}"
@@ -532,7 +624,7 @@ EOF"
     echo -e "${GREEN}Connection string:${NC}"
     echo "mongodb://$ADMIN_USER:$ADMIN_PASS@$PRIMARY_IP:27017,$SERVER_IP:27017/admin?replicaSet=rs0&readPreference=primary&retryWrites=true&w=majority"
     echo -e "${YELLOW}CHÚ Ý: MongoDB đang chạy với xác thực bật. Sử dụng username: $ADMIN_USER, password: $ADMIN_PASS${NC}"
-
+    
     echo ""
     echo -e "${GREEN}Lệnh kiểm tra replica set:${NC}"
     echo "mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval \"rs.status()\""
