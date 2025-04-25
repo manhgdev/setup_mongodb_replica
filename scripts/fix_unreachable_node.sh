@@ -212,6 +212,98 @@ force_recover_node() {
     fi
 }
 
+# Khôi phục node không reachable bằng cách force reconfigure
+force_reconfigure_node() {
+    local NODE_IP=$1
+    local NODE_PORT=$2
+    local ADMIN_USER=$3
+    local ADMIN_PASS=$4
+    local PRIMARY_IP=$5
+    
+    echo -e "${YELLOW}Đang khôi phục node $NODE_IP:$NODE_PORT bằng cách force reconfigure...${NC}"
+    
+    # Kiểm tra trạng thái replica set
+    echo -e "${YELLOW}Kiểm tra trạng thái replica set...${NC}"
+    local status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
+    
+    # Lấy danh sách các node trong replica set
+    echo -e "${YELLOW}Lấy danh sách các node trong replica set...${NC}"
+    local members=$(echo "$status" | grep -A 100 "members" | grep "name" | awk -F'"' '{print $4}')
+    
+    # Tạo cấu hình mới cho replica set
+    echo -e "${YELLOW}Tạo cấu hình mới cho replica set...${NC}"
+    local config="{ _id: 'rs0', members: ["
+    
+    # Thêm các node vào cấu hình
+    local first=true
+    for member in $members; do
+        if [ "$first" = true ]; then
+            first=false
+        else
+            config="$config,"
+        fi
+        
+        # Kiểm tra node có phải là node cần khôi phục không
+        if [ "$member" = "$NODE_IP:$NODE_PORT" ]; then
+            # Đặt priority cao hơn để node này trở thành PRIMARY
+            config="$config{ _id: $(echo "$status" | grep -A 10 "$member" | grep "_id" | awk '{print $2}' | tr -d ','), host: '$member', priority: 10 }"
+        else
+            # Các node khác giữ nguyên priority
+            config="$config{ _id: $(echo "$status" | grep -A 10 "$member" | grep "_id" | awk '{print $2}' | tr -d ','), host: '$member' }"
+        fi
+    done
+    
+    # Thêm node cần khôi phục nếu chưa có trong danh sách
+    if ! echo "$members" | grep -q "$NODE_IP:$NODE_PORT"; then
+        if [ "$first" = true ]; then
+            first=false
+        else
+            config="$config,"
+        fi
+        
+        # Tìm ID cao nhất và tăng thêm 1
+        local max_id=$(echo "$status" | grep "_id" | awk '{print $2}' | sort -n | tail -1)
+        local new_id=$((max_id + 1))
+        
+        config="$config{ _id: $new_id, host: '$NODE_IP:$NODE_PORT', priority: 10 }"
+    fi
+    
+    config="$config ] }"
+    
+    # In ra cấu hình mới
+    echo -e "${YELLOW}Cấu hình mới:${NC}"
+    echo "$config"
+    
+    # Force reconfigure replica set
+    echo -e "${YELLOW}Force reconfigure replica set...${NC}"
+    local reconfigure_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
+    rs.reconfig($config, {force: true})" --quiet)
+    
+    if echo "$reconfigure_result" | grep -q "ok"; then
+        echo -e "${GREEN}✅ Đã force reconfigure replica set thành công${NC}"
+    else
+        echo -e "${RED}❌ Không thể force reconfigure replica set${NC}"
+        echo "Lỗi: $reconfigure_result"
+        return 1
+    fi
+    
+    # Đợi replica set ổn định
+    echo -e "${YELLOW}Đợi replica set ổn định (30 giây)...${NC}"
+    sleep 30
+    
+    # Kiểm tra trạng thái node
+    local status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
+    
+    if echo "$status" | grep -q "$NODE_IP:$NODE_PORT.*SECONDARY"; then
+        echo -e "${GREEN}✅ Node $NODE_IP:$NODE_PORT đã hoạt động bình thường${NC}"
+        return 0
+    else
+        echo -e "${RED}❌ Node $NODE_IP:$NODE_PORT vẫn không hoạt động bình thường${NC}"
+        echo "Trạng thái: $status"
+        return 1
+    fi
+}
+
 # Hàm chính để sửa lỗi node không reachable
 fix_unreachable_node_menu() {
     echo -e "${YELLOW}=== Sửa lỗi node không reachable ===${NC}"
@@ -246,7 +338,8 @@ fix_unreachable_node_menu() {
     echo "1. Kiểm tra và sửa các vấn đề"
     echo "2. Sửa lỗi và thêm lại vào replica set"
     echo "3. Khôi phục node bằng cách xóa và thêm lại"
-    read -p "Lựa chọn (1-3): " action
+    echo "4. Khôi phục node bằng cách force reconfigure"
+    read -p "Lựa chọn (1-4): " action
     
     case $action in
         1)
@@ -257,6 +350,9 @@ fix_unreachable_node_menu() {
             ;;
         3)
             force_recover_node "$NODE_IP" "$NODE_PORT" "$ADMIN_USER" "$ADMIN_PASS" "$PRIMARY_IP"
+            ;;
+        4)
+            force_reconfigure_node "$NODE_IP" "$NODE_PORT" "$ADMIN_USER" "$ADMIN_PASS" "$PRIMARY_IP"
             ;;
         *)
             echo -e "${RED}❌ Lựa chọn không hợp lệ${NC}"
