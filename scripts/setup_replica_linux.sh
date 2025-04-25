@@ -40,12 +40,12 @@ storage:
 net:
   bindIp: 0.0.0.0
   port: $PORT
+  unixDomainSocket:
+    enabled: false
 replication:
   replSetName: rs0
 setParameter:
   allowMultipleArbiters: true
-processManagement:
-  fork: true
 EOL
 
     # Start MongoDB
