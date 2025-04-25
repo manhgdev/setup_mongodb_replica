@@ -283,189 +283,103 @@ setup_primary() {
     fi
 }
 
-# Fix authentication issues
-fix_auth_issues() {
-    local SERVER_IP=$(hostname -I | awk '{print $1}')
-    local PORT=27017
-    
-    echo -e "${YELLOW}Khắc phục lỗi xác thực MongoDB${NC}"
-    echo "=================================================="
-    
-    # 1. Kiểm tra keyfile
-    echo -e "\n${GREEN}Bước 1: Kiểm tra tập tin keyfile${NC}"
-    if [ ! -f "/etc/mongodb.keyfile" ]; then
-        echo -e "${RED}❌ Không tìm thấy keyfile tại /etc/mongodb.keyfile${NC}"
-        echo "Tạo keyfile mới..."
-        create_keyfile "/etc/mongodb.keyfile"
-    else
-        echo -e "${GREEN}✅ Đã tìm thấy keyfile tại /etc/mongodb.keyfile${NC}"
-        sudo chmod 400 /etc/mongodb.keyfile
-        sudo chown mongodb:mongodb /etc/mongodb.keyfile
-    fi
-    
-    # 2. Dừng MongoDB
-    echo -e "\n${GREEN}Bước 2: Dừng dịch vụ MongoDB${NC}"
-    stop_mongodb
-    
-    # 3. Tạo cấu hình với bảo mật
-    echo -e "\n${GREEN}Bước 3: Cập nhật cấu hình với bảo mật${NC}"
-    create_config true
-    
-    # 4. Khởi động lại với bảo mật
-    echo -e "\n${GREEN}Bước 4: Khởi động lại MongoDB với bảo mật${NC}"
-    sudo systemctl daemon-reload
-    sudo systemctl restart mongod_$PORT
-    sleep 5
-    
-    # 5. Kiểm tra kết nối với xác thực
-    echo -e "\n${GREEN}Bước 5: Kiểm tra kết nối với xác thực${NC}"
-    echo "Thử kết nối với người dùng mặc định..."
-    
-    local auth_test=$(mongosh --port $PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db.adminCommand('ping')" --quiet 2>&1)
-    
-    if [[ $auth_test == *"ok"* ]]; then
-        echo -e "${GREEN}✅ Đã kết nối thành công với xác thực!${NC}"
-        echo -e "\n${GREEN}Khắc phục lỗi xác thực thành công!${NC}"
-        echo -e "\n${GREEN}Lệnh kết nối:${NC}"
-        echo "mongosh --host $SERVER_IP --port $PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
-    else
-        echo -e "${RED}❌ Không thể kết nối với xác thực${NC}"
-        echo "Lỗi: $auth_test"
-        
-        # Tạo lại user
-        echo -e "\n${YELLOW}Thử tạo lại user admin...${NC}"
-        # Tạm thời tắt xác thực
-        create_config false
-        sudo systemctl restart mongod_$PORT
-        sleep 5
-        
-        # Tạo lại user admin
-        create_admin_user $ADMIN_USER $ADMIN_PASS
-        
-        # Bật lại xác thực
-        create_config true
-        sudo systemctl restart mongod_$PORT
-        sleep 5
-        
-        # Kiểm tra lại
-        local auth_test2=$(mongosh --port $PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db.adminCommand('ping')" --quiet 2>&1)
-        
-        if [[ $auth_test2 == *"ok"* ]]; then
-            echo -e "${GREEN}✅ Đã kết nối thành công sau khi tạo lại user!${NC}"
-        else
-            echo -e "${RED}❌ Vẫn không thể kết nối với xác thực sau khi tạo lại user${NC}"
-            echo "Xem log để kiểm tra lỗi:"
-            tail -n 20 /var/log/mongodb/mongod_${PORT}.log
-        fi
-    fi
-}
+# Setup SECONDARY server
+setup_secondary() {
+    local SERVER_IP=$1
+    local PRIMARY_IP=$2
+    local SECONDARY_PORT=27017
 
-# Emergency fix for replica set
-emergency_fix_replica() {
-    echo -e "${RED}===== KHẮC PHỤC KHẨN CẤP REPLICA SET =====${NC}"
-    
-    # Nhận thông tin kết nối
-    local SERVER_IP=$(hostname -I | awk '{print $1}')
-    local PORT=27017
-    
-    # Bước 1: Kiểm tra trạng thái hiện tại
-    echo -e "\n${YELLOW}Bước 1: Kiểm tra trạng thái hiện tại của MongoDB${NC}"
-    
-    # Dừng dịch vụ hiện tại
+    if [ -z "$PRIMARY_IP" ]; then
+        read -p "Enter PRIMARY server IP: " PRIMARY_IP
+    fi
+
+    echo -e "${GREEN}Thiết lập MongoDB SECONDARY node trên port $SECONDARY_PORT${NC}"
+
     stop_mongodb
+    create_dirs
     
-    # Bước 2: Cấu hình lại MongoDB
-    echo -e "\n${YELLOW}Bước 2: Tạo cấu hình mới không có bảo mật${NC}"
+    # Configure firewall
+    configure_firewall
+    
+    # Create initial config WITHOUT security first
     create_config false
     
-    # Bước 3: Khởi động MongoDB
-    echo -e "\n${YELLOW}Bước 3: Khởi động lại MongoDB${NC}"
-    mongod --config /etc/mongod_${PORT}.conf --fork
+    # Start MongoDB
+    echo "Starting MongoDB node..."
+    mongod --config /etc/mongod_27017.conf --fork
     sleep 5
     
-    # Bước 4: Khởi tạo lại replica set
-    echo -e "\n${YELLOW}Bước 4: Khởi tạo lại replica set${NC}"
+    # Check if MongoDB is running
+    if ! mongosh --port $SECONDARY_PORT --eval "db.version()" --quiet &>/dev/null; then
+        echo -e "${RED}❌ Failed to start MongoDB node${NC}"
+        echo "Last 50 lines of log:"
+        tail -n 50 /var/log/mongodb/mongod_27017.log
+        return 1
+    fi
     
-    # Tạo script khởi tạo
-    local init_script="
-    try {
-        rs.initiate({
-            _id: 'rs0',
-            members: [
-                { _id: 0, host: '$SERVER_IP:$PORT', priority: 10 }
-            ]
-        });
-        print('Đã khởi tạo replica set');
-    } catch (e) {
-        print('Lỗi khi khởi tạo: ' + e);
-    }
-    "
+    # Connect to Primary and add this node
+    echo "Adding node to replica set..."
+    echo -e "${GREEN}Kết nối tới PRIMARY $PRIMARY_IP và thêm node $SERVER_IP:$SECONDARY_PORT${NC}"
     
-    echo "Thực hiện khởi tạo replica set..."
-    local init_result=$(mongosh --host $SERVER_IP --port $PORT --eval "$init_script" --quiet)
+    echo "Please enter PRIMARY server credentials:"
+    read -p "Username [$ADMIN_USER]: " PRIMARY_USER
+    PRIMARY_USER=${PRIMARY_USER:-$ADMIN_USER}
+    read -sp "Password [$ADMIN_PASS]: " PRIMARY_PASS
+    PRIMARY_PASS=${PRIMARY_PASS:-$ADMIN_PASS}
+    echo ""
     
-    echo "$init_result"
+    local add_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "
+    rs.add('$SERVER_IP:$SECONDARY_PORT')")
     
-    # Bước 5: Chờ PRIMARY được bầu
-    echo -e "\n${YELLOW}Bước 5: Chờ PRIMARY được bầu (15 giây)${NC}"
-    sleep 15
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}❌ Failed to add node to replica set${NC}"
+        echo "Error: $add_result"
+        return 1
+    fi
     
-    # Kiểm tra trạng thái
-    local status_check=$(mongosh --host $SERVER_IP --port $PORT --eval "rs.status()" --quiet)
-    echo "$status_check"
+    echo "Waiting for node to be added..."
+    sleep 10
     
-    # Bước 6: Tạo admin user và bật xác thực
-    echo -e "\n${YELLOW}Bước 6: Tạo admin user và bật xác thực${NC}"
-    
-    # Tạo admin user
-    create_admin_user $ADMIN_USER $ADMIN_PASS
-    
-    # Tạo keyfile và bật xác thực
+    # Create keyfile and update config WITH security
     create_keyfile "/etc/mongodb.keyfile"
     create_config true
     
-    # Khởi động lại với xác thực
-    sudo mongod --dbpath /var/lib/mongodb_${PORT} --port ${PORT} --shutdown
+    # Create systemd service
+    echo "Creating systemd service..."
+    create_systemd_service || return 1
+    
+    # Restart service with security
+    echo "Restarting service with security..."
+    sudo systemctl restart mongod_27017
     sleep 5
-    sudo systemctl daemon-reload
-    sudo systemctl restart mongod_$PORT
-    sleep 10
     
-    # Bước 7: Kiểm tra kết nối với xác thực
-    echo -e "\n${YELLOW}Bước 7: Kiểm tra kết nối với xác thực${NC}"
+    # Check replica set status
+    echo "Checking replica set status..."
+    local status=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
     
-    local auth_test=$(mongosh --port $PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet 2>&1)
-    
-    if [[ $auth_test == *"PRIMARY"* ]]; then
-        echo -e "${GREEN}✅ Replica set đã được khôi phục thành công!${NC}"
-        echo -e "\n${GREEN}Lệnh kết nối:${NC}"
-        echo "mongosh --host $SERVER_IP --port $PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
-    else
-        echo -e "${RED}❌ Không thể kết nối với xác thực sau khi khôi phục${NC}"
-        echo "Lỗi: $auth_test"
-        echo "Xem log để biết thêm chi tiết:"
-        tail -n 20 /var/log/mongodb/mongod_${PORT}.log
-    fi
+    echo -e "\n${GREEN}✅ MongoDB SECONDARY node setup completed.${NC}"
+    echo "Connection Command:"
+    echo "mongosh --host $SERVER_IP --port $SECONDARY_PORT -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin"
 }
 
 # Main function
 setup_replica_linux() {
     echo "MongoDB Replica Set Setup for Linux"
     echo "===================================="
-    echo "1. Setup MongoDB Replica Set"
-    echo "2. Fix authentication issues"
-    echo "3. Emergency fix replica set"
-    echo "4. Return to main menu"
-    read -p "Select option (1-4): " option
+    echo "1. Setup PRIMARY server"
+    echo "2. Setup SECONDARY server"
+    echo "3. Return to main menu"
+    read -p "Select option (1-3): " option
 
     SERVER_IP=$(hostname -I | awk '{print $1}')
     echo "Using server IP: $SERVER_IP"
 
     case $option in
         1) setup_primary $SERVER_IP ;;
-        2) fix_auth_issues ;;
-        3) emergency_fix_replica ;;
-        4) return 0 ;;
+        2) 
+           read -p "Enter PRIMARY server IP: " PRIMARY_IP
+           setup_secondary $SERVER_IP $PRIMARY_IP ;;
+        3) return 0 ;;
         *) echo -e "${RED}❌ Invalid option${NC}" && return 1 ;;
     esac
 }
