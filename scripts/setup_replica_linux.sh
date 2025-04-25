@@ -368,19 +368,21 @@ setup_secondary() {
     
     # Check MongoDB port connectivity
     echo "Checking MongoDB port connectivity to PRIMARY..."
-    if ! nc -z -w5 $PRIMARY_IP 27017 &>/dev/null; then
+    if ! nc -zv $PRIMARY_IP 27017 &>/dev/null; then
         echo -e "${RED}❌ Cannot connect to PRIMARY MongoDB port${NC}"
         echo "Make sure MongoDB is running on PRIMARY and port 27017 is open"
+        echo "On PRIMARY server, check:"
+        echo "1. sudo systemctl status mongod_27017"
+        echo "2. sudo ufw status"
+        echo "3. grep bindIp /etc/mongod_27017.conf (should be 0.0.0.0)"
         return 1
     fi
     
     # Configure firewall
     configure_firewall
     
-    # Stop all MongoDB processes and remove data
-    echo "Stopping all MongoDB processes and removing data..."
-    stop_mongodb
-    sudo rm -rf /var/lib/mongodb_27017/* /var/lib/mongodb_27018/* /var/lib/mongodb_27019/*
+    # Clean up MongoDB environment
+    cleanup_mongodb
     
     # Create directories with correct permissions
     echo "Creating directories with correct permissions..."
@@ -394,7 +396,6 @@ setup_secondary() {
         sudo chmod 755 $LOG_PATH
     done
     
-    # Create keyfile
     create_keyfile
     
     # Create configs with security
@@ -403,45 +404,56 @@ setup_secondary() {
     create_config $ARBITER1_PORT true true false
     create_config $ARBITER2_PORT true true false
     
-    # Start MongoDB manually first for diagnosis
-    echo "Starting MongoDB manually for the SECONDARY node..."
-    sudo -u mongodb mongod --config /etc/mongod_${SECONDARY_PORT}.conf
+    # Create admin user before adding to replica set
+    echo "Creating admin user without auth..."
+    
+    # Start MongoDB without auth temporarily
+    echo "Starting MongoDB without auth temporarily..."
+    local TEMP_CONFIG="/tmp/mongod_temp.conf"
+    cat > $TEMP_CONFIG << EOF
+storage:
+  dbPath: /var/lib/mongodb_${SECONDARY_PORT}
+systemLog:
+  destination: file
+  logAppend: true
+  path: /var/log/mongodb/mongod_${SECONDARY_PORT}_temp.log
+net:
+  port: ${SECONDARY_PORT}
+  bindIp: 127.0.0.1
+processManagement:
+  timeZoneInfo: /usr/share/zoneinfo
+EOF
+    
+    sudo chown mongodb:mongodb $TEMP_CONFIG
+    sudo -u mongodb mongod --config $TEMP_CONFIG --fork
     sleep 5
     
-    if ! pgrep -f "mongod.*$SECONDARY_PORT" > /dev/null; then
-        echo -e "${RED}❌ Failed to start MongoDB for SECONDARY node${NC}"
-        echo "Trying to fix MongoDB startup..."
-        fix_mongodb_startup $SECONDARY_PORT
-        
-        if ! pgrep -f "mongod.*$SECONDARY_PORT" > /dev/null; then
-            echo -e "${RED}❌ Still cannot start MongoDB for SECONDARY node. Please check logs for details.${NC}"
-            sudo tail -n 50 /var/log/mongodb/mongod_${SECONDARY_PORT}.log
-            return 1
-        fi
-    else
-        echo -e "${GREEN}✅ MongoDB started successfully for SECONDARY node${NC}"
-    fi
+    # Create admin user
+    echo "Creating admin user..."
+    mongosh --port $SECONDARY_PORT --host 127.0.0.1 --eval "
+    use admin;
+    db.createUser({
+        user: '$ADMIN_USER',
+        pwd: '$ADMIN_PASS',
+        roles: ['root']
+    });" --quiet
     
-    # Start ARBITER nodes
-    echo "Starting MongoDB for ARBITER 1 node..."
-    sudo -u mongodb mongod --config /etc/mongod_${ARBITER1_PORT}.conf
+    # Stop temporary MongoDB
+    echo "Stopping temporary MongoDB..."
+    mongosh --port $SECONDARY_PORT --host 127.0.0.1 --eval "db.adminCommand({shutdown: 1})" --quiet
     sleep 5
     
-    echo "Starting MongoDB for ARBITER 2 node..."
-    sudo -u mongodb mongod --config /etc/mongod_${ARBITER2_PORT}.conf
-    sleep 5
-    
-    # Create systemd services and restart
+    # Create systemd services
     echo "Creating systemd services..."
     create_systemd_service $SECONDARY_PORT || return 1
     create_systemd_service $ARBITER1_PORT || return 1
     create_systemd_service $ARBITER2_PORT || return 1
     
-    # Restart services
-    echo "Restarting services via systemd..."
-    sudo systemctl restart mongod_${SECONDARY_PORT}
-    sudo systemctl restart mongod_${ARBITER1_PORT}
-    sudo systemctl restart mongod_${ARBITER2_PORT}
+    # Start services
+    echo "Starting MongoDB services..."
+    sudo systemctl start mongod_${SECONDARY_PORT}
+    sudo systemctl start mongod_${ARBITER1_PORT}
+    sudo systemctl start mongod_${ARBITER2_PORT}
     sleep 10
     
     # Check if MongoDB processes are running
@@ -451,14 +463,24 @@ setup_secondary() {
             echo -e "${RED}❌ MongoDB process for port $port is not running${NC}"
             echo "Checking logs:"
             sudo tail -n 50 /var/log/mongodb/mongod_${port}.log
-            fix_mongodb_startup $port
-            if ! pgrep -f "mongod.*$port" > /dev/null; then
-                echo -e "${RED}❌ Still cannot start MongoDB for port $port${NC}"
-                return 1
-            fi
+            echo "You might need to manually clean up and try again:"
+            echo "sudo rm -f /tmp/mongodb-*.sock"
+            echo "sudo rm -f /var/lib/mongodb_${port}/mongod.lock"
+            return 1
         fi
     done
     echo -e "${GREEN}✅ All MongoDB processes are running${NC}"
+    
+    # Test local MongoDB connection with auth
+    echo "Testing local MongoDB connection..."
+    if mongosh --host 127.0.0.1 --port $SECONDARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db.version()" --quiet; then
+        echo -e "${GREEN}✅ Local MongoDB connection successful${NC}"
+    else
+        echo -e "${RED}❌ Local MongoDB connection failed${NC}"
+        echo "Check MongoDB logs:"
+        sudo tail -n 50 /var/log/mongodb/mongod_${SECONDARY_PORT}.log
+        return 1
+    fi
     
     # Check if PRIMARY can be connected
     echo "Checking connection to PRIMARY server..."
@@ -468,11 +490,11 @@ setup_secondary() {
     fi
     echo -e "${GREEN}✅ Successfully connected to PRIMARY server${NC}"
     
-    # Check replica set status
+    # Add nodes to replica set
     echo "Checking replica set status on PRIMARY..."
     local rs_status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
     
-    # Remove nodes from replica set if they exist
+    # Check if nodes already exist and remove if needed
     for node in "$SERVER_IP:$SECONDARY_PORT" "$SERVER_IP:$ARBITER1_PORT" "$SERVER_IP:$ARBITER2_PORT"; do
         if echo "$rs_status" | grep -q "$node"; then
             echo "Removing $node from replica set..."
@@ -480,13 +502,6 @@ setup_secondary() {
             sleep 5
         fi
     done
-    
-    # Add nodes to replica set - starting with a clean SECONDARY
-    echo "Stopping SECONDARY node before adding to replica set..."
-    sudo systemctl stop mongod_${SECONDARY_PORT}
-    sudo rm -rf /var/lib/mongodb_${SECONDARY_PORT}/*
-    sudo systemctl start mongod_${SECONDARY_PORT}
-    sleep 10
     
     # Add SECONDARY node
     echo "Adding SECONDARY node to replica set..."
@@ -509,38 +524,6 @@ setup_secondary() {
     # Show replica set status
     echo "Current replica set status:"
     mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet
-    
-    # Sync admin credentials to SECONDARY - IMPORTANT FIX
-    echo "Creating admin user on SECONDARY for direct access..."
-    
-    # Stop SECONDARY node
-    echo "Stopping SECONDARY node to prepare for user sync..."
-    sudo systemctl stop mongod_${SECONDARY_PORT}
-    
-    # Start SECONDARY with localhost exception
-    echo "Starting SECONDARY node with localhost exception..."
-    sudo -u mongodb mongod --dbpath /var/lib/mongodb_${SECONDARY_PORT} --port ${SECONDARY_PORT} --bind_ip localhost,127.0.0.1,$SERVER_IP
-    sleep 5
-    
-    # Create admin user on SECONDARY
-    echo "Creating admin user on SECONDARY node..."
-    mongosh --host localhost --port ${SECONDARY_PORT} --eval "
-    use admin;
-    db.createUser({
-        user: '$ADMIN_USER',
-        pwd: '$ADMIN_PASS',
-        roles: ['root']
-    })" --quiet
-    
-    # Stop SECONDARY again
-    echo "Stopping SECONDARY node..."
-    mongod --dbpath /var/lib/mongodb_${SECONDARY_PORT} --port ${SECONDARY_PORT} --shutdown
-    sleep 5
-    
-    # Restart with normal config
-    echo "Restarting SECONDARY node with normal config..."
-    sudo systemctl start mongod_${SECONDARY_PORT}
-    sleep 10
     
     # Try to connect to SECONDARY directly
     echo "Testing connection to SECONDARY node..."
@@ -609,11 +592,22 @@ setup_secondary() {
 
 # Create keyfile
 create_keyfile() {
-    local KEYFILE="/etc/mongodb.keyfile"
-    openssl rand -base64 756 > $KEYFILE
-    chown mongodb:mongodb $KEYFILE
-    chmod 400 $KEYFILE
-    echo -e "${GREEN}✅ Keyfile created successfully${NC}"
+  echo -e "${YELLOW}Tạo keyfile xác thực...${NC}"
+  local keyfile=$1
+  
+  if [ ! -f "$keyfile" ]; then
+    openssl rand -base64 756 | sudo tee $keyfile > /dev/null
+    sudo chmod 400 $keyfile
+    local mongo_user="mongodb"
+    if ! getent passwd mongodb > /dev/null && getent passwd mongod > /dev/null; then
+      mongo_user="mongod"
+    fi
+    sudo chown $mongo_user:$mongo_user $keyfile
+    echo -e "${GREEN}✓ Đã tạo keyfile tại $keyfile${NC}"
+  else
+    sudo chown $mongo_user:$mongo_user $keyfile
+    echo -e "${GREEN}✓ Keyfile đã tồn tại${NC}"
+  fi
 }
 
 # Create admin user
@@ -712,6 +706,26 @@ configure_firewall() {
     fi
 }
 
+# Dọn dẹp môi trường MongoDB
+cleanup_mongodb() {
+    echo "Cleaning up MongoDB environment..."
+    
+    # Dừng tất cả dịch vụ MongoDB
+    stop_mongodb
+    
+    # Xóa các socket cũ
+    echo "Removing old socket files..."
+    sudo rm -f /tmp/mongodb-*.sock
+    
+    # Xóa file lock
+    echo "Removing lock files..."
+    for port in 27017 27018 27019; do
+        sudo rm -f /var/lib/mongodb_${port}/mongod.lock
+        sudo rm -f /var/lib/mongodb_${port}/WiredTiger.lock
+    done
+    
+    echo -e "${GREEN}✅ MongoDB environment cleaned up${NC}"
+}
 
 # Main function
 setup_replica_linux() {
