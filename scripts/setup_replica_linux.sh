@@ -374,10 +374,6 @@ setup_secondary() {
     read -p "PRIMARY server IP: " PRIMARY_IP
     [ -z "$PRIMARY_IP" ] && echo -e "${RED}❌ Cần IP PRIMARY${NC}" && return 1
     
-    # Kiểm tra kết nối
-    echo "Kiểm tra kết nối..."
-    ping -c 1 $PRIMARY_IP &>/dev/null || { echo -e "${RED}❌ Không ping được PRIMARY${NC}"; return 1; }
-    
     # Kiểm tra port
     nc -z $PRIMARY_IP 27017 &>/dev/null || { echo -e "${RED}❌ Port 27017 trên PRIMARY đóng${NC}"; return 1; }
     
