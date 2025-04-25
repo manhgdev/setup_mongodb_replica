@@ -447,6 +447,33 @@ setup_secondary() {
     create_dirs $SECONDARY_PORT
     create_dirs $ARBITER_PORT
     
+    # Check if keyfile exists
+    if [ ! -f "/etc/mongodb.keyfile" ]; then
+        echo -e "${RED}❌ Keyfile not found${NC}"
+        echo "Please copy keyfile from PRIMARY server first:"
+        echo "scp root@$PRIMARY_IP:/etc/mongodb.keyfile /etc/mongodb.keyfile"
+        echo "sudo chown mongodb:mongodb /etc/mongodb.keyfile"
+        echo "sudo chmod 400 /etc/mongodb.keyfile"
+        return 1
+    fi
+    
+    # Check keyfile permissions
+    local keyfile_owner=$(stat -c %U /etc/mongodb.keyfile)
+    local keyfile_group=$(stat -c %G /etc/mongodb.keyfile)
+    local keyfile_perms=$(stat -c %a /etc/mongodb.keyfile)
+    
+    if [ "$keyfile_owner" != "mongodb" ] || [ "$keyfile_group" != "mongodb" ] || [ "$keyfile_perms" != "400" ]; then
+        echo -e "${RED}❌ Keyfile permissions incorrect${NC}"
+        echo "Current permissions:"
+        echo "Owner: $keyfile_owner"
+        echo "Group: $keyfile_group"
+        echo "Permissions: $keyfile_perms"
+        echo "Please set correct permissions:"
+        echo "sudo chown mongodb:mongodb /etc/mongodb.keyfile"
+        echo "sudo chmod 400 /etc/mongodb.keyfile"
+        return 1
+    fi
+    
     # Create configs with security
     create_config $SECONDARY_PORT true
     create_config $ARBITER_PORT true
@@ -506,14 +533,7 @@ setup_secondary() {
     
     echo -e "\n${GREEN}✅ SECONDARY setup completed successfully${NC}"
     echo -e "\n${GREEN}Next steps:${NC}"
-    echo "1. Copy keyfile from PRIMARY server:"
-    echo "   scp root@$PRIMARY_IP:/etc/mongodb.keyfile /etc/mongodb.keyfile"
-    echo "2. Set keyfile permissions:"
-    echo "   sudo chown mongodb:mongodb /etc/mongodb.keyfile"
-    echo "   sudo chmod 400 /etc/mongodb.keyfile"
-    echo "3. Restart MongoDB services:"
-    echo "   sudo systemctl restart mongod_27017 mongod_27018"
-    echo "4. Connect to PRIMARY server and add this node to replica set:"
+    echo "1. Connect to PRIMARY server and add this node to replica set:"
     echo "   mongosh --host $PRIMARY_IP --port 27017 -u admin -p admin --authenticationDatabase admin"
     echo "   rs.add('$SERVER_IP:$SECONDARY_PORT')"
     echo "   rs.addArb('$SERVER_IP:$ARBITER_PORT')"
