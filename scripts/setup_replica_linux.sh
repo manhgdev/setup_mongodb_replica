@@ -410,7 +410,8 @@ setup_primary() {
 setup_secondary() {
     local SERVER_IP=$1
     local SECONDARY_PORT=27017
-    local ARBITER_PORT=27018
+    local ARBITER1_PORT=27018
+    local ARBITER2_PORT=27019
     
     read -p "Enter PRIMARY server IP: " PRIMARY_IP
     if [ -z "$PRIMARY_IP" ]; then
@@ -436,44 +437,6 @@ setup_secondary() {
         return 1
     fi
     
-    # Check if nodes are already in replica set
-    echo "Checking if nodes are already in replica set..."
-    read -p "Enter admin username from PRIMARY [manhg]: " ADMIN_USER
-    ADMIN_USER=${ADMIN_USER:-manhg}
-    
-    read -sp "Enter admin password from PRIMARY [manhnk]: " ADMIN_PASS
-    ADMIN_PASS=${ADMIN_PASS:-manhnk}
-    echo
-    
-    local rs_status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
-    local is_secondary=$(echo "$rs_status" | grep -c "$SERVER_IP:$SECONDARY_PORT")
-    local is_arbiter=$(echo "$rs_status" | grep -c "$SERVER_IP:$ARBITER_PORT")
-    
-    if [ "$is_secondary" -gt 0 ] && [ "$is_arbiter" -gt 0 ]; then
-        echo "Nodes are already in replica set, checking status..."
-        local secondary_state=$(echo "$rs_status" | grep -A 5 "stateStr" | grep "SECONDARY")
-        local arbiter_state=$(echo "$rs_status" | grep -A 5 "stateStr" | grep "ARBITER")
-        
-        if [ -n "$secondary_state" ] && [ -n "$arbiter_state" ]; then
-            echo -e "${GREEN}✅ Nodes are already in correct state${NC}"
-            echo -e "\n${GREEN}Connection Commands:${NC}"
-            echo "1. Connect to PRIMARY:"
-            echo "mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
-            echo "2. Connect to SECONDARY:"
-            echo "mongosh --host $SERVER_IP --port $SECONDARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
-            echo "3. Connect to ARBITER:"
-            echo "mongosh --host $SERVER_IP --port $ARBITER_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
-            echo "4. Connect to Replica Set:"
-            echo "mongosh \"mongodb://$ADMIN_USER:$ADMIN_PASS@$PRIMARY_IP:27017,$SERVER_IP:$SECONDARY_PORT,$SERVER_IP:$ARBITER_PORT/admin?replicaSet=rs0\""
-            return 0
-        else
-            echo -e "${RED}❌ Nodes are in incorrect state${NC}"
-            echo "Current status:"
-            echo "$rs_status"
-            return 1
-        fi
-    fi
-    
     # Configure firewall
     configure_firewall
     
@@ -483,7 +446,8 @@ setup_secondary() {
     sudo rm -rf /var/lib/mongodb_27017/* /var/lib/mongodb_27018/* /var/lib/mongodb_27019/*
     
     create_dirs $SECONDARY_PORT
-    create_dirs $ARBITER_PORT
+    create_dirs $ARBITER1_PORT
+    create_dirs $ARBITER2_PORT
     
     # Check if keyfile exists
     if [ ! -f "/etc/mongodb.keyfile" ]; then
@@ -514,7 +478,8 @@ setup_secondary() {
     
     # Create configs with security
     create_config $SECONDARY_PORT true
-    create_config $ARBITER_PORT true
+    create_config $ARBITER1_PORT true
+    create_config $ARBITER2_PORT true
     
     # Start SECONDARY node
     echo "Starting SECONDARY node..."
@@ -531,38 +496,56 @@ setup_secondary() {
     
     echo -e "${GREEN}✅ SECONDARY node started successfully${NC}"
     
-    # Start ARBITER node
-    echo "Starting ARBITER node..."
-    mongod --config /etc/mongod_${ARBITER_PORT}.conf --fork
+    # Start ARBITER 1 node
+    echo "Starting ARBITER 1 node..."
+    mongod --config /etc/mongod_${ARBITER1_PORT}.conf --fork
     sleep 2
     
-    # Check if ARBITER is running without auth
-    if ! mongosh --port $ARBITER_PORT --eval "db.version()" --quiet &>/dev/null; then
-        echo -e "${RED}❌ Failed to start ARBITER node${NC}"
+    # Check if ARBITER 1 is running without auth
+    if ! mongosh --port $ARBITER1_PORT --eval "db.version()" --quiet &>/dev/null; then
+        echo -e "${RED}❌ Failed to start ARBITER 1 node${NC}"
         echo "Last 50 lines of log:"
-        tail -n 50 /var/log/mongodb/mongod_${ARBITER_PORT}.log
+        tail -n 50 /var/log/mongodb/mongod_${ARBITER1_PORT}.log
         return 1
     fi
     
-    echo -e "${GREEN}✅ ARBITER node started successfully${NC}"
+    echo -e "${GREEN}✅ ARBITER 1 node started successfully${NC}"
+    
+    # Start ARBITER 2 node
+    echo "Starting ARBITER 2 node..."
+    mongod --config /etc/mongod_${ARBITER2_PORT}.conf --fork
+    sleep 2
+    
+    # Check if ARBITER 2 is running without auth
+    if ! mongosh --port $ARBITER2_PORT --eval "db.version()" --quiet &>/dev/null; then
+        echo -e "${RED}❌ Failed to start ARBITER 2 node${NC}"
+        echo "Last 50 lines of log:"
+        tail -n 50 /var/log/mongodb/mongod_${ARBITER2_PORT}.log
+        return 1
+    fi
+    
+    echo -e "${GREEN}✅ ARBITER 2 node started successfully${NC}"
     
     # Create systemd services
     echo "Creating systemd services..."
     create_systemd_service $SECONDARY_PORT || return 1
-    create_systemd_service $ARBITER_PORT || return 1
+    create_systemd_service $ARBITER1_PORT || return 1
+    create_systemd_service $ARBITER2_PORT || return 1
     
     # Restart services
     echo "Restarting services..."
     sudo systemctl restart mongod_${SECONDARY_PORT}
-    sudo systemctl restart mongod_${ARBITER_PORT}
+    sudo systemctl restart mongod_${ARBITER1_PORT}
+    sudo systemctl restart mongod_${ARBITER2_PORT}
     sleep 2
     
     echo -e "\n${GREEN}✅ SECONDARY setup completed successfully${NC}"
     echo -e "\n${GREEN}Next steps:${NC}"
     echo "1. Connect to PRIMARY server and add this node to replica set:"
-    echo "   mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
+    echo "   mongosh --host $PRIMARY_IP --port 27017 -u admin -p admin --authenticationDatabase admin"
     echo "   rs.add('$SERVER_IP:$SECONDARY_PORT')"
-    echo "   rs.addArb('$SERVER_IP:$ARBITER_PORT')"
+    echo "   rs.addArb('$SERVER_IP:$ARBITER1_PORT')"
+    echo "   rs.addArb('$SERVER_IP:$ARBITER2_PORT')"
 }
 
 # Main function
