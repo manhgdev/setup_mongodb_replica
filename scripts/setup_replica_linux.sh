@@ -54,11 +54,13 @@ EOL
     sudo mongod --config "$CONFIG_FILE"
     
     # Kiểm tra kết nối
-    local max_attempts=10
+    local max_attempts=30
     local attempt=1
     while [ $attempt -le $max_attempts ]; do
         if mongosh --port $PORT --eval 'db.runCommand({ ping: 1 })' &> /dev/null; then
             echo "✅ Node MongoDB trên port $PORT đã sẵn sàng"
+            # Đợi thêm một chút để đảm bảo MongoDB hoàn toàn sẵn sàng
+            sleep 5
             return 0
         fi
         echo "Đang chờ node MongoDB trên port $PORT khởi động... ($attempt/$max_attempts)"
@@ -67,6 +69,8 @@ EOL
     done
     
     echo "❌ Không thể kết nối đến node MongoDB trên port $PORT"
+    echo "Đang kiểm tra log file..."
+    sudo tail -n 50 /var/log/mongodb/mongod_${PORT}.log
     return 1
 }
 
@@ -76,17 +80,30 @@ create_admin_user() {
     local PASSWORD=$3
     
     echo "Đang tạo user admin..."
-    mongosh --port $PORT --eval '
-        db = db.getSiblingDB("admin");
-        db.createUser({
-            user: "'$USERNAME'",
-            pwd: "'$PASSWORD'",
-            roles: [
-                { role: "root", db: "admin" },
-                { role: "clusterAdmin", db: "admin" }
-            ]
-        });
-    '
+    local max_attempts=10
+    local attempt=1
+    while [ $attempt -le $max_attempts ]; do
+        if mongosh --port $PORT --eval '
+            db = db.getSiblingDB("admin");
+            db.createUser({
+                user: "'$USERNAME'",
+                pwd: "'$PASSWORD'",
+                roles: [
+                    { role: "root", db: "admin" },
+                    { role: "clusterAdmin", db: "admin" }
+                ]
+            });
+        ' &> /dev/null; then
+            echo "✅ Đã tạo user admin thành công"
+            return 0
+        fi
+        echo "Đang thử lại tạo user admin... ($attempt/$max_attempts)"
+        sleep 2
+        attempt=$((attempt + 1))
+    done
+    
+    echo "❌ Không thể tạo user admin"
+    return 1
 }
 
 setup_replica_primary_linux() {
@@ -127,14 +144,27 @@ setup_replica_primary_linux() {
         return 1
     fi
     
-    sleep 5
+    sleep 10
     
     # Tạo user admin trên PRIMARY
-    create_admin_user $PRIMARY_PORT $admin_username $admin_password
+    if ! create_admin_user $PRIMARY_PORT $admin_username $admin_password; then
+        echo -e "${RED}❌ Không thể tạo user admin${NC}"
+        return 1
+    fi
     
     # Kiểm tra trạng thái replica set
     echo "Đang kiểm tra trạng thái replica set..."
-    local rs_status=$(mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.status()' --quiet)
+    local max_attempts=10
+    local attempt=1
+    while [ $attempt -le $max_attempts ]; do
+        local rs_status=$(mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.status()' --quiet 2>/dev/null)
+        if [ $? -eq 0 ]; then
+            break
+        fi
+        echo "Đang thử lại kiểm tra trạng thái... ($attempt/$max_attempts)"
+        sleep 2
+        attempt=$((attempt + 1))
+    done
     
     # Nếu replica set chưa được khởi tạo
     if echo "$rs_status" | grep -q "NotYetInitialized"; then
