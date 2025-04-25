@@ -362,7 +362,15 @@ setup_primary() {
         
         if [ $? -eq 0 ]; then
             echo -e "${GREEN}✅ Authentication verified successfully${NC}"
-            echo "Connection command: mongosh --host $SERVER_IP --port $PRIMARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
+            echo -e "\n${GREEN}Connection Commands:${NC}"
+            echo "1. Connect to PRIMARY:"
+            echo "mongosh --host $SERVER_IP --port $PRIMARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
+            echo "2. Connect to ARBITER 1:"
+            echo "mongosh --host $SERVER_IP --port $ARBITER1_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
+            echo "3. Connect to ARBITER 2:"
+            echo "mongosh --host $SERVER_IP --port $ARBITER2_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
+            echo "4. Connect to Replica Set:"
+            echo "mongosh \"mongodb://$ADMIN_USER:$ADMIN_PASS@$SERVER_IP:$PRIMARY_PORT,$SERVER_IP:$ARBITER1_PORT,$SERVER_IP:$ARBITER2_PORT/admin?replicaSet=rs0\""
         else
             echo -e "${RED}❌ Authentication verification failed${NC}"
             echo "Error details:"
@@ -391,6 +399,18 @@ setup_secondary() {
     if [ -z "$PRIMARY_IP" ]; then
         echo -e "${RED}❌ PRIMARY server IP is required${NC}"
         return 1
+    fi
+    
+    # Configure firewall
+    echo "Configuring firewall..."
+    if command -v ufw &> /dev/null; then
+        echo "UFW is installed, configuring ports..."
+        sudo ufw allow 27017/tcp
+        sudo ufw allow 27018/tcp
+        sudo ufw allow 27019/tcp
+        echo -e "${GREEN}✅ Firewall configured successfully${NC}"
+    else
+        echo "UFW is not installed, skipping firewall configuration"
     fi
     
     stop_mongodb
@@ -480,10 +500,15 @@ setup_secondary() {
     
     if [ -n "$secondary_state" ]; then
         echo -e "${GREEN}✅ SECONDARY setup completed successfully${NC}"
-        echo "Primary node: $PRIMARY_IP:27017"
-        echo "Secondary node: $SERVER_IP:$SECONDARY_PORT"
-        echo "Arbiter node: $SERVER_IP:$ARBITER_PORT"
-        echo "Connection command: mongosh --host $SERVER_IP --port $SECONDARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
+        echo -e "\n${GREEN}Connection Commands:${NC}"
+        echo "1. Connect to PRIMARY:"
+        echo "mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
+        echo "2. Connect to SECONDARY:"
+        echo "mongosh --host $SERVER_IP --port $SECONDARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
+        echo "3. Connect to ARBITER:"
+        echo "mongosh --host $SERVER_IP --port $ARBITER_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
+        echo "4. Connect to Replica Set:"
+        echo "mongosh \"mongodb://$ADMIN_USER:$ADMIN_PASS@$PRIMARY_IP:27017,$SERVER_IP:$SECONDARY_PORT,$SERVER_IP:$ARBITER_PORT/admin?replicaSet=rs0\""
     else
         echo -e "${RED}❌ SECONDARY setup failed - Node not in SECONDARY state${NC}"
         echo "Current status:"
