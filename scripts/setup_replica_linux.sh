@@ -317,6 +317,27 @@ EOL
 start_mongodb() {
     echo -e "${YELLOW}Khởi động MongoDB...${NC}"
     
+    # Kiểm tra và tạo thư mục log nếu không tồn tại
+    if [ ! -d "/var/log/mongodb" ]; then
+        echo -e "${YELLOW}Thư mục log không tồn tại, đang tạo...${NC}"
+        sudo mkdir -p /var/log/mongodb
+        sudo chown -R mongodb:mongodb /var/log/mongodb
+        sudo chmod 755 /var/log/mongodb
+    fi
+    
+    # Tạo file log nếu không tồn tại
+    if [ ! -f "/var/log/mongodb/mongod.log" ]; then
+        echo -e "${YELLOW}File log không tồn tại, đang tạo...${NC}"
+        sudo touch /var/log/mongodb/mongod.log
+        sudo chown mongodb:mongodb /var/log/mongodb/mongod.log
+    fi
+    
+    # Unmask dịch vụ nếu đang bị masked
+    if systemctl is-masked mongod; then
+        echo -e "${YELLOW}Dịch vụ MongoDB đang bị masked, đang unmask...${NC}"
+        sudo systemctl unmask mongod
+    fi
+    
     # Khởi động MongoDB
     sudo systemctl daemon-reload
     sudo systemctl enable mongod
@@ -332,7 +353,7 @@ start_mongodb() {
         echo -e "${RED}❌ MongoDB không thể khởi động${NC}"
         sudo systemctl status mongod --no-pager
         echo -e "${YELLOW}Kiểm tra log tại /var/log/mongodb/mongod.log${NC}"
-        sudo tail -n 20 /var/log/mongodb/mongod.log
+        sudo tail -n 20 /var/log/mongodb/mongod.log || echo -e "${RED}❌ Không thể đọc file log${NC}"
         return 1
     fi
 }
@@ -968,24 +989,74 @@ check_and_restart_mongodb() {
     
     echo -e "${YELLOW}Kiểm tra và khởi động lại MongoDB...${NC}"
     
+    # Kiểm tra xem dịch vụ có bị masked không
+    echo -e "${YELLOW}Kiểm tra trạng thái dịch vụ MongoDB...${NC}"
+    if sudo systemctl is-masked mongod; then
+        echo -e "${RED}⚠️ Dịch vụ MongoDB đang bị masked, đang unmask...${NC}"
+        sudo systemctl unmask mongod
+        sudo systemctl daemon-reload
+        echo -e "${GREEN}✅ Đã unmask dịch vụ MongoDB${NC}"
+    fi
+    
     # Kiểm tra trạng thái MongoDB
     if sudo systemctl is-active --quiet mongod; then
         echo -e "${GREEN}✅ MongoDB đang chạy${NC}"
         return 0
+    else
+        echo -e "${YELLOW}MongoDB không chạy hoặc đang gặp sự cố${NC}"
+    fi
+    
+    # Kiểm tra và tạo thư mục log nếu không tồn tại
+    echo -e "${YELLOW}Kiểm tra thư mục log...${NC}"
+    if [ ! -d "/var/log/mongodb" ]; then
+        echo -e "${RED}⚠️ Thư mục log không tồn tại, đang tạo...${NC}"
+        sudo mkdir -p /var/log/mongodb
+        sudo chown -R mongodb:mongodb /var/log/mongodb
+        sudo chmod 755 /var/log/mongodb
+        echo -e "${GREEN}✅ Đã tạo thư mục log${NC}"
+    fi
+    
+    # Tạo file log nếu không tồn tại
+    if [ ! -f "/var/log/mongodb/mongod.log" ]; then
+        echo -e "${RED}⚠️ File log không tồn tại, đang tạo...${NC}"
+        sudo touch /var/log/mongodb/mongod.log
+        sudo chown mongodb:mongodb /var/log/mongodb/mongod.log
+        sudo chmod 644 /var/log/mongodb/mongod.log
+        echo -e "${GREEN}✅ Đã tạo file log${NC}"
+    fi
+    
+    # Kiểm tra quyền của file log
+    echo -e "${YELLOW}Kiểm tra quyền của file log...${NC}"
+    if ! sudo test -r /var/log/mongodb/mongod.log; then
+        echo -e "${RED}⚠️ File log không thể đọc được, đang sửa quyền...${NC}"
+        sudo chmod 644 /var/log/mongodb/mongod.log
+        echo -e "${GREEN}✅ Đã sửa quyền file log${NC}"
     fi
     
     # Kiểm tra log
     echo -e "${YELLOW}Kiểm tra log MongoDB...${NC}"
-    sudo tail -n 20 /var/log/mongodb/mongod.log
+    sudo tail -n 20 /var/log/mongodb/mongod.log 2>/dev/null || echo -e "${RED}❌ Không thể đọc file log sau khi sửa quyền${NC}"
     
     # Kiểm tra và sửa quyền thư mục dữ liệu
-    echo -e "${YELLOW}Kiểm tra quyền thư mục dữ liệu...${NC}"
-    sudo ls -la /var/lib/mongodb/
-    sudo chown -R mongodb:mongodb /var/lib/mongodb/
-    sudo chmod -R 755 /var/lib/mongodb/
+    echo -e "${YELLOW}Kiểm tra thư mục dữ liệu MongoDB...${NC}"
+    if [ -d "/var/lib/mongodb" ]; then
+        echo -e "${YELLOW}Đang sửa quyền thư mục dữ liệu...${NC}"
+        sudo ls -la /var/lib/mongodb/ || echo -e "${RED}❌ Không thể liệt kê thư mục dữ liệu${NC}"
+        sudo chown -R mongodb:mongodb /var/lib/mongodb/
+        sudo chmod -R 755 /var/lib/mongodb/
+        echo -e "${GREEN}✅ Đã sửa quyền thư mục dữ liệu${NC}"
+    else
+        echo -e "${RED}❌ Thư mục dữ liệu không tồn tại!${NC}"
+        echo -e "${YELLOW}Đang tạo thư mục dữ liệu...${NC}"
+        sudo mkdir -p /var/lib/mongodb
+        sudo chown -R mongodb:mongodb /var/lib/mongodb
+        sudo chmod -R 755 /var/lib/mongodb
+        echo -e "${GREEN}✅ Đã tạo thư mục dữ liệu${NC}"
+    fi
     
-    # Khởi động lại MongoDB
-    echo -e "${YELLOW}Khởi động lại MongoDB...${NC}"
+    # Khởi động MongoDB
+    echo -e "${YELLOW}Đang khởi động lại MongoDB...${NC}"
+    sudo systemctl daemon-reload
     sudo systemctl restart mongod
     sleep 5
     
@@ -996,466 +1067,63 @@ check_and_restart_mongodb() {
     else
         echo -e "${RED}❌ MongoDB vẫn không thể khởi động${NC}"
         
+        # Hiển thị log gần nhất
+        echo -e "${YELLOW}Log gần nhất:${NC}"
+        sudo tail -n 30 /var/log/mongodb/mongod.log 2>/dev/null || echo -e "${RED}❌ Không thể đọc file log${NC}"
+        
+        # Hiển thị trạng thái dịch vụ
+        echo -e "${YELLOW}Trạng thái dịch vụ:${NC}"
+        sudo systemctl status mongod || echo -e "${RED}❌ Không thể lấy trạng thái dịch vụ${NC}"
+        
         # Thử tắt bảo mật nếu được bật
         if [[ "$SECURITY_ENABLED" == "true" ]]; then
-            echo -e "${YELLOW}Thử khởi động MongoDB không có bảo mật...${NC}"
-            sudo cp /etc/mongod.conf /etc/mongod.conf.bak
-            sudo sed -i '/security:/,+3d' /etc/mongod.conf
-            sudo systemctl restart mongod
-            sleep 5
-            
-            if sudo systemctl is-active --quiet mongod; then
-                echo -e "${GREEN}✅ MongoDB đã khởi động thành công khi tắt bảo mật${NC}"
-                echo -e "${YELLOW}⚠️ Vấn đề có thể liên quan đến keyfile hoặc bảo mật${NC}"
-                
-                # Khôi phục cấu hình
-                sudo cp /etc/mongod.conf.bak /etc/mongod.conf
-                return 0
-            else
-                # Khôi phục cấu hình
-                sudo cp /etc/mongod.conf.bak /etc/mongod.conf
-                echo -e "${RED}❌ MongoDB vẫn không thể khởi động sau khi tắt bảo mật${NC}"
+            echo -e "${YELLOW}⚠️ Thử khởi động MongoDB không có bảo mật...${NC}"
+            if [ -f "/etc/mongod.conf" ]; then
+                sudo cp /etc/mongod.conf /etc/mongod.conf.bak
+                sudo grep -q "security:" /etc/mongod.conf
+                if [ $? -eq 0 ]; then
+                    echo -e "${YELLOW}Tạm thời tắt cấu hình bảo mật...${NC}"
+                    sudo sed -i '/security:/,+3d' /etc/mongod.conf
+                    sudo systemctl restart mongod
+                    sleep 5
+                    
+                    if sudo systemctl is-active --quiet mongod; then
+                        echo -e "${GREEN}✅ MongoDB đã khởi động thành công khi tắt bảo mật${NC}"
+                        echo -e "${YELLOW}⚠️ Vấn đề có thể liên quan đến keyfile hoặc bảo mật${NC}"
+                        
+                        # Kiểm tra keyfile
+                        if [ -f "/etc/mongodb.keyfile" ]; then
+                            echo -e "${YELLOW}Kiểm tra quyền của keyfile...${NC}"
+                            sudo ls -la /etc/mongodb.keyfile
+                            echo -e "${YELLOW}Sửa quyền keyfile...${NC}"
+                            sudo chown mongodb:mongodb /etc/mongodb.keyfile
+                            sudo chmod 400 /etc/mongodb.keyfile
+                            echo -e "${GREEN}✅ Đã sửa quyền keyfile${NC}"
+                        else
+                            echo -e "${RED}❌ Không tìm thấy keyfile tại /etc/mongodb.keyfile${NC}"
+                        fi
+                        
+                        # Khôi phục cấu hình
+                        echo -e "${YELLOW}Khôi phục cấu hình bảo mật...${NC}"
+                        sudo cp /etc/mongod.conf.bak /etc/mongod.conf
+                        sudo systemctl restart mongod
+                        sleep 5
+                        
+                        if sudo systemctl is-active --quiet mongod; then
+                            echo -e "${GREEN}✅ MongoDB đã khởi động lại thành công với bảo mật${NC}"
+                            return 0
+                        else
+                            echo -e "${RED}❌ MongoDB vẫn không thể khởi động với bảo mật${NC}"
+                        fi
+                    else
+                        # Khôi phục cấu hình
+                        sudo cp /etc/mongod.conf.bak /etc/mongod.conf
+                        echo -e "${RED}❌ MongoDB vẫn không thể khởi động sau khi tắt bảo mật${NC}"
+                    fi
+                fi
             fi
         fi
         
         return 1
     fi
 }
-
-# Troubleshoot MongoDB connection issues
-troubleshoot_mongodb() {
-  local PORT=27017
-  
-  echo -e "${YELLOW}=== TROUBLESHOOTING MONGODB ===${NC}"
-  
-  # Kiểm tra nếu MongoDB chạy
-  if sudo systemctl is-active --quiet mongod_${PORT}; then
-    echo -e "${GREEN}✓ Dịch vụ MongoDB đang chạy${NC}"
-  else
-    echo -e "${RED}✗ Dịch vụ MongoDB không chạy${NC}"
-    echo -e "${YELLOW}Đang cố khởi động lại...${NC}"
-    sudo systemctl restart mongod_${PORT}
-    sleep 5
-  fi
-  
-  # Kiểm tra nếu port đang mở
-  if sudo ss -tulpn | grep -q ":${PORT}"; then
-    echo -e "${GREEN}✓ Port ${PORT} đang mở${NC}"
-    sudo ss -tulpn | grep ":${PORT}"
-  else
-    echo -e "${RED}✗ Port ${PORT} không mở${NC}"
-    echo -e "${YELLOW}Kiểm tra log lỗi:${NC}"
-    sudo tail -n 30 /var/log/mongodb/mongod_${PORT}.log
-  fi
-  
-  # Kiểm tra SELinux nếu có
-  if command -v getenforce &> /dev/null; then
-    echo -e "${YELLOW}Trạng thái SELinux: $(getenforce)${NC}"
-    if [ "$(getenforce)" = "Enforcing" ]; then
-      echo -e "${YELLOW}⚠️ SELinux đang bật, có thể gây ra lỗi quyền truy cập${NC}"
-      echo "Thử tạm thời tắt SELinux:"
-      echo "sudo setenforce 0"
-    fi
-  fi
-  
-  # Kiểm tra quyền truy cập thư mục
-  echo -e "${YELLOW}Kiểm tra quyền thư mục dữ liệu:${NC}"
-  ls -la /var/lib/mongodb_${PORT}/
-  echo -e "${YELLOW}Kiểm tra quyền keyfile:${NC}"
-  ls -la /etc/mongodb.keyfile 2>/dev/null || echo "Keyfile không tồn tại"
-  
-  # Hiển thị thông tin cấu hình
-  echo -e "${YELLOW}Cấu hình MongoDB:${NC}"
-  grep -v "^#" /etc/mongod_${PORT}.conf | grep -v "^$"
-  
-  # Hiển thị menu để người dùng chọn
-  echo -e "\n${YELLOW}=== TÙY CHỌN KHẮC PHỤC ===${NC}"
-  echo "1. Kiểm tra chi tiết trạng thái MongoDB"
-  echo "2. Sửa quyền keyfile và khởi động lại MongoDB"
-  echo "3. Cài đặt lại MongoDB (không có replica set)"
-  echo "4. Quay lại menu chính"
-  read -p "Chọn tùy chọn (1-4): " TROUBLESHOOT_OPTION
-  
-  case $TROUBLESHOOT_OPTION in
-    1) check_mongodb_status ;;
-    2) fix_keyfile_and_restart ;;
-    3)
-      stop_mongodb
-      create_dirs
-      create_config false "no_repl"
-      create_systemd_service false "no_repl"
-      start_mongodb
-      echo -e "${GREEN}✅ Đã khởi động lại MongoDB với cấu hình cơ bản${NC}"
-      ;;
-    4) return 0 ;;
-    *) echo -e "${RED}❌ Tùy chọn không hợp lệ${NC}" ;;
-  esac
-}
-
-# Check MongoDB status in detail
-check_mongodb_status() {
-    echo -e "${YELLOW}=== KIỂM TRA CHI TIẾT MONGODB ===${NC}"
-    
-    # 1. Kiểm tra trạng thái service
-    echo -e "${YELLOW}1. Kiểm tra trạng thái service${NC}"
-    sudo systemctl status mongod --no-pager
-    
-    # 2. Kiểm tra log
-    echo -e "${YELLOW}2. Kiểm tra log MongoDB${NC}"
-    sudo tail -n 50 /var/log/mongodb/mongod.log
-    
-    # 3. Kiểm tra cấu hình
-    echo -e "${YELLOW}3. Kiểm tra cấu hình MongoDB${NC}"
-    cat /etc/mongod.conf
-    
-    # 4. Kiểm tra port
-    echo -e "${YELLOW}4. Kiểm tra port 27017${NC}"
-    sudo netstat -tulnp | grep 27017
-    
-    # 5. Kiểm tra thư mục dữ liệu
-    echo -e "${YELLOW}5. Kiểm tra thư mục dữ liệu${NC}"
-    sudo ls -la /var/lib/mongodb/
-    
-    # 6. Kiểm tra keyfile
-    echo -e "${YELLOW}6. Kiểm tra keyfile${NC}"
-    if [ -f "/etc/mongodb.keyfile" ]; then
-        sudo ls -la /etc/mongodb.keyfile
-    else
-        echo -e "${RED}❌ Không tìm thấy keyfile${NC}"
-    fi
-    
-    # 7. Kiểm tra kết nối
-    echo -e "${YELLOW}7. Thử kết nối đến MongoDB${NC}"
-    mongosh --host localhost --port 27017 --eval "db.version()" --quiet || echo -e "${RED}❌ Không thể kết nối đến MongoDB${NC}"
-    
-    echo -e "${YELLOW}=== KẾT THÚC KIỂM TRA ===${NC}"
-}
-
-# Fix keyfile permissions and restart MongoDB
-fix_keyfile_and_restart() {
-    local PRIMARY_IP=$1
-    
-    echo -e "${YELLOW}=== SỬA KEYFILE VÀ KHỞI ĐỘNG LẠI ===${NC}"
-    
-    # 1. Dừng MongoDB
-    echo -e "${YELLOW}1. Dừng MongoDB${NC}"
-    sudo systemctl stop mongod
-    
-    # 2. Kiểm tra keyfile
-    echo -e "${YELLOW}2. Kiểm tra keyfile${NC}"
-    if [ -f "/etc/mongodb.keyfile" ]; then
-        echo -e "${YELLOW}Keyfile đã tồn tại. Kiểm tra quyền...${NC}"
-        ls -la /etc/mongodb.keyfile
-        
-        # Sửa quyền
-        echo -e "${YELLOW}Đặt lại quyền keyfile...${NC}"
-        sudo chmod 400 /etc/mongodb.keyfile
-        sudo chown mongodb:mongodb /etc/mongodb.keyfile
-        ls -la /etc/mongodb.keyfile
-    else
-        echo -e "${RED}❌ Không tìm thấy keyfile${NC}"
-        
-        # Tạo keyfile mới
-        echo -e "${YELLOW}Tạo keyfile mới...${NC}"
-        if [ -z "$PRIMARY_IP" ]; then
-            echo -e "${YELLOW}Không có PRIMARY_IP, tạo keyfile mới cục bộ...${NC}"
-            openssl rand -base64 756 | sudo tee /etc/mongodb.keyfile > /dev/null
-        else
-            echo -e "${YELLOW}Lấy keyfile từ PRIMARY node...${NC}"
-            if ! create_keyfile "/etc/mongodb.keyfile" $PRIMARY_IP; then
-                echo -e "${RED}❌ Không thể lấy keyfile từ PRIMARY node.${NC}"
-                echo -e "${YELLOW}Tạo keyfile mới cục bộ...${NC}"
-                openssl rand -base64 756 | sudo tee /etc/mongodb.keyfile > /dev/null
-            fi
-        fi
-        
-        # Đặt quyền
-        sudo chmod 400 /etc/mongodb.keyfile
-        sudo chown mongodb:mongodb /etc/mongodb.keyfile
-        ls -la /etc/mongodb.keyfile
-    fi
-    
-    # 3. Kiểm tra cấu hình
-    echo -e "${YELLOW}3. Kiểm tra cấu hình security${NC}"
-    grep -A 3 "security" /etc/mongod.conf || echo -e "${RED}❌ Không tìm thấy cấu hình security${NC}"
-    
-    # 4. Khởi động lại MongoDB
-    echo -e "${YELLOW}4. Khởi động lại MongoDB${NC}"
-    sudo systemctl restart mongod
-    sleep 5
-    
-    # 5. Kiểm tra trạng thái
-    echo -e "${YELLOW}5. Kiểm tra trạng thái MongoDB${NC}"
-    if sudo systemctl is-active --quiet mongod; then
-        echo -e "${GREEN}✅ MongoDB đã khởi động thành công${NC}"
-        sudo systemctl status mongod --no-pager
-    else
-        echo -e "${RED}❌ MongoDB không thể khởi động${NC}"
-        sudo systemctl status mongod --no-pager
-        echo -e "${YELLOW}Kiểm tra log tại /var/log/mongodb/mongod.log${NC}"
-        sudo tail -n 20 /var/log/mongodb/mongod.log
-        
-        # Thử tắt bảo mật
-        echo -e "${YELLOW}Thử khởi động MongoDB không có bảo mật...${NC}"
-        sudo cp /etc/mongod.conf /etc/mongod.conf.bak
-        sudo sed -i '/security:/,+3d' /etc/mongod.conf
-        sudo systemctl restart mongod
-        sleep 5
-        
-        if sudo systemctl is-active --quiet mongod; then
-            echo -e "${GREEN}✅ MongoDB đã khởi động thành công khi tắt bảo mật${NC}"
-            echo -e "${YELLOW}⚠️ Vấn đề có thể liên quan đến keyfile hoặc bảo mật${NC}"
-        else
-            echo -e "${RED}❌ MongoDB vẫn không thể khởi động sau khi tắt bảo mật${NC}"
-            # Khôi phục cấu hình
-            sudo cp /etc/mongod.conf.bak /etc/mongod.conf
-        fi
-    fi
-    
-    echo -e "${YELLOW}=== KẾT THÚC SỬA KEYFILE ===${NC}"
-}
-
-# Check if node is already in replica set before adding
-check_node_in_replicaset() {
-  local PRIMARY_IP=$1
-  local NODE_IP=$2
-  local NODE_PORT=$3
-  local USERNAME=$4
-  local PASSWORD=$5
-  
-  echo -e "${YELLOW}Kiểm tra xem node đã tồn tại trong replica set chưa...${NC}"
-  
-  local result=$(mongosh --host $PRIMARY_IP --port 27017 -u $USERNAME -p $PASSWORD --authenticationDatabase admin --eval "
-  rs.conf().members.some(m => m.host === '$NODE_IP:$NODE_PORT')" --quiet)
-  
-  if [ "$result" = "true" ]; then
-    echo -e "${YELLOW}⚠️ Node $NODE_IP:$NODE_PORT đã tồn tại trong replica set${NC}"
-    return 0
-  else
-    echo -e "${GREEN}✅ Node $NODE_IP:$NODE_PORT chưa tồn tại trong replica set${NC}"
-    return 1
-  fi
-}
-
-# Kiểm tra và sửa các vấn đề khiến MongoDB không thể khởi động
-debug_mongodb_service() {
-    echo -e "${YELLOW}=== KIỂM TRA VÀ SỬA LỖI MONGODB SERVICE ===${NC}"
-    
-    # 1. Kiểm tra trạng thái service
-    echo -e "${YELLOW}1. Kiểm tra trạng thái service${NC}"
-    sudo systemctl status mongod
-    
-    # 2. Kiểm tra log
-    echo -e "${YELLOW}2. Kiểm tra log MongoDB${NC}"
-    sudo tail -n 50 /var/log/mongodb/mongod.log
-    
-    # 3. Kiểm tra keyfile
-    echo -e "${YELLOW}3. Kiểm tra keyfile${NC}"
-    if [ -f "/etc/mongodb.keyfile" ]; then
-        ls -la /etc/mongodb.keyfile
-        echo -e "${YELLOW}Sửa quyền keyfile...${NC}"
-        sudo chmod 400 /etc/mongodb.keyfile
-        sudo chown mongodb:mongodb /etc/mongodb.keyfile
-        ls -la /etc/mongodb.keyfile
-    else
-        echo -e "${RED}Không tìm thấy keyfile!${NC}"
-        echo -e "${YELLOW}Tạo keyfile mới...${NC}"
-        openssl rand -base64 756 | sudo tee /etc/mongodb.keyfile > /dev/null
-        sudo chmod 400 /etc/mongodb.keyfile
-        sudo chown mongodb:mongodb /etc/mongodb.keyfile
-    fi
-    
-    # 4. Kiểm tra cấu hình
-    echo -e "${YELLOW}4. Kiểm tra cấu hình MongoDB${NC}"
-    if [ -f "/etc/mongod.conf" ]; then
-        grep -A 3 "bindIp" /etc/mongod.conf
-        grep -A 3 "security" /etc/mongod.conf
-        
-        # Kiểm tra bindIp
-        if ! grep -q "bindIp: 0.0.0.0" /etc/mongod.conf; then
-            echo -e "${YELLOW}Sửa bindIp thành 0.0.0.0...${NC}"
-            sudo sed -i 's/bindIp: 127.0.0.1/bindIp: 0.0.0.0/g' /etc/mongod.conf
-        fi
-    else
-        echo -e "${RED}Không tìm thấy file cấu hình!${NC}"
-    fi
-    
-    # 5. Khởi động lại MongoDB mà không có security
-    echo -e "${YELLOW}5. Thử khởi động MongoDB mà không có security${NC}"
-    
-    # Tạm thời sao lưu file cấu hình
-    if [ -f "/etc/mongod.conf" ]; then
-        sudo cp /etc/mongod.conf /etc/mongod.conf.bak
-        
-        # Tạm thời tắt security
-        echo -e "${YELLOW}Tạm thời tắt security để kiểm tra...${NC}"
-        sudo sed -i '/security:/,+2d' /etc/mongod.conf
-        
-        # Khởi động lại
-        echo -e "${YELLOW}Khởi động MongoDB không có security...${NC}"
-        sudo systemctl restart mongod
-        sleep 5
-        
-        # Kiểm tra trạng thái
-        sudo systemctl status mongod
-        
-        if systemctl is-active --quiet mongod; then
-            echo -e "${GREEN}✅ MongoDB khởi động được khi tắt security!${NC}"
-            
-            # Thử kết nối
-            echo -e "${YELLOW}Thử kết nối MongoDB...${NC}"
-            mongosh --host localhost --port 27017 --eval "db.version()" --quiet
-            
-            # Khôi phục cấu hình
-            echo -e "${YELLOW}Khôi phục cấu hình security...${NC}"
-            sudo cp /etc/mongod.conf.bak /etc/mongod.conf
-            echo -e "${YELLOW}Vấn đề có thể liên quan đến keyfile và cấu hình security.${NC}"
-        else
-            echo -e "${RED}❌ MongoDB vẫn không khởi động được khi tắt security!${NC}"
-            echo -e "${YELLOW}Kiểm tra quyền thư mục dữ liệu...${NC}"
-            
-            # Kiểm tra và sửa quyền thư mục dữ liệu
-            sudo ls -la /var/lib/mongodb/
-            sudo chown -R mongodb:mongodb /var/lib/mongodb/
-            sudo chmod -R 755 /var/lib/mongodb/
-            
-            # Khôi phục cấu hình
-            sudo cp /etc/mongod.conf.bak /etc/mongod.conf
-        fi
-    fi
-    
-    # 6. Clean data và khởi động lại
-    echo -e "${YELLOW}6. Bạn có muốn xóa dữ liệu MongoDB và khởi động lại? (y/n)${NC}"
-    read -p "Lựa chọn của bạn: " CLEAN_DATA
-    if [[ "$CLEAN_DATA" =~ ^[Yy]$ ]]; then
-        echo -e "${YELLOW}Dừng MongoDB...${NC}"
-        sudo systemctl stop mongod
-        
-        echo -e "${YELLOW}Xóa dữ liệu...${NC}"
-        sudo rm -rf /var/lib/mongodb/*
-        sudo mkdir -p /var/lib/mongodb
-        sudo chown -R mongodb:mongodb /var/lib/mongodb
-        sudo chmod -R 755 /var/lib/mongodb/
-        
-        echo -e "${YELLOW}Xóa log...${NC}"
-        sudo rm -f /var/log/mongodb/mongod.log
-        sudo touch /var/log/mongodb/mongod.log
-        sudo chown mongodb:mongodb /var/log/mongodb/mongod.log
-        
-        echo -e "${YELLOW}Khởi động lại MongoDB...${NC}"
-        sudo systemctl restart mongod
-        sleep 5
-        
-        echo -e "${YELLOW}Kiểm tra trạng thái...${NC}"
-        sudo systemctl status mongod
-    fi
-    
-    # 7. Kiểm tra kết nối mạng
-    echo -e "${YELLOW}7. Kiểm tra kết nối mạng${NC}"
-    LOCAL_IP=$(hostname -I | awk '{print $1}')
-    echo "IP máy này: $LOCAL_IP"
-    
-    echo -e "${YELLOW}Kiểm tra port 27017 có đang mở không:${NC}"
-    sudo netstat -tulnp | grep 27017
-    
-    echo -e "${YELLOW}Kiểm tra firewall:${NC}"
-    sudo ufw status | grep 27017
-    
-    # 8. Thử sửa config để sử dụng localhost
-    echo -e "${YELLOW}8. Bạn có muốn sửa config để sử dụng localhost cho replication? (y/n)${NC}"
-    read -p "Lựa chọn của bạn: " USE_LOCALHOST
-    if [[ "$USE_LOCALHOST" =~ ^[Yy]$ ]]; then
-        if [ -f "/etc/mongod.conf" ]; then
-            echo -e "${YELLOW}Sửa cấu hình replSetName...${NC}"
-            
-            # Kiểm tra replSetName
-            if ! grep -q "replSetName: rs0" /etc/mongod.conf; then
-                echo -e "${YELLOW}Thêm replSetName: rs0 vào cấu hình...${NC}"
-                sudo sed -i '/replication:/a\  replSetName: rs0' /etc/mongod.conf
-            fi
-            
-            # Khởi động lại
-            echo -e "${YELLOW}Khởi động lại MongoDB...${NC}"
-            sudo systemctl restart mongod
-            sleep 5
-            
-            # Kiểm tra trạng thái
-            sudo systemctl status mongod
-        fi
-    fi
-    
-    # 9. Hướng dẫn kết nối thủ công đến PRIMARY
-    echo -e "${YELLOW}9. Thông tin để kết nối thủ công đến PRIMARY:${NC}"
-    echo -e "${GREEN}Kết nối đến PRIMARY và kiểm tra trạng thái:${NC}"
-    echo "mongosh --host <primary_ip> --port 27017 -u <username> -p <password> --authenticationDatabase admin --eval \"rs.status()\""
-    echo -e "${GREEN}Xóa node khỏi replica set (từ PRIMARY):${NC}"
-    echo "mongosh --host <primary_ip> --port 27017 -u <username> -p <password> --authenticationDatabase admin --eval \"rs.remove('$LOCAL_IP:27017')\""
-    echo -e "${GREEN}Thêm lại node (từ PRIMARY):${NC}"
-    echo "mongosh --host <primary_ip> --port 27017 -u <username> -p <password> --authenticationDatabase admin --eval \"rs.add('$LOCAL_IP:27017')\""
-    
-    echo -e "${YELLOW}=== KẾT THÚC KIỂM TRA ===${NC}"
-}
-
-# Thêm tùy chọn menu
-troubleshoot_menu() {
-    echo -e "${GREEN}=== MENU TROUBLESHOOT ===${NC}"
-    echo "1. Kiểm tra chi tiết MongoDB"
-    echo "2. Sửa lỗi không kết nối được replica"
-    echo "3. Kiểm tra và sửa lỗi MongoDB service"
-    echo "4. Quay lại"
-    echo "----------------------------"
-    read -p "Chọn tùy chọn (1-4): " choice
-    
-    case $choice in
-        1)
-            check_mongodb_status
-            ;;
-        2)
-            fix_keyfile_and_restart
-            ;;
-        3)
-            debug_mongodb_service
-            ;;
-        4)
-            return
-            ;;
-        *)
-            echo -e "${RED}Lựa chọn không hợp lệ!${NC}"
-            ;;
-    esac
-    
-    echo
-    read -p "Nhấn Enter để tiếp tục..."
-    troubleshoot_menu
-}
-
-# Main function
-setup_replica_linux() {
-    clear
-    echo -e "${YELLOW}===========================================${NC}"
-    echo -e "${GREEN}MONGODB REPLICA SET SETUP FOR LINUX${NC}"
-    echo -e "${YELLOW}===========================================${NC}"
-    echo -e "${YELLOW}1.${NC} Setup PRIMARY server"
-    echo -e "${YELLOW}2.${NC} Setup SECONDARY server"
-    echo -e "${YELLOW}3.${NC} Khắc phục sự cố (Troubleshoot)"
-    echo -e "${YELLOW}4.${NC} Quay lại menu chính"
-    echo -e "${YELLOW}===========================================${NC}"
-    read -p "Chọn tùy chọn (1-4): " option
-
-    SERVER_IP=$(hostname -I | awk '{print $1}')
-    echo -e "IP máy chủ này: ${GREEN}$SERVER_IP${NC}"
-
-    case $option in
-        1) setup_primary $SERVER_IP ;;
-        2) 
-           echo -e "${YELLOW}Thiết lập SECONDARY Node${NC}"
-           echo -e "SECONDARY IP đã được phát hiện: ${GREEN}$SERVER_IP${NC}"
-           read -p "Nhập địa chỉ IP của PRIMARY node: " PRIMARY_IP
-           setup_secondary $SERVER_IP $PRIMARY_IP ;;
-        3) troubleshoot_menu ;;
-        4) return 0 ;;
-        *) echo -e "${RED}❌ Tùy chọn không hợp lệ${NC}" && return 1 ;;
-    esac
-}
-
-
