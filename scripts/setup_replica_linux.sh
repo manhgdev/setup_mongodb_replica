@@ -1,7 +1,12 @@
 #!/bin/bash
 
 # Import các hàm từ file khác
-source "$(dirname "$0")/generate_guide.sh"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/generate_guide.sh" ]; then
+    source "$SCRIPT_DIR/generate_guide.sh"
+else
+    echo "⚠️ Không tìm thấy file generate_guide.sh"
+fi
 
 setup_node_linux() {
     local PORT=$1
@@ -220,8 +225,8 @@ setup_replica_primary_linux() {
     echo "Password: $admin_password"
     
     # Tạo file hướng dẫn
-    if [ -f "$(dirname "$0")/generate_guide.sh" ]; then
-        source "$(dirname "$0")/generate_guide.sh"
+    if [ -f "$SCRIPT_DIR/generate_guide.sh" ]; then
+        source "$SCRIPT_DIR/generate_guide.sh"
         generate_setup_guide $SERVER_IP $PRIMARY_PORT $ARBITER1_PORT $ARBITER2_PORT $admin_username $admin_password
     else
         echo "⚠️ Không tìm thấy file generate_guide.sh"
