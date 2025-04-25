@@ -367,6 +367,145 @@ verify_mongodb_connection() {
     fi
 }
 
+# Kiểm tra và khắc phục lỗi node không reachable/healthy
+check_and_fix_unreachable() {
+    local SERVER_IP=$1
+    local PORT=27017
+    local ADMIN_USER=$2
+    local ADMIN_PASS=$3
+    
+    echo -e "${YELLOW}Kiểm tra trạng thái node $SERVER_IP:$PORT...${NC}"
+    
+    # Kiểm tra kết nối tới node
+    if ! ping -c 1 -W 1 $SERVER_IP &>/dev/null; then
+        echo -e "${RED}❌ Không thể ping tới node $SERVER_IP${NC}"
+        echo -e "${YELLOW}Kiểm tra tường lửa và kết nối mạng...${NC}"
+        return 1
+    fi
+    
+    # Kiểm tra port có đang lắng nghe không
+    if ! nc -z -w 5 $SERVER_IP $PORT &>/dev/null; then
+        echo -e "${RED}❌ Port $PORT không mở trên node $SERVER_IP${NC}"
+        echo -e "${YELLOW}Kiểm tra tường lửa và dịch vụ MongoDB...${NC}"
+        return 1
+    fi
+    
+    # Kiểm tra trạng thái replica set
+    echo -e "${YELLOW}Kiểm tra trạng thái replica set...${NC}"
+    local status=$(mongosh --host $SERVER_IP --port $PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet 2>&1)
+    
+    # Kiểm tra lỗi xác thực
+    if echo "$status" | grep -q "AuthenticationFailed"; then
+        echo -e "${RED}❌ Lỗi xác thực khi kết nối tới node $SERVER_IP:$PORT${NC}"
+        echo -e "${YELLOW}Kiểm tra thông tin đăng nhập...${NC}"
+        return 1
+    fi
+    
+    # Kiểm tra node có trong replica set không
+    if echo "$status" | grep -q "NotYetInitialized"; then
+        echo -e "${RED}❌ Node $SERVER_IP:$PORT chưa được khởi tạo replica set${NC}"
+        echo -e "${YELLOW}Khởi tạo replica set cho node...${NC}"
+        
+        # Khởi tạo replica set
+        local init_result=$(mongosh --host $SERVER_IP --port $PORT --eval "
+        rs.initiate({
+            _id: 'rs0',
+            members: [
+                { _id: 0, host: '$SERVER_IP:$PORT', priority: 1 }
+            ]
+        })" --quiet)
+        
+        if echo "$init_result" | grep -q "ok"; then
+            echo -e "${GREEN}✅ Đã khởi tạo replica set cho node $SERVER_IP:$PORT${NC}"
+        else
+            echo -e "${RED}❌ Không thể khởi tạo replica set cho node $SERVER_IP:$PORT${NC}"
+            echo "Lỗi: $init_result"
+            return 1
+        fi
+        
+        # Đợi node khởi tạo
+        echo -e "${YELLOW}Đợi node khởi tạo (10 giây)...${NC}"
+        sleep 10
+    fi
+    
+    # Kiểm tra node có reachable không
+    if echo "$status" | grep -q "UNREACHABLE"; then
+        echo -e "${RED}❌ Node $SERVER_IP:$PORT không reachable${NC}"
+        echo -e "${YELLOW}Kiểm tra cấu hình mạng và tường lửa...${NC}"
+        
+        # Kiểm tra bindIp trong cấu hình
+        echo -e "${YELLOW}Kiểm tra cấu hình bindIp...${NC}"
+        local config=$(cat /etc/mongod_${PORT}.conf | grep -A 5 "net:")
+        echo "Cấu hình hiện tại:"
+        echo "$config"
+        
+        # Kiểm tra tường lửa
+        echo -e "${YELLOW}Kiểm tra tường lửa...${NC}"
+        if command -v ufw &> /dev/null; then
+            echo "Trạng thái UFW:"
+            sudo ufw status | grep $PORT
+        elif command -v firewall-cmd &> /dev/null; then
+            echo "Trạng thái firewalld:"
+            sudo firewall-cmd --list-all
+        else
+            echo "Không tìm thấy tường lửa phổ biến"
+        fi
+        
+        # Kiểm tra kết nối từ các node khác
+        echo -e "${YELLOW}Kiểm tra kết nối từ các node khác...${NC}"
+        local primary_status=$(mongosh --host localhost --port $PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet 2>&1)
+        local primary_host=$(echo "$primary_status" | grep -A 5 "PRIMARY" | grep "name" | awk -F'"' '{print $4}')
+        
+        if [ -n "$primary_host" ]; then
+            echo "Kiểm tra kết nối từ PRIMARY ($primary_host) tới node $SERVER_IP:$PORT..."
+            local check_result=$(mongosh --host $primary_host -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
+            try {
+                result = db.adminCommand({
+                    ping: 1,
+                    host: '$SERVER_IP:$PORT'
+                });
+                print('PING_RESULT: ' + JSON.stringify(result));
+            } catch (e) {
+                print('ERROR: ' + e.message);
+            }
+            " --quiet)
+            
+            echo "$check_result"
+        fi
+        
+        return 1
+    fi
+    
+    # Kiểm tra node có healthy không
+    if echo "$status" | grep -q "SECONDARY" || echo "$status" | grep -q "PRIMARY"; then
+        echo -e "${GREEN}✅ Node $SERVER_IP:$PORT đang hoạt động bình thường${NC}"
+        return 0
+    else
+        echo -e "${RED}❌ Node $SERVER_IP:$PORT không healthy${NC}"
+        echo "Trạng thái: $status"
+        
+        # Kiểm tra log
+        echo -e "${YELLOW}Kiểm tra log MongoDB...${NC}"
+        if [ -f "/var/log/mongodb/mongod_${PORT}.log" ]; then
+            echo "10 dòng log cuối cùng:"
+            sudo tail -n 10 /var/log/mongodb/mongod_${PORT}.log
+        else
+            echo "Không tìm thấy file log"
+        fi
+        
+        # Kiểm tra tài nguyên hệ thống
+        echo -e "${YELLOW}Kiểm tra tài nguyên hệ thống...${NC}"
+        echo "CPU:"
+        top -bn1 | head -n 5
+        echo "Bộ nhớ:"
+        free -h
+        echo "Đĩa:"
+        df -h
+        
+        return 1
+    fi
+}
+
 # Setup PRIMARY server
 setup_primary() {
     local SERVER_IP=$1
@@ -626,6 +765,35 @@ setup_secondary() {
     echo -e "${YELLOW}Đợi node được thêm vào...${NC}"
     sleep 10
     
+    # Kiểm tra trạng thái node sau khi thêm
+    echo -e "${YELLOW}Kiểm tra trạng thái node sau khi thêm...${NC}"
+    local status=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
+    
+    # Kiểm tra xem node có UNREACHABLE hoặc không healthy không
+    if echo "$status" | grep -q "$SERVER_IP:$SECONDARY_PORT.*UNREACHABLE" || echo "$status" | grep -q "$SERVER_IP:$SECONDARY_PORT.*SECONDARY.*health.*false"; then
+        echo -e "${RED}❌ Node $SERVER_IP:$SECONDARY_PORT không reachable hoặc không healthy${NC}"
+        echo -e "${YELLOW}Đang kiểm tra và khắc phục...${NC}"
+        
+        # Kiểm tra và khắc phục lỗi
+        if ! check_and_fix_unreachable $SERVER_IP $SECONDARY_PORT $PRIMARY_USER $PRIMARY_PASS; then
+            echo -e "${RED}❌ Không thể khắc phục lỗi node không reachable/healthy${NC}"
+            echo -e "${YELLOW}Vui lòng kiểm tra thủ công:${NC}"
+            echo "1. Kiểm tra tường lửa: sudo ufw status"
+            echo "2. Kiểm tra log MongoDB: sudo tail -n 50 /var/log/mongodb/mongod_${SECONDARY_PORT}.log"
+            echo "3. Kiểm tra kết nối mạng: ping $SERVER_IP"
+            echo "4. Kiểm tra port: nc -zv $SERVER_IP $SECONDARY_PORT"
+            echo "5. Kiểm tra cấu hình MongoDB: cat /etc/mongod_${SECONDARY_PORT}.conf"
+            
+            # Hỏi người dùng có muốn tiếp tục không
+            read -p "Bạn có muốn tiếp tục thiết lập bảo mật không? (y/n): " CONTINUE
+            if [[ ! "$CONTINUE" =~ ^[Yy]$ ]]; then
+                return 1
+            fi
+        else
+            echo -e "${GREEN}✅ Đã khắc phục lỗi node không reachable/healthy${NC}"
+        fi
+    fi
+    
     # Tạo keyfile
     create_keyfile "/etc/mongodb.keyfile"
     
@@ -645,6 +813,10 @@ setup_secondary() {
         echo -e "\n${GREEN}=== THIẾT LẬP MONGODB SECONDARY HOÀN TẤT ===${NC}"
         echo -e "${GREEN}Lệnh kết nối:${NC}"
         echo "mongosh --host $SERVER_IP --port $SECONDARY_PORT -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin"
+        
+        # Hiển thị trạng thái chi tiết của node
+        echo -e "${YELLOW}Trạng thái chi tiết của node $SERVER_IP:$SECONDARY_PORT:${NC}"
+        echo "$status" | grep -A 10 "$SERVER_IP:$SECONDARY_PORT"
     else
         echo -e "${RED}❌ Node không xuất hiện trong Replica Set${NC}"
         echo "$status"
