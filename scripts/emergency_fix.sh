@@ -183,43 +183,19 @@ fix_replica_set() {
         members = currentConfig.members;
         print('Đang sử dụng cấu hình hiện tại với ' + members.length + ' nodes.');
         
-        // Thay đổi priority và loại bỏ node không kết nối nếu cần
-        var keepMembers = [];
-        var nextId = 0;
-        
+        // Chỉ thay đổi priority, KHÔNG thay đổi _id
         for (var i = 0; i < members.length; i++) {
             var member = members[i];
-            var keep = true;
             
-            // Kiểm tra có loại bỏ node không kết nối không
-            if ('$REMOVE_NODES' === 'y') {
-                var unreachableNodes = '$unreachable_nodes'.trim().split(' ');
-                for (var j = 0; j < unreachableNodes.length; j++) {
-                    if (unreachableNodes[j] && member.host === unreachableNodes[j]) {
-                        print('Loại bỏ node không kết nối được: ' + member.host);
-                        keep = false;
-                        break;
-                    }
-                }
-            }
-            
-            if (keep) {
-                // Đặt priority
-                if (member.host === '$connected_primary') {
-                    member.priority = 10;
-                    print('Đặt ' + member.host + ' làm PRIMARY với priority 10');
-                } else if (!member.arbiterOnly) {
-                    member.priority = 1;
-                    print('Đặt ' + member.host + ' làm SECONDARY với priority 1');
-                }
-                
-                // Cập nhật ID
-                member._id = nextId++;
-                keepMembers.push(member);
+            // Đặt priority theo quy tắc
+            if (member.host === '$connected_primary') {
+                member.priority = 10;
+                print('Đặt ' + member.host + ' (' + member._id + ') làm PRIMARY với priority 10');
+            } else if (!member.arbiterOnly) {
+                member.priority = 1;
+                print('Đặt ' + member.host + ' (' + member._id + ') làm SECONDARY với priority 1');
             }
         }
-        
-        members = keepMembers;
     } else {
         print('Không tìm thấy cấu hình hiện tại, tạo cấu hình mới');
         
@@ -232,7 +208,11 @@ fix_replica_set() {
     // Tạo config mới
     var newConfig = {
         _id: 'rs0',
-        members: members
+        members: members,
+        settings: {
+            heartbeatTimeoutSecs: 10,      // Mặc định 30s
+            electionTimeoutMillis: 5000    // Mặc định 10000ms
+        }
     };
     
     // Kiểm tra xác nhận số lượng thành viên 
