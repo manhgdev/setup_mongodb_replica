@@ -499,6 +499,51 @@ setup_secondary() {
     ADMIN_PASS=${ADMIN_PASS:-manhnk}
     echo
     
+    # Check if nodes are already in replica set
+    echo "Checking if nodes are already in replica set..."
+    local rs_status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
+    local is_secondary=$(echo "$rs_status" | grep -c "$SERVER_IP:$SECONDARY_PORT")
+    local is_arbiter=$(echo "$rs_status" | grep -c "$SERVER_IP:$ARBITER_PORT")
+    
+    if [ "$is_secondary" -gt 0 ] && [ "$is_arbiter" -gt 0 ]; then
+        echo "Nodes are already in replica set, checking status..."
+        local secondary_state=$(echo "$rs_status" | grep -A 5 "stateStr" | grep "SECONDARY")
+        local arbiter_state=$(echo "$rs_status" | grep -A 5 "stateStr" | grep "ARBITER")
+        
+        if [ -n "$secondary_state" ] && [ -n "$arbiter_state" ]; then
+            echo -e "${GREEN}✅ Nodes are already in correct state${NC}"
+            echo -e "\n${GREEN}Connection Commands:${NC}"
+            echo "1. Connect to PRIMARY:"
+            echo "mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
+            echo "2. Connect to SECONDARY:"
+            echo "mongosh --host $SERVER_IP --port $SECONDARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
+            echo "3. Connect to ARBITER:"
+            echo "mongosh --host $SERVER_IP --port $ARBITER_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
+            echo "4. Connect to Replica Set:"
+            echo "mongosh \"mongodb://$ADMIN_USER:$ADMIN_PASS@$PRIMARY_IP:27017,$SERVER_IP:$SECONDARY_PORT,$SERVER_IP:$ARBITER_PORT/admin?replicaSet=rs0\""
+            return 0
+        else
+            echo -e "${RED}❌ Nodes are in incorrect state${NC}"
+            echo "Current status:"
+            echo "$rs_status"
+            return 1
+        fi
+    fi
+    
+    # Check if nodes are ready before adding to replica set
+    echo "Checking if nodes are ready..."
+    local secondary_ready=$(mongosh --port $SECONDARY_PORT --eval "db.serverStatus().ok" --quiet)
+    local arbiter_ready=$(mongosh --port $ARBITER_PORT --eval "db.serverStatus().ok" --quiet)
+    
+    if [ "$secondary_ready" != "1" ] || [ "$arbiter_ready" != "1" ]; then
+        echo -e "${RED}❌ Nodes are not ready${NC}"
+        echo "SECONDARY status: $secondary_ready"
+        echo "ARBITER status: $arbiter_ready"
+        return 1
+    fi
+    
+    echo -e "${GREEN}✅ Nodes are ready${NC}"
+    
     # Add SECONDARY to replica set
     echo "Adding SECONDARY to replica set..."
     local add_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
