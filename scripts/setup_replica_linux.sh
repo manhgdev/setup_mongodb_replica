@@ -472,6 +472,25 @@ setup_secondary() {
     ADMIN_PASS=${ADMIN_PASS:-manhnk}
     echo
     
+    # Check if SECONDARY is already in replica set
+    echo "Checking if SECONDARY is already in replica set..."
+    local rs_status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
+    local is_member=$(echo "$rs_status" | grep -c "$SERVER_IP:$SECONDARY_PORT")
+    
+    if [ "$is_member" -gt 0 ]; then
+        echo "SECONDARY is already in replica set, removing it first..."
+        mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.remove('$SERVER_IP:$SECONDARY_PORT')"
+        sleep 2
+    fi
+    
+    # Check if ARBITER is already in replica set
+    local is_arbiter=$(echo "$rs_status" | grep -c "$SERVER_IP:$ARBITER_PORT")
+    if [ "$is_arbiter" -gt 0 ]; then
+        echo "ARBITER is already in replica set, removing it first..."
+        mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.remove('$SERVER_IP:$ARBITER_PORT')"
+        sleep 2
+    fi
+    
     # Add SECONDARY to replica set
     echo "Adding SECONDARY to replica set..."
     local add_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
