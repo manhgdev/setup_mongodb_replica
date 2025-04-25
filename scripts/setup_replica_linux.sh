@@ -571,8 +571,8 @@ setup_primary() {
             success=true
             
             # Chờ một chút cho MongoDB ổn định
-            echo "Đợi 10 giây cho MongoDB ổn định..."
-            sleep 10
+            echo "Đợi 5 giây cho MongoDB ổn định..."
+            sleep 5
             
             # Cập nhật cấu hình với IP thực tế
             echo "Cập nhật cấu hình với IP thực tế..."
@@ -835,8 +835,8 @@ setup_secondary() {
         }" --quiet)
         
         echo "$remove_result"
-        echo -e "${YELLOW}Đợi 10 giây sau khi xóa node...${NC}"
-        sleep 10
+        echo -e "${YELLOW}Đợi 3 giây sau khi xóa node...${NC}"
+        sleep 3
         
         # Thêm lại node
         local add_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "
@@ -1339,6 +1339,531 @@ EOL
     fi
 }
 
+# Kiểm tra và sửa lỗi node chưa lên secondary
+fix_secondary_status() {
+    echo -e "${YELLOW}=== Kiểm tra và sửa lỗi node chưa lên secondary ===${NC}"
+    
+    # Nhập thông tin cần thiết
+    local SERVER_IP=$(hostname -I | awk '{print $1}')
+    read -p "Nhập địa chỉ IP của PRIMARY: " PRIMARY_IP
+    read -p "Nhập username admin của PRIMARY [$ADMIN_USER]: " PRIMARY_USER
+    PRIMARY_USER=${PRIMARY_USER:-$ADMIN_USER}
+    read -sp "Nhập password admin của PRIMARY [$ADMIN_PASS]: " PRIMARY_PASS
+    PRIMARY_PASS=${PRIMARY_PASS:-$ADMIN_PASS}
+    echo ""
+    
+    # Kiểm tra kết nối với PRIMARY
+    echo -e "${YELLOW}1. Kiểm tra kết nối với PRIMARY...${NC}"
+    if ! ping -c 1 -W 2 $PRIMARY_IP > /dev/null; then
+        echo -e "${RED}❌ Không thể ping tới PRIMARY, kiểm tra lại kết nối mạng${NC}"
+    else
+        echo -e "${GREEN}✅ Ping tới PRIMARY thành công${NC}"
+    fi
+    
+    # Kiểm tra kết nối MongoDB với PRIMARY
+    echo -e "${YELLOW}2. Kiểm tra kết nối MongoDB với PRIMARY...${NC}"
+    if ! nc -z -v -w 5 $PRIMARY_IP 27017 2>/dev/null; then
+        echo -e "${RED}❌ Không thể kết nối tới PRIMARY:27017, kiểm tra firewall và dịch vụ MongoDB trên PRIMARY${NC}"
+    else
+        echo -e "${GREEN}✅ Kết nối tới PRIMARY:27017 thành công${NC}"
+    fi
+    
+    # Kiểm tra trạng thái replicaset từ PRIMARY
+    echo -e "${YELLOW}3. Kiểm tra trạng thái replicaset từ PRIMARY...${NC}"
+    local rs_status=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "rs.status()" --quiet 2>&1)
+    
+    if echo "$rs_status" | grep -q "MongoNetworkError"; then
+        echo -e "${RED}❌ Không thể kết nối tới PRIMARY qua MongoDB, kiểm tra lại thông tin đăng nhập${NC}"
+        echo "$rs_status"
+    else
+        echo -e "${GREEN}✅ Kết nối tới PRIMARY qua MongoDB thành công${NC}"
+        
+        # Kiểm tra xem node này có trong replica set không
+        echo -e "${YELLOW}4. Kiểm tra node này trong replica set...${NC}"
+        if echo "$rs_status" | grep -q "$SERVER_IP:27017"; then
+            echo -e "${GREEN}✅ Node $SERVER_IP:27017 đã có trong replica set${NC}"
+            
+            # Kiểm tra trạng thái của node
+            local node_state=$(echo "$rs_status" | grep -A 15 "$SERVER_IP:27017" | grep "stateStr" | head -n 1)
+            echo -e "${YELLOW}Trạng thái hiện tại của node: $node_state${NC}"
+            
+            # Kiểm tra xem node có ở trạng thái STARTUP, STARTUP2, RECOVERING không
+            if echo "$node_state" | grep -q "STARTUP\|STARTUP2\|RECOVERING"; then
+                echo -e "${YELLOW}Node đang trong quá trình đồng bộ, cần đợi thêm...${NC}"
+                echo -e "${YELLOW}Đợi 30 giây và kiểm tra lại...${NC}"
+                sleep 30
+                
+                # Kiểm tra lại sau khi đợi
+                rs_status=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
+                node_state=$(echo "$rs_status" | grep -A 15 "$SERVER_IP:27017" | grep "stateStr" | head -n 1)
+                echo -e "${YELLOW}Trạng thái sau khi đợi: $node_state${NC}"
+                
+                if echo "$node_state" | grep -q "SECONDARY"; then
+                    echo -e "${GREEN}✅ Node đã lên SECONDARY thành công${NC}"
+                else
+                    echo -e "${YELLOW}Node vẫn chưa lên SECONDARY, thử các bước sửa lỗi...${NC}"
+                    
+                    # Kiểm tra thêm thông tin
+                    echo -e "${YELLOW}5. Kiểm tra log để tìm nguyên nhân...${NC}"
+                    sudo tail -n 30 /var/log/mongodb/mongod.log | grep -i "repl\|connect"
+                    
+                    # Kiểm tra priority
+                    echo -e "${YELLOW}6. Kiểm tra priority của node...${NC}"
+                    local config=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "rs.conf()" --quiet)
+                    echo "$config" | grep -A 5 "$SERVER_IP:27017"
+                    
+                    echo -e "${YELLOW}7. Thử khắc phục bằng cách khởi động lại node...${NC}"
+                    sudo systemctl restart mongod
+                    sleep 10
+                    
+                    # Kiểm tra lại sau khi khởi động lại
+                    echo -e "${YELLOW}8. Kiểm tra lại sau khi khởi động lại...${NC}"
+                    rs_status=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
+                    node_state=$(echo "$rs_status" | grep -A 15 "$SERVER_IP:27017" | grep "stateStr" | head -n 1)
+                    echo -e "${YELLOW}Trạng thái sau khi khởi động lại: $node_state${NC}"
+                    
+                    if echo "$node_state" | grep -q "SECONDARY"; then
+                        echo -e "${GREEN}✅ Node đã lên SECONDARY thành công${NC}"
+                    else
+                        echo -e "${RED}❌ Node vẫn chưa lên SECONDARY sau khi khởi động lại${NC}"
+                        echo -e "${YELLOW}9. Thử force resync bằng cách xóa và thêm lại node...${NC}"
+                        
+                        # Thử xóa node khỏi replica set và thêm lại
+                        echo -e "${YELLOW}Đang xóa node khỏi replica set...${NC}"
+                        local remove_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "rs.remove('$SERVER_IP:27017')" --quiet)
+                        echo "$remove_result"
+                        
+                        echo -e "${YELLOW}Đợi 10 giây...${NC}"
+                        sleep 10
+                        
+                        echo -e "${YELLOW}Đang thêm lại node vào replica set với priority thấp hơn...${NC}"
+                        local add_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "rs.add({host:'$SERVER_IP:27017', priority:0.5})" --quiet)
+                        echo "$add_result"
+                        
+                        echo -e "${YELLOW}Đợi 30 giây cho node đồng bộ...${NC}"
+                        sleep 30
+                        
+                        # Kiểm tra lại sau khi thêm lại
+                        echo -e "${YELLOW}10. Kiểm tra lại sau khi thêm lại...${NC}"
+                        rs_status=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
+                        node_state=$(echo "$rs_status" | grep -A 15 "$SERVER_IP:27017" | grep "stateStr" | head -n 1)
+                        echo -e "${YELLOW}Trạng thái sau khi thêm lại: $node_state${NC}"
+                        
+                        if echo "$node_state" | grep -q "SECONDARY"; then
+                            echo -e "${GREEN}✅ Node đã lên SECONDARY thành công sau khi force resync${NC}"
+                            
+                            # Cập nhật lại priority
+                            echo -e "${YELLOW}Đang cập nhật lại priority...${NC}"
+                            mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "
+                            var conf = rs.conf();
+                            for(var i = 0; i < conf.members.length; i++) {
+                                if(conf.members[i].host == '$SERVER_IP:27017') {
+                                    conf.members[i].priority = 1;
+                                    print('✅ Đã cập nhật priority thành 1');
+                                }
+                            }
+                            rs.reconfig(conf);
+                            " --quiet
+                        else
+                            echo -e "${RED}❌ Node vẫn chưa lên SECONDARY sau khi force resync${NC}"
+                            echo -e "${YELLOW}Gợi ý các bước tiếp theo:${NC}"
+                            echo "1. Kiểm tra thêm log đầy đủ: sudo tail -n 100 /var/log/mongodb/mongod.log"
+                            echo "2. Kiểm tra thông tin phiên bản MongoDB trên cả hai node có giống nhau không"
+                            echo "3. Xem xét option 6 hoặc 7 trong menu sửa lỗi để khởi động lại MongoDB hoặc unmask service"
+                            echo "4. Xem xét tạo lại keyfile và copy lại từ PRIMARY"
+                        fi
+                    fi
+                fi
+            elif echo "$node_state" | grep -q "SECONDARY"; then
+                echo -e "${GREEN}✅ Node đã ở trạng thái SECONDARY, không cần sửa lỗi${NC}"
+            elif echo "$node_state" | grep -q "REMOVED\|DOWN\|UNKNOWN"; then
+                echo -e "${RED}❌ Node đang ở trạng thái không hoạt động: $node_state${NC}"
+                echo -e "${YELLOW}Thử thêm lại node vào replica set...${NC}"
+                
+                # Xóa node khỏi replica set nếu nó đã tồn tại
+                local remove_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "
+                try {
+                    rs.remove('$SERVER_IP:27017');
+                    print('✅ Đã xóa node khỏi replica set');
+                } catch (err) {
+                    print('⚠️ ' + e.message);
+                }
+                " --quiet)
+                echo "$remove_result"
+                
+                echo -e "${YELLOW}Đợi 5 giây...${NC}"
+                sleep 5
+                
+                # Thêm lại node
+                local add_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "
+                try {
+                    rs.add('$SERVER_IP:27017');
+                    print('✅ Đã thêm lại node vào replica set');
+                } catch(e) {
+                    print('❌ ' + e.message);
+                }
+                " --quiet)
+                echo "$add_result"
+                
+                echo -e "${YELLOW}Đợi 30 giây cho node đồng bộ...${NC}"
+                sleep 30
+                
+                # Kiểm tra lại
+                rs_status=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
+                node_state=$(echo "$rs_status" | grep -A 15 "$SERVER_IP:27017" | grep "stateStr" | head -n 1)
+                echo -e "${YELLOW}Trạng thái sau khi thêm lại: $node_state${NC}"
+                
+                if echo "$node_state" | grep -q "SECONDARY"; then
+                    echo -e "${GREEN}✅ Node đã lên SECONDARY thành công sau khi thêm lại${NC}"
+                else
+                    echo -e "${RED}❌ Node vẫn chưa lên SECONDARY sau khi thêm lại${NC}"
+                    echo -e "${YELLOW}Xem xét thiết lập lại từ đầu node SECONDARY${NC}"
+                fi
+            fi
+        else
+            echo -e "${RED}❌ Node $SERVER_IP:27017 không có trong replica set${NC}"
+            echo -e "${YELLOW}Thử thêm node vào replica set...${NC}"
+            
+            # Thêm node
+            local add_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "
+            try {
+                rs.add('$SERVER_IP:27017');
+                print('✅ Đã thêm node vào replica set');
+            } catch(e) {
+                print('❌ ' + e.message);
+            }
+            " --quiet)
+            echo "$add_result"
+            
+            if echo "$add_result" | grep -q "❌"; then
+                echo -e "${RED}Không thể thêm node vào replica set, có lỗi xảy ra${NC}"
+            else
+                echo -e "${YELLOW}Đợi 30 giây cho node đồng bộ...${NC}"
+                sleep 30
+                
+                # Kiểm tra lại
+                rs_status=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
+                if echo "$rs_status" | grep -q "$SERVER_IP:27017"; then
+                    node_state=$(echo "$rs_status" | grep -A 15 "$SERVER_IP:27017" | grep "stateStr" | head -n 1)
+                    echo -e "${YELLOW}Trạng thái sau khi thêm: $node_state${NC}"
+                    
+                    if echo "$node_state" | grep -q "SECONDARY"; then
+                        echo -e "${GREEN}✅ Node đã lên SECONDARY thành công${NC}"
+                    else
+                        echo -e "${RED}❌ Node chưa lên SECONDARY, đang trong trạng thái: $node_state${NC}"
+                        echo -e "${YELLOW}Có thể cần đợi thêm thời gian đồng bộ${NC}"
+                    fi
+                else
+                    echo -e "${RED}❌ Node vẫn không xuất hiện trong replica set sau khi thêm${NC}"
+                fi
+            fi
+        fi
+    fi
+}
+
+# Xử lý triệt để node MongoDB không lên SECONDARY
+force_fix_node() {
+    echo -e "${YELLOW}=== Xử lý triệt để node chưa lên SECONDARY ===${NC}"
+    
+    # Nhập thông tin cần thiết
+    local SERVER_IP=$(hostname -I | awk '{print $1}')
+    read -p "Nhập địa chỉ IP của PRIMARY: " PRIMARY_IP
+    read -p "Nhập username admin của PRIMARY [$ADMIN_USER]: " PRIMARY_USER
+    PRIMARY_USER=${PRIMARY_USER:-$ADMIN_USER}
+    read -sp "Nhập password admin của PRIMARY [$ADMIN_PASS]: " PRIMARY_PASS
+    PRIMARY_PASS=${PRIMARY_PASS:-$ADMIN_PASS}
+    echo ""
+    
+    # Kiểm tra kết nối với PRIMARY
+    echo -e "${YELLOW}1. Kiểm tra kết nối với PRIMARY...${NC}"
+    if ! ping -c 1 -W 2 $PRIMARY_IP > /dev/null; then
+        echo -e "${RED}❌ Không thể ping tới PRIMARY, kiểm tra lại kết nối mạng${NC}"
+        return 1
+    else
+        echo -e "${GREEN}✅ Ping tới PRIMARY thành công${NC}"
+    fi
+    
+    # Kiểm tra kết nối MongoDB với PRIMARY
+    echo -e "${YELLOW}2. Kiểm tra kết nối MongoDB với PRIMARY...${NC}"
+    if ! nc -z -v -w 5 $PRIMARY_IP 27017 2>/dev/null; then
+        echo -e "${RED}❌ Không thể kết nối tới PRIMARY:27017, kiểm tra firewall và dịch vụ MongoDB trên PRIMARY${NC}"
+        return 1
+    else
+        echo -e "${GREEN}✅ Kết nối tới PRIMARY:27017 thành công${NC}"
+    fi
+    
+    # Xóa node khỏi replica set
+    echo -e "${YELLOW}3. Xóa node khỏi replica set...${NC}"
+    local remove_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "
+    try {
+        rs.remove('$SERVER_IP:27017');
+        print('✅ Đã xóa node khỏi replica set');
+    } catch (err) {
+        print('⚠️ ' + err.message);
+    }
+    " --quiet)
+    echo "$remove_result"
+    
+    # Dừng MongoDB trên node này
+    echo -e "${YELLOW}4. Dừng MongoDB trên node này...${NC}"
+    sudo systemctl stop mongod
+    sudo pkill -f mongod || true
+    sleep 3
+    
+    # Xóa dữ liệu và logs
+    echo -e "${YELLOW}5. Xóa dữ liệu và logs...${NC}"
+    echo -e "${RED}⚠️ CẢNH BÁO: Tất cả dữ liệu sẽ bị xóa!${NC}"
+    read -p "Bạn có chắc chắn muốn xóa tất cả dữ liệu? (y/n): " CONFIRM
+    if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
+        echo -e "${YELLOW}Hủy thao tác xóa dữ liệu.${NC}"
+    else
+        sudo rm -rf /var/lib/mongodb/* /var/log/mongodb/mongod.log
+        echo -e "${GREEN}✅ Đã xóa dữ liệu và logs${NC}"
+    fi
+    
+    # Tạo lại thư mục cần thiết
+    echo -e "${YELLOW}6. Tạo lại thư mục cần thiết...${NC}"
+    create_dirs
+    
+    # Copy keyfile từ PRIMARY
+    echo -e "${YELLOW}7. Copy keyfile từ PRIMARY...${NC}"
+    if ! create_keyfile "/etc/mongodb.keyfile" $PRIMARY_IP; then
+        echo -e "${RED}❌ Không thể copy keyfile từ PRIMARY${NC}"
+        echo -e "${YELLOW}Tạo keyfile mới...${NC}"
+        openssl rand -base64 756 | sudo tee /etc/mongodb.keyfile > /dev/null
+        sudo chmod 400 /etc/mongodb.keyfile
+        sudo chown mongodb:mongodb /etc/mongodb.keyfile
+    fi
+    
+    # Tạo cấu hình với replica set
+    echo -e "${YELLOW}8. Tạo cấu hình MongoDB...${NC}"
+    create_config true
+    
+    # Khởi động MongoDB với replica set
+    echo -e "${YELLOW}9. Khởi động MongoDB...${NC}"
+    sudo systemctl daemon-reload
+    sudo systemctl restart mongod
+    sleep 10
+    
+    # Kiểm tra MongoDB đã chạy chưa
+    echo -e "${YELLOW}10. Kiểm tra MongoDB đã chạy chưa...${NC}"
+    if ! sudo systemctl is-active --quiet mongod; then
+        echo -e "${RED}❌ MongoDB không thể khởi động${NC}"
+        sudo systemctl status mongod --no-pager
+        return 1
+    else
+        echo -e "${GREEN}✅ MongoDB đã khởi động${NC}"
+    fi
+    
+    # Thêm node vào replica set với priority thấp
+    echo -e "${YELLOW}11. Thêm node vào replica set với priority thấp...${NC}"
+    echo -e "${YELLOW}Đợi 5 giây trước khi thêm...${NC}"
+    sleep 5
+    
+    local add_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "
+    try {
+        rs.add({host:'$SERVER_IP:27017', priority:0.5});
+        print('✅ Đã thêm node vào replica set với priority 0.5');
+    } catch (err) {
+        print('❌ ' + err.message);
+    }
+    " --quiet)
+    echo "$add_result"
+    
+    # Đợi node đồng bộ
+    echo -e "${YELLOW}12. Đợi node đồng bộ (60 giây)...${NC}"
+    sleep 60
+    
+    # Kiểm tra trạng thái node
+    echo -e "${YELLOW}13. Kiểm tra trạng thái node...${NC}"
+    local rs_status=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
+    local node_state=$(echo "$rs_status" | grep -A 15 "$SERVER_IP:27017" | grep "stateStr" | head -n 1)
+    echo -e "${YELLOW}Trạng thái node: $node_state${NC}"
+    
+    if echo "$node_state" | grep -q "SECONDARY"; then
+        echo -e "${GREEN}✅ Node đã lên SECONDARY thành công${NC}"
+        
+        # Tăng priority lên 1
+        echo -e "${YELLOW}14. Tăng priority lên 1...${NC}"
+        local update_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "
+        var conf = rs.conf();
+        for(var i = 0; i < conf.members.length; i++) {
+            if(conf.members[i].host == '$SERVER_IP:27017') {
+                conf.members[i].priority = 1;
+                print('✅ Đã cập nhật priority thành 1');
+            }
+        }
+        rs.reconfig(conf);
+        " --quiet)
+        echo "$update_result"
+        
+        echo -e "${GREEN}====================================${NC}"
+        echo -e "${GREEN}✅ XỬ LÝ NODE THÀNH CÔNG${NC}"
+        echo -e "${GREEN}✅ NODE ĐÃ LÊN SECONDARY THÀNH CÔNG${NC}"
+        echo -e "${GREEN}====================================${NC}"
+    else
+        echo -e "${RED}❌ Node vẫn chưa lên SECONDARY sau khi xử lý${NC}"
+        echo -e "${YELLOW}Kiểm tra log MongoDB:${NC}"
+        sudo tail -n 30 /var/log/mongodb/mongod.log | grep -i "repl\|connect"
+    fi
+}
+
+# Khởi tạo PRIMARY node khi chưa được khởi tạo
+initialize_primary() {
+    echo -e "${YELLOW}=== Khởi tạo PRIMARY node ===${NC}"
+    
+    # Lấy thông tin server
+    local SERVER_IP=$(hostname -I | awk '{print $1}')
+    local PRIMARY_PORT=27017
+    
+    # Nhập thông tin đăng nhập admin nếu cần
+    read -p "Nhập username admin [$ADMIN_USER]: " ADMIN_USER_INPUT
+    ADMIN_USER=${ADMIN_USER_INPUT:-$ADMIN_USER}
+    read -sp "Nhập password admin [$ADMIN_PASS]: " ADMIN_PASS_INPUT
+    ADMIN_PASS=${ADMIN_PASS_INPUT:-$ADMIN_PASS}
+    echo ""
+    
+    # Kiểm tra MongoDB có đang chạy không
+    echo -e "${YELLOW}1. Kiểm tra MongoDB đang chạy...${NC}"
+    if ! sudo systemctl is-active --quiet mongod; then
+        echo -e "${RED}❌ MongoDB không đang chạy, đang khởi động lại...${NC}"
+        sudo systemctl restart mongod
+        sleep 5
+        
+        if ! sudo systemctl is-active --quiet mongod; then
+            echo -e "${RED}❌ Không thể khởi động MongoDB. Vui lòng kiểm tra lỗi.${NC}"
+            sudo systemctl status mongod --no-pager
+            return 1
+        fi
+    else
+        echo -e "${GREEN}✅ MongoDB đang chạy${NC}"
+    fi
+    
+    # Xem MongoDB đã được khởi tạo replica set chưa
+    echo -e "${YELLOW}2. Kiểm tra MongoDB đã khởi tạo replica set chưa...${NC}"
+    local rs_status=$(mongosh --host localhost --port $PRIMARY_PORT --eval "try { rs.status(); } catch(e) { print(e.message); }" --quiet)
+    
+    if echo "$rs_status" | grep -q "NotYetInitialized"; then
+        echo -e "${YELLOW}👉 Replica set chưa được khởi tạo, tiến hành khởi tạo...${NC}"
+        
+        # Khởi tạo replica set với IP server
+        echo -e "${YELLOW}3. Khởi tạo replica set...${NC}"
+        local init_result=$(mongosh --host localhost --port $PRIMARY_PORT --eval "
+        rs.initiate({
+            _id: 'rs0',
+            members: [
+                { _id: 0, host: '$SERVER_IP:$PRIMARY_PORT', priority: 10 }
+            ]
+        });
+        " --quiet)
+        
+        if echo "$init_result" | grep -q "ok" && ! echo "$init_result" | grep -q "NotYetInitialized"; then
+            echo -e "${GREEN}✅ Khởi tạo replica set thành công${NC}"
+            
+            # Đợi MongoDB ổn định và trở thành PRIMARY
+            echo -e "${YELLOW}4. Đợi MongoDB ổn định (10 giây)...${NC}"
+            sleep 10
+            
+            # Kiểm tra trạng thái của node
+            local node_state=$(mongosh --host localhost --port $PRIMARY_PORT --eval "rs.status().members[0].stateStr" --quiet)
+            echo -e "${YELLOW}Trạng thái hiện tại: $node_state${NC}"
+            
+            if [ "$node_state" = "\"PRIMARY\"" ]; then
+                echo -e "${GREEN}✅ Node đã lên PRIMARY thành công${NC}"
+                
+                # Kiểm tra xem đã có user admin chưa
+                echo -e "${YELLOW}5. Kiểm tra user admin...${NC}"
+                local admin_exists=$(mongosh --host localhost --port $PRIMARY_PORT --eval "
+                try {
+                    db = db.getSiblingDB('admin');
+                    db.getUser('$ADMIN_USER') ? 'exists' : 'not exists';
+                } catch(e) {
+                    print('not exists');
+                }
+                " --quiet)
+                
+                if [ "$admin_exists" != "exists" ]; then
+                    echo -e "${YELLOW}👉 User admin chưa tồn tại, đang tạo...${NC}"
+                    local create_result=$(mongosh --host localhost --port $PRIMARY_PORT --eval "
+                    db = db.getSiblingDB('admin');
+                    db.createUser({
+                        user: '$ADMIN_USER',
+                        pwd: '$ADMIN_PASS',
+                        roles: [ { role: 'root', db: 'admin' } ]
+                    });
+                    " --quiet)
+                    
+                    if echo "$create_result" | grep -q "ok"; then
+                        echo -e "${GREEN}✅ Đã tạo user admin thành công${NC}"
+                    else
+                        echo -e "${RED}❌ Không thể tạo user admin${NC}"
+                        echo "$create_result"
+                    fi
+                else
+                    echo -e "${GREEN}✅ User admin đã tồn tại${NC}"
+                fi
+                
+                # Bật bảo mật
+                echo -e "${YELLOW}6. Cập nhật cấu hình để bật bảo mật...${NC}"
+                create_config true
+                
+                # Khởi động lại MongoDB
+                echo -e "${YELLOW}7. Khởi động lại MongoDB với bảo mật...${NC}"
+                sudo systemctl restart mongod
+                sleep 5
+                
+                if sudo systemctl is-active --quiet mongod; then
+                    echo -e "${GREEN}✅ MongoDB đã khởi động lại với bảo mật${NC}"
+                    
+                    # Kiểm tra kết nối với user admin
+                    local auth_check=$(mongosh --host $SERVER_IP --port $PRIMARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db.runCommand({ping:1})" --quiet)
+                    
+                    if echo "$auth_check" | grep -q "ok"; then
+                        echo -e "${GREEN}✅ Kết nối thành công với user admin${NC}"
+                        echo -e "${GREEN}✅ Khởi tạo PRIMARY node thành công!${NC}"
+                    else
+                        echo -e "${RED}❌ Không thể kết nối với user admin${NC}"
+                        echo "$auth_check"
+                    fi
+                else
+                    echo -e "${RED}❌ MongoDB không thể khởi động lại với bảo mật${NC}"
+                    sudo systemctl status mongod --no-pager
+                fi
+            else
+                echo -e "${RED}❌ Node chưa lên PRIMARY, trạng thái hiện tại: $node_state${NC}"
+            fi
+        else
+            echo -e "${RED}❌ Không thể khởi tạo replica set${NC}"
+            echo "$init_result"
+        fi
+    elif echo "$rs_status" | grep -q "Unauthorized"; then
+        echo -e "${YELLOW}👉 MongoDB đã được bảo mật, cần xác thực${NC}"
+        
+        # Kiểm tra kết nối với user admin
+        local auth_check=$(mongosh --host $SERVER_IP --port $PRIMARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
+        
+        if echo "$auth_check" | grep -q "members"; then
+            echo -e "${GREEN}✅ Kết nối thành công với user admin${NC}"
+            
+            # Kiểm tra trạng thái của node
+            local node_state=$(echo "$auth_check" | grep -A 5 '"self" : true' | grep "stateStr" | head -n 1)
+            echo -e "${YELLOW}Trạng thái hiện tại: $node_state${NC}"
+            
+            if echo "$node_state" | grep -q "PRIMARY"; then
+                echo -e "${GREEN}✅ Node đã là PRIMARY${NC}"
+            else
+                echo -e "${RED}❌ Node không phải PRIMARY, trạng thái hiện tại: $node_state${NC}"
+            fi
+        else
+            echo -e "${RED}❌ Không thể kết nối với user admin${NC}"
+            echo "$auth_check"
+        fi
+    else
+        echo -e "${GREEN}✅ Replica set đã được khởi tạo${NC}"
+        echo "$rs_status"
+    fi
+}
+
 # Display troubleshooting menu
 troubleshoot_mongodb() {
     local option
@@ -1352,9 +1877,12 @@ troubleshoot_mongodb() {
         echo "5. Xem log MongoDB"
         echo "6. Unmask dịch vụ MongoDB"
         echo "7. Fix triệt để (unmask và cài lại service)"
+        echo "8. Sửa lỗi node chưa lên SECONDARY"
+        echo "9. Xử lý triệt để (xóa data và cài lại)"
+        echo "10. Khởi tạo PRIMARY node"
         echo "0. Quay lại menu chính"
         
-        read -p "Chọn tùy chọn (0-7): " option
+        read -p "Chọn tùy chọn (0-10): " option
         
         case $option in
             1)
@@ -1381,6 +1909,15 @@ troubleshoot_mongodb() {
                 ;;
             7)
                 unmask_and_fix_mongodb
+                ;;
+            8)
+                fix_secondary_status
+                ;;
+            9)
+                force_fix_node
+                ;;
+            10)
+                initialize_primary
                 ;;
             0)
                 break
