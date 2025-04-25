@@ -167,15 +167,33 @@ setup_replica_secondary_linux() {
         return 1
     fi
     
+    # Xóa các node cũ nếu tồn tại
+    echo "Đang kiểm tra và xóa các node cũ..."
+    local rs_status=$(mongosh --host $primary_server_ip --port $PRIMARY_PORT --eval 'rs.status()' --quiet)
+    if echo "$rs_status" | grep -q "$SERVER_IP"; then
+        echo "Đang xóa các node cũ..."
+        # Lấy danh sách các node cần xóa
+        local nodes_to_remove=$(echo "$rs_status" | grep -o "$SERVER_IP:[0-9]*" | sort -u)
+        for node in $nodes_to_remove; do
+            echo "Đang xóa node $node..."
+            mongosh --host $primary_server_ip --port $PRIMARY_PORT --eval "rs.remove('$node')"
+            sleep 2
+        done
+        sleep 5
+    fi
+    
     # Thêm các node vào replica set
     echo "Đang thêm node SECONDARY vào replica set..."
     mongosh --host $primary_server_ip --port $PRIMARY_PORT --eval 'rs.add("'$SERVER_IP:$PRIMARY_PORT'")'
+    sleep 2
     
     echo "Đang thêm node ARBITER 1 vào replica set..."
     mongosh --host $primary_server_ip --port $PRIMARY_PORT --eval 'rs.addArb("'$SERVER_IP:$ARBITER1_PORT'")'
+    sleep 2
     
     echo "Đang thêm node ARBITER 2 vào replica set..."
     mongosh --host $primary_server_ip --port $PRIMARY_PORT --eval 'rs.addArb("'$SERVER_IP:$ARBITER2_PORT'")'
+    sleep 2
     
     # Kiểm tra trạng thái
     if check_replica_status $PRIMARY_PORT; then
