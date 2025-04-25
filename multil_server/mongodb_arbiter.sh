@@ -113,18 +113,14 @@ fi
 echo -e "${YELLOW}Kiểm tra port $ARBITER_PORT...${NC}"
 if lsof -i :$ARBITER_PORT | grep LISTEN; then
     echo -e "${RED}Port $ARBITER_PORT đang được sử dụng.${NC}"
-    if [[ "$FUNCTION_CHOICE" == "1" ]]; then
-        echo -e "${YELLOW}Đang kiểm tra arbiter hiện tại...${NC}"
-        ARBITER_STATUS=$(echo "$RS_STATUS" | grep "MEMBER:.*$ARBITER_PORT")
-        if [ -n "$ARBITER_STATUS" ]; then
-            echo -e "${YELLOW}Port $ARBITER_PORT đang được sử dụng bởi arbiter hiện tại.${NC}"
-            echo -e "${YELLOW}Vui lòng chọn chức năng 2 để sửa lỗi arbiter hiện tại hoặc 3 để gỡ bỏ.${NC}"
-            exit 1
-        else
-            echo -e "${RED}Port $ARBITER_PORT đang được sử dụng bởi một process khác.${NC}"
-            echo -e "${YELLOW}Vui lòng dừng process đó hoặc chọn port khác.${NC}"
-            exit 1
-        fi
+    echo -e "${YELLOW}Đang dừng process đang sử dụng port...${NC}"
+    PID=$(lsof -t -i:$ARBITER_PORT)
+    if [ -n "$PID" ]; then
+        kill -9 $PID
+        echo -e "${GREEN}✓ Đã dừng process $PID${NC}"
+    else
+        echo -e "${RED}Không thể xác định process đang sử dụng port.${NC}"
+        exit 1
     fi
 else
     echo -e "${GREEN}✓ Port $ARBITER_PORT khả dụng${NC}"
@@ -213,6 +209,9 @@ replication:
 
 security:
   keyFile: $MONGODB_KEYFILE
+
+setParameter:
+  allowMultipleArbiters: true
 EOF
 echo -e "${GREEN}✓ Đã tạo file cấu hình${NC}"
 
@@ -237,11 +236,16 @@ echo -e "${GREEN}✓ Đã tạo service${NC}"
 # 8. Kiểm tra port
 echo -e "${YELLOW}Kiểm tra port $ARBITER_PORT...${NC}"
 if lsof -i :$ARBITER_PORT | grep LISTEN; then
-    echo -e "${RED}Port $ARBITER_PORT đang được sử dụng. Chọn port khác...${NC}"
-    NEW_PORT=$((ARBITER_PORT + 1))
-    echo -e "${YELLOW}Thay đổi port arbiter thành $NEW_PORT${NC}"
-    sed -i "s/port: $ARBITER_PORT/port: $NEW_PORT/g" /etc/mongod-arbiter.conf
-    ARBITER_PORT=$NEW_PORT
+    echo -e "${RED}Port $ARBITER_PORT đang được sử dụng.${NC}"
+    echo -e "${YELLOW}Đang dừng process đang sử dụng port...${NC}"
+    PID=$(lsof -t -i:$ARBITER_PORT)
+    if [ -n "$PID" ]; then
+        kill -9 $PID
+        echo -e "${GREEN}✓ Đã dừng process $PID${NC}"
+    else
+        echo -e "${RED}Không thể xác định process đang sử dụng port.${NC}"
+        exit 1
+    fi
 else
     echo -e "${GREEN}✓ Port $ARBITER_PORT khả dụng${NC}"
 fi
