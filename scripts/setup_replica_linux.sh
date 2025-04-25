@@ -6,6 +6,34 @@ GREEN='\033[0;32m'
 NC='\033[0m' # No Color
 
 setup_node_linux() {
+    # Main script execution
+echo "MongoDB Replica Set Setup for Linux"
+echo "===================================="
+echo "1. Setup PRIMARY server"
+echo "2. Setup SECONDARY server"
+echo "3. Exit"
+read -p "Select option (1-3): " option
+
+SERVER_IP=$(hostname -I | awk '{print $1}')
+echo "Using server IP: $SERVER_IP"
+
+case $option in
+    1)
+        setup_replica_primary_linux $SERVER_IP
+        ;;
+    2)
+        setup_replica_secondary_linux $SERVER_IP
+        ;;
+    3)
+        echo "Exiting..."
+        exit 0
+        ;;
+    *)
+        echo -e "${RED}❌ Invalid option${NC}"
+        exit 1
+        ;;
+esac
+
     local PORT=$1
     local NODE_TYPE=$2
     local ENABLE_SECURITY=$3 # "yes" or "no"
@@ -136,28 +164,24 @@ setup_replica_secondary_linux() {
         return 1
     fi
     
+    read -p "Enter admin username for PRIMARY (default: manhg): " admin_username
+    admin_username=${admin_username:-manhg}
+    read -p "Enter admin password for PRIMARY (default: manhnk): " admin_password
+    admin_password=${admin_password:-manhnk}
+    
     # Stop current MongoDB instances
     pkill mongod || true
     sleep 2
     
-    # Setup nodes
-    echo "Setting up SECONDARY node..."
-    if ! setup_node_linux $PRIMARY_PORT "secondary" "no"; then
-        echo -e "${RED}❌ Could not start SECONDARY node${NC}"
-        return 1
-    fi
+    # First setup nodes WITHOUT security
+    echo "Setting up SECONDARY node without security..."
+    setup_node_linux $PRIMARY_PORT "secondary" "no"
     
-    echo "Setting up ARBITER 1 node..."
-    if ! setup_node_linux $ARBITER1_PORT "arbiter" "no"; then
-        echo -e "${RED}❌ Could not start ARBITER 1 node${NC}"
-        return 1
-    fi
+    echo "Setting up ARBITER 1 node without security..."
+    setup_node_linux $ARBITER1_PORT "arbiter" "no"
     
-    echo "Setting up ARBITER 2 node..."
-    if ! setup_node_linux $ARBITER2_PORT "arbiter" "no"; then
-        echo -e "${RED}❌ Could not start ARBITER 2 node${NC}"
-        return 1
-    fi
+    echo "Setting up ARBITER 2 node without security..."
+    setup_node_linux $ARBITER2_PORT "arbiter" "no"
     
     sleep 5
     
@@ -168,7 +192,7 @@ setup_replica_secondary_linux() {
     local max_attempts=10
     local attempt=1
     while [ $attempt -le $max_attempts ]; do
-        if mongosh --host $primary_server_ip --port $PRIMARY_PORT --eval 'rs.status()' &> /dev/null; then
+        if mongosh --host $primary_server_ip --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.status()' &> /dev/null; then
             echo -e "${GREEN}✅ PRIMARY server is ready${NC}"
             break
         fi
@@ -184,16 +208,35 @@ setup_replica_secondary_linux() {
     
     # Add nodes to replica set
     echo "Adding SECONDARY node to replica set..."
-    mongosh --host $primary_server_ip --port $PRIMARY_PORT --eval 'rs.add("'$SERVER_IP:$PRIMARY_PORT'")'
+    mongosh --host $primary_server_ip --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.add("'$SERVER_IP:$PRIMARY_PORT'")'
     
     echo "Adding ARBITER 1 node to replica set..."
-    mongosh --host $primary_server_ip --port $PRIMARY_PORT --eval 'rs.addArb("'$SERVER_IP:$ARBITER1_PORT'")'
+    mongosh --host $primary_server_ip --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.addArb("'$SERVER_IP:$ARBITER1_PORT'")'
     
     echo "Adding ARBITER 2 node to replica set..."
-    mongosh --host $primary_server_ip --port $PRIMARY_PORT --eval 'rs.addArb("'$SERVER_IP:$ARBITER2_PORT'")'
+    mongosh --host $primary_server_ip --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.addArb("'$SERVER_IP:$ARBITER2_PORT'")'
+    
+    sleep 5
+    
+    # Now create keyfile and restart with security enabled
+    create_keyfile_linux
+    pkill mongod || true
+    sleep 2
+    
+    # Restart nodes WITH security
+    echo "Restarting SECONDARY node with security..."
+    setup_node_linux $PRIMARY_PORT "secondary" "yes"
+    
+    echo "Restarting ARBITER 1 node with security..."
+    setup_node_linux $ARBITER1_PORT "arbiter" "yes"
+    
+    echo "Restarting ARBITER 2 node with security..."
+    setup_node_linux $ARBITER2_PORT "arbiter" "yes"
+    
+    sleep 5
     
     # Check status
-    if check_replica_status $PRIMARY_PORT; then
+    if mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.status()' &> /dev/null; then
         echo -e "${GREEN}✅ Successfully configured MongoDB Replica Set SECONDARY${NC}"
         echo "Connection information:"
         echo "IP: $SERVER_IP"
@@ -204,30 +247,4 @@ setup_replica_secondary_linux() {
     fi
 }
 
-# Main script execution
-echo "MongoDB Replica Set Setup for Linux"
-echo "===================================="
-echo "1. Setup PRIMARY server"
-echo "2. Setup SECONDARY server"
-echo "3. Exit"
-read -p "Select option (1-3): " option
 
-SERVER_IP=$(hostname -I | awk '{print $1}')
-echo "Using server IP: $SERVER_IP"
-
-case $option in
-    1)
-        setup_replica_primary_linux $SERVER_IP
-        ;;
-    2)
-        setup_replica_secondary_linux $SERVER_IP
-        ;;
-    3)
-        echo "Exiting..."
-        exit 0
-        ;;
-    *)
-        echo -e "${RED}❌ Invalid option${NC}"
-        exit 1
-        ;;
-esac
