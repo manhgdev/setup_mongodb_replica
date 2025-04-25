@@ -14,8 +14,10 @@ ADMIN_PASS="manhnk"
 stop_mongodb() {
     echo "Stopping all MongoDB processes..."
     
-    # Stop MongoDB service
+    # Stop MongoDB services - cả mặc định và tùy chỉnh
+    sudo systemctl stop mongod 2>/dev/null || true
     sudo systemctl stop mongod_27017 2>/dev/null || true
+    sudo systemctl disable mongod 2>/dev/null || true
     
     # Kill any processes using MongoDB port
     echo "Killing processes on port 27017..."
@@ -172,6 +174,18 @@ create_systemd_service() {
     
     echo -e "${YELLOW}Tạo dịch vụ systemd...${NC}"
     
+    # Vô hiệu hóa dịch vụ MongoDB mặc định
+    sudo systemctl stop mongod 2>/dev/null || true
+    sudo systemctl disable mongod 2>/dev/null || true
+    
+    # Xóa file dịch vụ mặc định nếu có xung đột
+    if [ -f "/etc/systemd/system/mongod.service" ]; then
+        sudo rm -f /etc/systemd/system/mongod.service
+    fi
+    if [ -f "/lib/systemd/system/mongod.service" ]; then
+        sudo systemctl mask mongod.service
+    fi
+    
     # Cập nhật cấu hình với tham số security nếu cần
     create_config $WITH_SECURITY
     
@@ -180,14 +194,19 @@ create_systemd_service() {
 [Unit]
 Description=MongoDB Database Server (Port ${PORT})
 After=network.target
+Documentation=https://docs.mongodb.org/manual
 
 [Service]
 User=mongodb
 Group=mongodb
+Type=simple
 ExecStart=/usr/bin/mongod --config ${CONFIG_FILE}
 ExecStop=/usr/bin/mongod --config ${CONFIG_FILE} --shutdown
 Restart=on-failure
 RestartSec=5
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=mongodb
 
 [Install]
 WantedBy=multi-user.target
@@ -205,6 +224,14 @@ start_mongodb() {
     local SERVICE_NAME="mongod_${PORT}"
     
     echo -e "${YELLOW}Khởi động MongoDB...${NC}"
+    
+    # Kiểm tra xung đột với dịch vụ mặc định
+    if sudo systemctl is-active --quiet mongod; then
+        echo -e "${YELLOW}⚠️ Dịch vụ mongod mặc định đang chạy, đang dừng...${NC}"
+        sudo systemctl stop mongod
+        sudo systemctl disable mongod
+        sleep 2
+    fi
     
     # Kiểm tra và dừng MongoDB nếu đang chạy
     if sudo systemctl is-active --quiet $SERVICE_NAME; then
@@ -225,7 +252,20 @@ start_mongodb() {
     sudo touch /var/log/mongodb/mongod_${PORT}.log
     sudo chown mongodb:mongodb /var/log/mongodb/mongod_${PORT}.log
     
-    # Khởi động MongoDB
+    # Khởi động MongoDB trực tiếp trước để kiểm tra nếu có lỗi
+    echo -e "${YELLOW}Kiểm tra khởi động trực tiếp...${NC}"
+    sudo -u mongodb mongod --config /etc/mongod_${PORT}.conf --fork --logpath /var/log/mongodb/mongod_${PORT}.log --logappend
+    sleep 2
+    if pgrep -f "mongod --config" > /dev/null; then
+        echo -e "${GREEN}✓ MongoDB khởi động trực tiếp thành công${NC}"
+        sudo pkill -f mongod || true
+        sleep 2
+    else
+        echo -e "${RED}⚠️ Khởi động trực tiếp thất bại, kiểm tra log:${NC}"
+        sudo tail -n 10 /var/log/mongodb/mongod_${PORT}.log
+    fi
+    
+    # Khởi động MongoDB qua systemd
     sudo systemctl daemon-reload
     sudo systemctl start $SERVICE_NAME
     
@@ -241,6 +281,10 @@ start_mongodb() {
             sudo netstat -ntlp | grep mongo || sudo ss -ntlp | grep mongo || true
             sleep 1
             
+            # Kiểm tra rõ ràng log
+            echo "10 dòng log gần nhất:"
+            sudo tail -n 10 /var/log/mongodb/mongod_${PORT}.log
+            
             return 0
         fi
         echo "Đang chờ... ($i/5)"
@@ -250,8 +294,18 @@ start_mongodb() {
     echo -e "${RED}✗ Không thể khởi động MongoDB${NC}"
     echo "Trạng thái dịch vụ:"
     sudo systemctl status $SERVICE_NAME
-    echo "Kiểm tra log MongoDB:"
+    echo "Kiểm tra log MongoDB chi tiết:"
     sudo tail -n 30 /var/log/mongodb/mongod_${PORT}.log
+    
+    # Thử kiểm tra file cấu hình
+    echo "Kiểm tra file cấu hình:"
+    sudo cat /etc/mongod_${PORT}.conf
+    
+    # Thử khởi động trực tiếp với output hiển thị
+    echo "Thử khởi động trực tiếp với output chi tiết:"
+    sudo -u mongodb mongod --config /etc/mongod_${PORT}.conf --fork --logpath /var/log/mongodb/mongod_test.log
+    sleep 2
+    sudo cat /var/log/mongodb/mongod_test.log
     
     return 1
 }
