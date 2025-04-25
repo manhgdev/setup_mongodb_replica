@@ -259,15 +259,14 @@ setup_primary() {
     # Initialize replica set using private IP
     echo "Initializing replica set..."
     local init_result=$(mongosh --port $PRIMARY_PORT --eval "
-    db.adminCommand({ setParameter: 1, allowMultipleArbiters: true });
-    rs.initiate({
-        _id: 'rs0',
-        members: [
-            { _id: 0, host: '$SERVER_IP:$PRIMARY_PORT', priority: 10 },
-            { _id: 1, host: '$SERVER_IP:$ARBITER1_PORT', arbiterOnly: true, priority: 0 },
-            { _id: 2, host: '$SERVER_IP:$ARBITER2_PORT', arbiterOnly: true, priority: 0 }
-        ]
-    })")
+rs.initiate({
+    _id: 'rs0',
+    members: [
+        { _id: 0, host: '$SERVER_IP:$PRIMARY_PORT', priority: 10 },
+        { _id: 1, host: '$SERVER_IP:$ARBITER1_PORT', arbiterOnly: true, priority: 0 },
+        { _id: 2, host: '$SERVER_IP:$ARBITER2_PORT', arbiterOnly: true, priority: 0 }
+    ]
+})")
     
     if [ $? -ne 0 ]; then
         echo -e "${RED}❌ Failed to initialize replica set${NC}"
@@ -443,9 +442,6 @@ EOF"
     
     # Thêm vào replica set
     echo "Thêm vào replica set..."
-    # Đảm bảo cho phép nhiều arbiter
-    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db.adminCommand({ setParameter: 1, allowMultipleArbiters: true })" --quiet
-    
     local rs_status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
     
     for node in "$SERVER_IP:$SECONDARY_PORT" "$SERVER_IP:$ARBITER1_PORT" "$SERVER_IP:$ARBITER2_PORT"; do
