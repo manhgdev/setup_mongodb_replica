@@ -1,7 +1,7 @@
 #!/bin/bash
 
 generate_setup_guide() {
-    local PRIMARY_IP=$1
+    local SERVER_IP=$1
     local PRIMARY_PORT=$2
     local ARBITER1_PORT=$3
     local ARBITER2_PORT=$4
@@ -11,10 +11,10 @@ generate_setup_guide() {
     local GUIDE_FILE="mongodb_replica_setup_guide.md"
     
     cat > "$GUIDE_FILE" << EOL
-# Hướng dẫn cài đặt MongoDB Replica Set - SECONDARY Server
+# Hướng dẫn cài đặt MongoDB Replica Set - PRIMARY Server
 
-## Thông tin PRIMARY Server
-- IP: $PRIMARY_IP
+## Thông tin kết nối
+- IP: $SERVER_IP
 - Ports:
   - PRIMARY: $PRIMARY_PORT
   - ARBITER 1: $ARBITER1_PORT
@@ -22,41 +22,11 @@ generate_setup_guide() {
 - Username: $ADMIN_USERNAME
 - Password: $ADMIN_PASSWORD
 
-## Các bước cài đặt
+## Các lệnh hữu ích
 
-1. Cài đặt MongoDB trên server mới:
+1. Kết nối đến MongoDB:
    \`\`\`bash
-   # Ubuntu/Debian
-   sudo apt-get update
-   sudo apt-get install -y mongodb-org
-
-   # CentOS/RHEL
-   sudo yum install -y mongodb-org
-   \`\`\`
-
-2. Tải script cài đặt:
-   \`\`\`bash
-   wget https://raw.githubusercontent.com/manhg/setup_mongodb_replica/main/scripts/setup_replica_linux.sh
-   chmod +x setup_replica_linux.sh
-   \`\`\`
-
-3. Chạy script cài đặt:
-   \`\`\`bash
-   sudo ./setup_replica_linux.sh
-   \`\`\`
-
-4. Chọn tùy chọn 2 (SECONDARY) khi được hỏi
-
-5. Nhập thông tin:
-   - IP của PRIMARY server: $PRIMARY_IP
-   - Username admin: $ADMIN_USERNAME
-   - Password admin: $ADMIN_PASSWORD
-
-## Kiểm tra kết nối
-
-1. Kết nối đến PRIMARY server:
-   \`\`\`bash
-   mongosh --host $PRIMARY_IP --port $PRIMARY_PORT -u $ADMIN_USERNAME -p $ADMIN_PASSWORD --authenticationDatabase admin
+   mongosh --host $SERVER_IP --port $PRIMARY_PORT -u $ADMIN_USERNAME -p $ADMIN_PASSWORD --authenticationDatabase admin
    \`\`\`
 
 2. Kiểm tra trạng thái replica set:
@@ -64,29 +34,79 @@ generate_setup_guide() {
    rs.status()
    \`\`\`
 
-## Xử lý lỗi thường gặp
+3. Xem cấu hình replica set:
+   \`\`\`javascript
+   rs.conf()
+   \`\`\`
 
-1. Không thể kết nối đến PRIMARY server:
-   - Kiểm tra firewall
-   - Kiểm tra kết nối mạng
-   - Kiểm tra port đã mở
+4. Thêm node mới:
+   \`\`\`javascript
+   rs.add("host:port")
+   \`\`\`
 
-2. Lỗi xác thực:
-   - Kiểm tra lại username/password
-   - Kiểm tra quyền truy cập của user
+5. Thêm arbiter:
+   \`\`\`javascript
+   rs.addArb("host:port")
+   \`\`\`
 
-3. Lỗi replica set:
+6. Xóa node:
+   \`\`\`javascript
+   rs.remove("host:port")
+   \`\`\`
+
+## Quản lý dữ liệu
+
+1. Backup dữ liệu:
+   \`\`\`bash
+   mongodump --host $SERVER_IP --port $PRIMARY_PORT -u $ADMIN_USERNAME -p $ADMIN_PASSWORD --authenticationDatabase admin --out /path/to/backup
+   \`\`\`
+
+2. Restore dữ liệu:
+   \`\`\`bash
+   mongorestore --host $SERVER_IP --port $PRIMARY_PORT -u $ADMIN_USERNAME -p $ADMIN_PASSWORD --authenticationDatabase admin /path/to/backup
+   \`\`\`
+
+## Lưu ý quan trọng
+
+1. Bảo mật:
+   - Giữ keyFile an toàn: /etc/mongodb.key
+   - Thay đổi password admin định kỳ
+   - Giới hạn IP truy cập
+
+2. Quản lý:
+   - Log files: /var/log/mongodb/
+   - Data files: /var/lib/mongodb_*
+   - Config files: /etc/mongod_*.conf
+
+3. Giám sát:
+   - Kiểm tra log file thường xuyên
+   - Theo dõi dung lượng ổ đĩa
+   - Giám sát hiệu suất
+
+## Xử lý sự cố
+
+1. MongoDB không khởi động:
    - Kiểm tra log file
+   - Kiểm tra quyền truy cập
+   - Kiểm tra port đã sử dụng
+
+2. Replica set không hoạt động:
+   - Kiểm tra kết nối mạng
    - Kiểm tra trạng thái các node
-   - Kiểm tra kết nối giữa các node
+   - Kiểm tra cấu hình replica set
+
+3. Lỗi xác thực:
+   - Kiểm tra keyFile
+   - Kiểm tra user/password
+   - Kiểm tra quyền truy cập
 
 ## Liên hệ hỗ trợ
 
-Nếu gặp vấn đề trong quá trình cài đặt, vui lòng liên hệ:
+Nếu gặp vấn đề trong quá trình vận hành, vui lòng liên hệ:
 - Email: manhg@example.com
 - Phone: +84 123 456 789
 EOL
 
     echo -e "${GREEN}✅ Đã tạo file hướng dẫn: $GUIDE_FILE${NC}"
-    echo "Bạn có thể chia sẻ file này cho người cài đặt server tiếp theo"
+    echo "Bạn có thể sử dụng file này để quản lý MongoDB Replica Set"
 } 

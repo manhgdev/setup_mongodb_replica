@@ -1,61 +1,7 @@
 #!/bin/bash
 
 # Import các hàm từ file khác
-if [ -f "$(dirname "$0")/generate_guide.sh" ]; then
-    source "$(dirname "$0")/generate_guide.sh"
-else
-    echo "⚠️ Không tìm thấy file generate_guide.sh"
-    echo "Đang tạo file hướng dẫn mới..."
-    cat > "$(dirname "$0")/generate_guide.sh" << 'EOL'
-#!/bin/bash
-
-generate_setup_guide() {
-    local SERVER_IP=$1
-    local PRIMARY_PORT=$2
-    local ARBITER1_PORT=$3
-    local ARBITER2_PORT=$4
-    local ADMIN_USERNAME=$5
-    local ADMIN_PASSWORD=$6
-    
-    local GUIDE_FILE="mongodb_replica_setup_guide.txt"
-    
-    cat > "$GUIDE_FILE" << EOL
-=== Hướng dẫn cài đặt MongoDB Replica Set ===
-
-1. Thông tin kết nối:
-   - IP: $SERVER_IP
-   - Ports:
-     + $PRIMARY_PORT (PRIMARY)
-     + $ARBITER1_PORT (ARBITER)
-     + $ARBITER2_PORT (ARBITER)
-   - Username: $ADMIN_USERNAME
-   - Password: $ADMIN_PASSWORD
-
-2. Kết nối đến MongoDB:
-   mongosh --host $SERVER_IP --port $PRIMARY_PORT -u $ADMIN_USERNAME -p $ADMIN_PASSWORD --authenticationDatabase admin
-
-3. Kiểm tra trạng thái replica set:
-   rs.status()
-
-4. Các lệnh hữu ích:
-   - Xem cấu hình replica set: rs.conf()
-   - Xem trạng thái các node: rs.status()
-   - Thêm node mới: rs.add("host:port")
-   - Thêm arbiter: rs.addArb("host:port")
-   - Xóa node: rs.remove("host:port")
-
-5. Lưu ý:
-   - Giữ keyFile an toàn: /etc/mongodb.key
-   - Log files nằm ở: /var/log/mongodb/
-   - Data files nằm ở: /var/lib/mongodb_*
-EOL
-    
-    echo "✅ Đã tạo file hướng dẫn: $GUIDE_FILE"
-}
-EOL
-    chmod +x "$(dirname "$0")/generate_guide.sh"
-    source "$(dirname "$0")/generate_guide.sh"
-fi
+source "$(dirname "$0")/generate_guide.sh"
 
 setup_node_linux() {
     local PORT=$1
@@ -202,7 +148,7 @@ setup_replica_primary_linux() {
     
     # Khởi tạo replica set trước
     echo "Đang khởi tạo replica set..."
-    local init_result=$(mongosh --host $SERVER_IP --port $PRIMARY_PORT --eval 'rs.initiate({
+    local init_result=$(mongosh --port $PRIMARY_PORT --eval 'rs.initiate({
         _id: "rs0",
         members: [
             { _id: 0, host: "'$SERVER_IP:$PRIMARY_PORT'", priority: 2 },
@@ -221,7 +167,7 @@ setup_replica_primary_linux() {
     
     # Kiểm tra trạng thái replica set ngay lập tức
     echo "Đang kiểm tra trạng thái replica set..."
-    local status_result=$(mongosh --host $SERVER_IP --port $PRIMARY_PORT --eval 'rs.status()' 2>&1)
+    local status_result=$(mongosh --port $PRIMARY_PORT --eval 'rs.status()' 2>&1)
     if [ $? -ne 0 ]; then
         echo -e "${RED}❌ Lỗi khi kiểm tra trạng thái replica set:${NC}"
         echo "$status_result"
@@ -235,7 +181,7 @@ setup_replica_primary_linux() {
     
     # Tạo user admin
     echo "Đang tạo user admin..."
-    local create_user_result=$(mongosh --host $SERVER_IP --port $PRIMARY_PORT --eval '
+    local create_user_result=$(mongosh --port $PRIMARY_PORT --eval '
         db = db.getSiblingDB("admin");
         db.createUser({
             user: "'$admin_username'",
@@ -257,7 +203,7 @@ setup_replica_primary_linux() {
     
     # Kiểm tra trạng thái cuối cùng
     echo "Đang kiểm tra trạng thái cuối cùng..."
-    local final_status=$(mongosh --host $SERVER_IP --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.status()' 2>&1)
+    local final_status=$(mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.status()' 2>&1)
     if [ $? -ne 0 ]; then
         echo -e "${RED}❌ Lỗi khi kiểm tra trạng thái cuối cùng:${NC}"
         echo "$final_status"
@@ -274,7 +220,12 @@ setup_replica_primary_linux() {
     echo "Password: $admin_password"
     
     # Tạo file hướng dẫn
-    generate_setup_guide $SERVER_IP $PRIMARY_PORT $ARBITER1_PORT $ARBITER2_PORT $admin_username $admin_password
+    if [ -f "$(dirname "$0")/generate_guide.sh" ]; then
+        source "$(dirname "$0")/generate_guide.sh"
+        generate_setup_guide $SERVER_IP $PRIMARY_PORT $ARBITER1_PORT $ARBITER2_PORT $admin_username $admin_password
+    else
+        echo "⚠️ Không tìm thấy file generate_guide.sh"
+    fi
 }
 
 setup_replica_secondary_linux() {
