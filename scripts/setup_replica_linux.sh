@@ -384,40 +384,94 @@ setup_primary() {
 # Setup SECONDARY server
 setup_secondary() {
     local SERVER_IP=$1
+    local PRIMARY_IP=$2
     local PRIMARY_PORT=27017
-    local ARBITER_PORT=27018
+    local SECONDARY_PORT=27018
+
+    stop_mongodb
+    create_dirs $PRIMARY_PORT
+    create_dirs $SECONDARY_PORT
     
-    read -p "Enter PRIMARY server IP: " PRIMARY_IP
-    if [ -z "$PRIMARY_IP" ]; then
-        echo -e "${RED}❌ PRIMARY server IP is required${NC}"
+    # Create keyfile first
+    create_keyfile
+    
+    # Create configs with security
+    create_config $PRIMARY_PORT true
+    create_config $SECONDARY_PORT true
+    
+    # Start PRIMARY node
+    echo "Starting MongoDB on port $PRIMARY_PORT..."
+    mongod --config /etc/mongod_${PRIMARY_PORT}.conf --fork
+    sleep 10
+    
+    if ! mongosh --port $PRIMARY_PORT --eval "db.version()" --quiet &>/dev/null; then
+        echo -e "${RED}❌ Failed to start PRIMARY node${NC}"
+        echo "Last 50 lines of log:"
+        tail -n 50 /var/log/mongodb/mongod_${PRIMARY_PORT}.log
         return 1
     fi
     
-    stop_mongodb
-    create_dirs $PRIMARY_PORT
-    create_dirs $ARBITER_PORT
+    echo -e "${GREEN}✅ MongoDB started successfully on port $PRIMARY_PORT${NC}"
     
-    setup_node $PRIMARY_PORT || return 1
-    setup_node $ARBITER_PORT || return 1
+    # Start SECONDARY node
+    echo "Starting MongoDB on port $SECONDARY_PORT..."
+    mongod --config /etc/mongod_${SECONDARY_PORT}.conf --fork
+    sleep 10
     
-    sleep 2
+    if ! mongosh --port $SECONDARY_PORT --eval "db.version()" --quiet &>/dev/null; then
+        echo -e "${RED}❌ Failed to start SECONDARY node${NC}"
+        echo "Last 50 lines of log:"
+        tail -n 50 /var/log/mongodb/mongod_${SECONDARY_PORT}.log
+        return 1
+    fi
     
-    mongosh --host $PRIMARY_IP --port $PRIMARY_PORT --eval "
-    rs.add('$SERVER_IP:$PRIMARY_PORT');
-    rs.addArb('$SERVER_IP:$ARBITER_PORT')" &>/dev/null
+    echo -e "${GREEN}✅ MongoDB started successfully on port $SECONDARY_PORT${NC}"
     
-    sleep 2
+    # Create systemd services
+    echo "Creating systemd services..."
+    create_systemd_service $PRIMARY_PORT || return 1
+    create_systemd_service $SECONDARY_PORT || return 1
+    
+    # Restart services
+    echo "Restarting services..."
+    sudo systemctl restart mongod_${PRIMARY_PORT}
+    sudo systemctl restart mongod_${SECONDARY_PORT}
+    sleep 10
+    
+    # Add SECONDARY to replica set
+    echo "Adding SECONDARY to replica set..."
+    local add_result=$(mongosh --port $PRIMARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
+    rs.add({
+        host: '$SERVER_IP:$SECONDARY_PORT',
+        priority: 5,
+        votes: 1
+    })")
+    
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}❌ Failed to add SECONDARY to replica set${NC}"
+        echo "Error: $add_result"
+        return 1
+    fi
+    
+    echo -e "${GREEN}✅ SECONDARY added to replica set successfully${NC}"
+    
+    # Wait for replication
+    echo "Waiting for replication to complete..."
+    sleep 20
     
     # Check replica set status
-    local status=$(mongosh --host $PRIMARY_IP --port $PRIMARY_PORT --eval "rs.status()" --quiet)
-    if echo "$status" | grep -q "SECONDARY"; then
-        echo -e "\n${GREEN}✅ SECONDARY setup completed${NC}"
-        echo "This server (SECONDARY): $SERVER_IP:$PRIMARY_PORT"
-        echo "Arbiter node: $SERVER_IP:$ARBITER_PORT"
-        echo "Connected to PRIMARY: $PRIMARY_IP:$PRIMARY_PORT"
-        echo "Connect to this SECONDARY: mongosh --host $SERVER_IP --port $PRIMARY_PORT"
+    local status=$(mongosh --port $PRIMARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
+    local secondary_state=$(echo "$status" | grep -A 5 "stateStr" | grep "SECONDARY")
+    
+    if [ -n "$secondary_state" ]; then
+        echo -e "${GREEN}✅ SECONDARY setup completed successfully${NC}"
+        echo "Primary node: $PRIMARY_IP:$PRIMARY_PORT"
+        echo "Secondary node: $SERVER_IP:$SECONDARY_PORT"
+        echo "Connection command: mongosh --host $SERVER_IP --port $SECONDARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
     else
-        echo -e "${RED}❌ Secondary setup failed${NC}"
+        echo -e "${RED}❌ SECONDARY setup failed - Node not in SECONDARY state${NC}"
+        echo "Current status:"
+        echo "$status"
         return 1
     fi
 }
