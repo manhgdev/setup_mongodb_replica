@@ -80,74 +80,33 @@ EOL
 
     # Start mongod with sudo for proper permissions
     echo "Starting MongoDB on port $PORT..."
-    sudo mongod --config "$CONFIG_FILE" --fork
+    if ! sudo mongod --config "$CONFIG_FILE" --fork; then
+        echo -e "${RED}❌ Failed to start MongoDB on port $PORT${NC}"
+        echo "Last 20 lines of log:"
+        sudo tail -n 20 "$LOG_PATH/mongod_${PORT}.log"
+        return 1
+    fi
     
-    # Check if MongoDB started successfully with more thorough verification
-    local max_attempts=30
+    # Wait for MongoDB to start
+    local max_attempts=3
     local attempt=1
-    local started=false
     
     while [ $attempt -le $max_attempts ]; do
         echo "Waiting for MongoDB to start (attempt $attempt/$max_attempts)..."
-        sleep 5
+        sleep 3
         
-        # Check if process exists
-        if ! pgrep -f "mongod.*--port $PORT" > /dev/null; then
-            echo "MongoDB process not found, checking log for errors..."
-            if [ -r "$LOG_PATH/mongod_${PORT}.log" ]; then
-                tail -n 20 "$LOG_PATH/mongod_${PORT}.log"
-            else
-                sudo tail -n 20 "$LOG_PATH/mongod_${PORT}.log"
-            fi
-            return 1
-        fi
-        
-        # Try to connect
         if mongosh --port $PORT --eval "db.version()" --quiet &>/dev/null; then
             echo -e "${GREEN}✅ MongoDB started successfully on port $PORT${NC}"
-            started=true
-            break
+            return 0
         fi
         
         attempt=$((attempt + 1))
     done
     
-    if [ "$started" = "false" ]; then
-        echo -e "${RED}❌ Failed to start MongoDB on port $PORT${NC}"
-        echo "Last 20 lines of log:"
-        if [ -r "$LOG_PATH/mongod_${PORT}.log" ]; then
-            tail -n 20 "$LOG_PATH/mongod_${PORT}.log"
-        else
-            sudo tail -n 20 "$LOG_PATH/mongod_${PORT}.log"
-        fi
-        
-        # Try to get more detailed error information
-        echo "Checking for common issues:"
-        if [ ! -d "$DB_PATH" ]; then
-            echo "- Database directory does not exist: $DB_PATH"
-        fi
-        if [ ! -w "$DB_PATH" ]; then
-            echo "- Database directory is not writable: $DB_PATH"
-        fi
-        if [ ! -f "$CONFIG_FILE" ]; then
-            echo "- Config file does not exist: $CONFIG_FILE"
-        fi
-        if [ ! -r "$CONFIG_FILE" ]; then
-            echo "- Config file is not readable: $CONFIG_FILE"
-        fi
-        
-        # Check process status
-        echo "MongoDB process status:"
-        ps aux | grep mongod | grep -v grep
-        
-        # Check port status
-        echo "Port status:"
-        netstat -tuln | grep $PORT
-        
-        return 1
-    fi
-    
-    return 0
+    echo -e "${RED}❌ Failed to connect to MongoDB on port $PORT${NC}"
+    echo "Last 20 lines of log:"
+    sudo tail -n 20 "$LOG_PATH/mongod_${PORT}.log"
+    return 1
 }
 
 create_keyfile_linux() {
