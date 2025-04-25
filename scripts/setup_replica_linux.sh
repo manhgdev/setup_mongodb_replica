@@ -93,7 +93,7 @@ setup_primary() {
     rs.initiate({
         _id: 'rs0',
         members: [
-            { _id: 0, host: '$SERVER_IP:$PRIMARY_PORT', priority: 2 },
+            { _id: 0, host: '$SERVER_IP:$PRIMARY_PORT', priority: 10 },
             { _id: 1, host: '$SERVER_IP:$ARBITER1_PORT', arbiterOnly: true, priority: 0 },
             { _id: 2, host: '$SERVER_IP:$ARBITER2_PORT', arbiterOnly: true, priority: 0 }
         ]
@@ -105,19 +105,21 @@ setup_primary() {
         return 1
     fi
     
-    sleep 2
+    echo "Waiting for PRIMARY election..."
+    sleep 15
     
     # Check replica set status
     echo "Checking replica set status..."
     local status=$(mongosh --port $PRIMARY_PORT --eval "rs.status()" --quiet)
+    local primary_state=$(echo "$status" | grep -A 5 "stateStr" | grep "PRIMARY")
     
-    if echo "$status" | grep -q "PRIMARY"; then
+    if [ -n "$primary_state" ]; then
         echo -e "\n${GREEN}✅ MongoDB Replica Set setup completed successfully.${NC}"
         echo "Primary node: $SERVER_IP:$PRIMARY_PORT"
         echo "Arbiter nodes: $SERVER_IP:$ARBITER1_PORT, $SERVER_IP:$ARBITER2_PORT"
         echo "Connection command: mongosh --host $SERVER_IP --port $PRIMARY_PORT"
     else
-        echo -e "${RED}❌ Replica set initialization failed${NC}"
+        echo -e "${RED}❌ Replica set initialization failed - Node not promoted to PRIMARY${NC}"
         echo "Current status:"
         echo "$status"
         return 1
