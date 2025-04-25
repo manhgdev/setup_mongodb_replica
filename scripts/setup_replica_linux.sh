@@ -58,6 +58,53 @@ create_dirs() {
     chmod 755 $DB_PATH
 }
 
+# Create MongoDB config
+create_config() {
+    local PORT=$1
+    local CONFIG_FILE="/etc/mongod_${PORT}.conf"
+    local DB_PATH="/var/lib/mongodb_${PORT}"
+    local LOG_PATH="/var/log/mongodb"
+    local WITH_SECURITY=${2:-false}
+    
+    echo "Creating MongoDB config for port $PORT..."
+    
+    # Create base config
+    cat > $CONFIG_FILE << EOF
+storage:
+  dbPath: $DB_PATH
+  journal:
+    enabled: true
+systemLog:
+  destination: file
+  logAppend: true
+  path: $LOG_PATH/mongod_${PORT}.log
+net:
+  port: ${PORT}
+  bindIp: 0.0.0.0
+processManagement:
+  timeZoneInfo: /usr/share/zoneinfo
+replication:
+  replSetName: rs0
+setParameter:
+  allowMultipleArbiters: true
+EOF
+
+    # Add security section if needed
+    if [ "$WITH_SECURITY" = true ]; then
+        cat >> $CONFIG_FILE << EOF
+security:
+  keyFile: /etc/mongodb.keyfile
+  authorization: enabled
+EOF
+    fi
+
+    # Set proper permissions
+    chmod 644 $CONFIG_FILE
+    chown mongodb:mongodb $CONFIG_FILE
+    
+    echo -e "${GREEN}✅ MongoDB config created for port $PORT${NC}"
+}
+
 # Setup MongoDB node
 setup_node() {
     local PORT=$1
@@ -66,22 +113,8 @@ setup_node() {
     local LOG_PATH="/var/log/mongodb"
     
     # Create config
-    cat > $CONFIG_FILE <<EOL
-systemLog:
-  destination: file
-  path: $LOG_PATH/mongod_${PORT}.log
-  logAppend: true
-storage:
-  dbPath: $DB_PATH
-net:
-  bindIp: 0.0.0.0
-  port: $PORT
-replication:
-  replSetName: rs0
-setParameter:
-  allowMultipleArbiters: true
-EOL
-
+    create_config $PORT
+    
     # Start MongoDB
     echo "Starting MongoDB on port $PORT..."
     mongod --config "$CONFIG_FILE" > "$LOG_PATH/mongod_${PORT}.log" 2>&1 &
@@ -207,20 +240,15 @@ setup_primary() {
     create_dirs $ARBITER1_PORT
     create_dirs $ARBITER2_PORT
     
-    # Create keyfile
-    create_keyfile
+    # Create initial configs without security
+    create_config $PRIMARY_PORT false
+    create_config $ARBITER1_PORT false
+    create_config $ARBITER2_PORT false
     
-    # Update config with keyfile for all nodes
-    for port in $PRIMARY_PORT $ARBITER1_PORT $ARBITER2_PORT; do
-        local CONFIG_FILE="/etc/mongod_${port}.conf"
-        echo "security:
-  keyFile: /etc/mongodb.keyfile
-  authorization: enabled" >> $CONFIG_FILE
-    done
-    
-    start_mongodb || return 1
-    
-    sleep 2
+    # Start PRIMARY first
+    echo "Starting PRIMARY node..."
+    sudo systemctl start mongod_27017
+    sleep 10
     
     # Initialize replica set
     echo "Initializing replica set..."
@@ -253,11 +281,21 @@ setup_primary() {
         echo "Primary node: $SERVER_IP:$PRIMARY_PORT"
         echo "Arbiter nodes: $SERVER_IP:$ARBITER1_PORT, $SERVER_IP:$ARBITER2_PORT"
         
-        # Create admin user
-        read -p "Enter admin username: " ADMIN_USER
-        read -sp "Enter admin password: " ADMIN_PASS
+        # Create admin user with default values
+        read -p "Enter admin username [manhg]: " ADMIN_USER
+        ADMIN_USER=${ADMIN_USER:-manhg}
+        
+        read -sp "Enter admin password [manhnk]: " ADMIN_PASS
+        ADMIN_PASS=${ADMIN_PASS:-manhnk}
         echo
+        
         create_admin_user $PRIMARY_PORT $ADMIN_USER $ADMIN_PASS || return 1
+        
+        # Create keyfile and update configs with security
+        create_keyfile
+        create_config $PRIMARY_PORT true
+        create_config $ARBITER1_PORT true
+        create_config $ARBITER2_PORT true
         
         # Create systemd services
         echo "Creating systemd services..."
@@ -265,19 +303,12 @@ setup_primary() {
         create_systemd_service $ARBITER1_PORT || return 1
         create_systemd_service $ARBITER2_PORT || return 1
         
-        # Restart with authentication
-        echo "Restarting MongoDB with authentication..."
-        stop_mongodb
+        # Restart services with security
+        echo "Restarting services with security..."
+        sudo systemctl restart mongod_27017
         sleep 5
-        
-        # Start services in order
-        echo "Starting PRIMARY node..."
-        sudo systemctl start mongod_27017
-        sleep 10
-        
-        echo "Starting ARBITER nodes..."
-        sudo systemctl start mongod_27018
-        sudo systemctl start mongod_27019
+        sudo systemctl restart mongod_27018
+        sudo systemctl restart mongod_27019
         sleep 5
         
         # Verify connection with auth
