@@ -238,10 +238,18 @@ setup_primary() {
     create_config $ARBITER1_PORT false
     create_config $ARBITER2_PORT false
     
-    # Start PRIMARY first
+    # Start all nodes
     echo "Starting PRIMARY node..."
     mongod --dbpath /var/lib/mongodb_27017 --port 27017 --fork --logpath /var/log/mongodb/mongod_27017.log --replSet rs0 --setParameter allowMultipleArbiters=true
-    sleep 10
+    sleep 5
+    
+    echo "Starting ARBITER 1 node..."
+    mongod --dbpath /var/lib/mongodb_27018 --port 27018 --fork --logpath /var/log/mongodb/mongod_27018.log --replSet rs0 --setParameter allowMultipleArbiters=true
+    sleep 5
+    
+    echo "Starting ARBITER 2 node..."
+    mongod --dbpath /var/lib/mongodb_27019 --port 27019 --fork --logpath /var/log/mongodb/mongod_27019.log --replSet rs0 --setParameter allowMultipleArbiters=true
+    sleep 5
     
     # Check if PRIMARY is running
     if ! mongosh --port $PRIMARY_PORT --eval "db.version()" --quiet &>/dev/null; then
