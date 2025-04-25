@@ -17,7 +17,14 @@ AUTH_DATABASE="admin"
 MONGO_VERSION="8.0"
 MAX_SERVERS=7
 
-echo -e "${BLUE}=== THIẾT LẬP MONGODB REPLICA SET PHÂN TÁN ===${NC}"
+# Thông tin node
+declare -A NODES=(
+    ["node1"]="$MONGO_PORT"
+    ["node2"]="$((MONGO_PORT + 1))"
+    ["node3"]="$((MONGO_PORT + 2))"
+)
+
+echo -e "${BLUE}=== THIẾT LẬP MONGODB REPLICA SET (3 NODE) ===${NC}"
 
 # Cài đặt MongoDB
 install_mongodb() {
