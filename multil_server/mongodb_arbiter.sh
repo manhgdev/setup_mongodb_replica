@@ -302,6 +302,15 @@ case $FUNCTION_CHOICE in
     # Thêm arbiter mới
     echo -e "${YELLOW}=== THÊM ARBITER MỚI ===${NC}"
     
+    # Hỏi số lượng arbiter muốn thêm
+    read -p "Số lượng arbiter muốn thêm [1]: " ARBITER_COUNT
+    ARBITER_COUNT=${ARBITER_COUNT:-1}
+    
+    if ! [[ "$ARBITER_COUNT" =~ ^[1-9][0-9]*$ ]]; then
+        echo -e "${RED}Số lượng arbiter phải là số nguyên dương.${NC}"
+        exit 1
+    fi
+    
     # Thiết lập write concern mặc định
     echo -e "${YELLOW}Thiết lập write concern mặc định...${NC}"
     SET_DEFAULT_WRITE_CONCERN=$(mongosh --host "$PRIMARY_HOST" -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
@@ -322,29 +331,82 @@ case $FUNCTION_CHOICE in
     
     echo "$SET_DEFAULT_WRITE_CONCERN"
     
-    echo -e "${YELLOW}Thêm arbiter từ PRIMARY ($PRIMARY_HOST)...${NC}"
-    ADD_ARBITER_RESULT=$(mongosh --host "$PRIMARY_HOST" -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
-    try {
-      result = rs.addArb('$SERVER_IP:$ARBITER_PORT');
-      if (result.ok) {
-        print('SUCCESS: Arbiter đã được thêm thành công');
-      } else {
-        print('ERROR: ' + result.errmsg);
-      }
-    } catch (e) {
-      print('ERROR: ' + e.message);
-    }
-    ")
-    
-    echo "$ADD_ARBITER_RESULT"
-    
-    if [[ "$ADD_ARBITER_RESULT" == *"SUCCESS"* ]]; then
-        echo -e "${GREEN}✓ Arbiter đã được thêm vào replica set!${NC}"
-    elif [[ "$ADD_ARBITER_RESULT" == *"already exists"* ]]; then
-        echo -e "${YELLOW}⚠️ Arbiter đã tồn tại trong replica set.${NC}"
-    else
-        echo -e "${RED}⚠️ Có vấn đề khi thêm arbiter.${NC}"
-    fi
+    # Thêm từng arbiter
+    for ((i=1; i<=ARBITER_COUNT; i++)); do
+        echo -e "${YELLOW}Thêm arbiter thứ $i...${NC}"
+        
+        # Kiểm tra port
+        CURRENT_PORT=$((ARBITER_PORT + i - 1))
+        while lsof -i :$CURRENT_PORT | grep LISTEN; do
+            echo -e "${RED}Port $CURRENT_PORT đang được sử dụng. Tìm port khác...${NC}"
+            CURRENT_PORT=$((CURRENT_PORT + 1))
+        done
+        
+        # Cập nhật port trong file cấu hình
+        sed -i "s/port: $ARBITER_PORT/port: $CURRENT_PORT/g" /etc/mongod-arbiter.conf
+        
+        # Khởi động arbiter
+        echo -e "${YELLOW}Khởi động arbiter trên port $CURRENT_PORT...${NC}"
+        systemctl daemon-reload
+        systemctl stop mongod-arbiter 2>/dev/null
+        systemctl start mongod-arbiter
+        
+        echo -e "${YELLOW}Đợi khởi động (5 giây)...${NC}"
+        sleep 5
+        
+        if systemctl is-active --quiet mongod-arbiter; then
+            echo -e "${GREEN}✓ Arbiter đã khởi động thành công!${NC}"
+            systemctl enable mongod-arbiter
+            
+            # Thêm vào replica set
+            echo -e "${YELLOW}Thêm arbiter vào replica set...${NC}"
+            ADD_ARBITER_RESULT=$(mongosh --host "$PRIMARY_HOST" -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
+            try {
+              result = rs.addArb('$SERVER_IP:$CURRENT_PORT');
+              if (result.ok) {
+                print('SUCCESS: Arbiter đã được thêm thành công');
+              } else {
+                print('ERROR: ' + result.errmsg);
+              }
+            } catch (e) {
+              print('ERROR: ' + e.message);
+            }
+            ")
+            
+            echo "$ADD_ARBITER_RESULT"
+            
+            if [[ "$ADD_ARBITER_RESULT" == *"SUCCESS"* ]]; then
+                echo -e "${GREEN}✓ Arbiter đã được thêm vào replica set!${NC}"
+            elif [[ "$ADD_ARBITER_RESULT" == *"already exists"* ]]; then
+                echo -e "${YELLOW}⚠️ Arbiter đã tồn tại trong replica set.${NC}"
+            else
+                echo -e "${RED}⚠️ Có vấn đề khi thêm arbiter.${NC}"
+            fi
+        else
+            echo -e "${RED}Arbiter không thể khởi động.${NC}"
+            echo -e "${YELLOW}Kiểm tra log:${NC}"
+            journalctl -u mongod-arbiter -n 20 --no-pager
+        fi
+        
+        # Tạo service mới cho arbiter tiếp theo
+        if [ $i -lt $ARBITER_COUNT ]; then
+            echo -e "${YELLOW}Tạo service cho arbiter tiếp theo...${NC}"
+            cat > /etc/systemd/system/mongod-arbiter-$i.service << EOF
+[Unit]
+Description=MongoDB Arbiter $i
+After=network.target
+
+[Service]
+User=$MONGO_USER
+Group=$MONGO_USER
+ExecStart=$MONGOD_PATH --config /etc/mongod-arbiter.conf
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        fi
+    done
     ;;
     
   2)
