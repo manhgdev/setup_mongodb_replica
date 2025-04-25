@@ -1295,6 +1295,198 @@ check_node_in_replicaset() {
   fi
 }
 
+# Kiểm tra và sửa các vấn đề khiến MongoDB không thể khởi động
+debug_mongodb_service() {
+    echo -e "${YELLOW}=== KIỂM TRA VÀ SỬA LỖI MONGODB SERVICE ===${NC}"
+    
+    # 1. Kiểm tra trạng thái service
+    echo -e "${YELLOW}1. Kiểm tra trạng thái service${NC}"
+    sudo systemctl status mongod_27017
+    
+    # 2. Kiểm tra log
+    echo -e "${YELLOW}2. Kiểm tra log MongoDB${NC}"
+    sudo tail -n 50 /var/log/mongodb/mongod_27017.log
+    
+    # 3. Kiểm tra keyfile
+    echo -e "${YELLOW}3. Kiểm tra keyfile${NC}"
+    if [ -f "/etc/mongodb.keyfile" ]; then
+        ls -la /etc/mongodb.keyfile
+        echo -e "${YELLOW}Sửa quyền keyfile...${NC}"
+        sudo chmod 400 /etc/mongodb.keyfile
+        sudo chown mongodb:mongodb /etc/mongodb.keyfile
+        ls -la /etc/mongodb.keyfile
+    else
+        echo -e "${RED}Không tìm thấy keyfile!${NC}"
+        echo -e "${YELLOW}Tạo keyfile mới...${NC}"
+        openssl rand -base64 756 | sudo tee /etc/mongodb.keyfile > /dev/null
+        sudo chmod 400 /etc/mongodb.keyfile
+        sudo chown mongodb:mongodb /etc/mongodb.keyfile
+    fi
+    
+    # 4. Kiểm tra cấu hình
+    echo -e "${YELLOW}4. Kiểm tra cấu hình MongoDB${NC}"
+    if [ -f "/etc/mongod_27017.conf" ]; then
+        grep -A 3 "bindIp" /etc/mongod_27017.conf
+        grep -A 3 "security" /etc/mongod_27017.conf
+        
+        # Kiểm tra bindIp
+        if ! grep -q "bindIp: 0.0.0.0" /etc/mongod_27017.conf; then
+            echo -e "${YELLOW}Sửa bindIp thành 0.0.0.0...${NC}"
+            sudo sed -i 's/bindIp: 127.0.0.1/bindIp: 0.0.0.0/g' /etc/mongod_27017.conf
+        fi
+    else
+        echo -e "${RED}Không tìm thấy file cấu hình!${NC}"
+    fi
+    
+    # 5. Khởi động lại MongoDB mà không có security
+    echo -e "${YELLOW}5. Thử khởi động MongoDB mà không có security${NC}"
+    
+    # Tạm thời sao lưu file cấu hình
+    if [ -f "/etc/mongod_27017.conf" ]; then
+        sudo cp /etc/mongod_27017.conf /etc/mongod_27017.conf.bak
+        
+        # Tạm thời tắt security
+        echo -e "${YELLOW}Tạm thời tắt security để kiểm tra...${NC}"
+        sudo sed -i '/security:/,+2d' /etc/mongod_27017.conf
+        
+        # Khởi động lại
+        echo -e "${YELLOW}Khởi động MongoDB không có security...${NC}"
+        sudo systemctl restart mongod_27017
+        sleep 5
+        
+        # Kiểm tra trạng thái
+        sudo systemctl status mongod_27017
+        
+        if systemctl is-active --quiet mongod_27017; then
+            echo -e "${GREEN}✅ MongoDB khởi động được khi tắt security!${NC}"
+            
+            # Thử kết nối
+            echo -e "${YELLOW}Thử kết nối MongoDB...${NC}"
+            mongosh --host localhost --port 27017 --eval "db.version()" --quiet
+            
+            # Khôi phục cấu hình
+            echo -e "${YELLOW}Khôi phục cấu hình security...${NC}"
+            sudo cp /etc/mongod_27017.conf.bak /etc/mongod_27017.conf
+            echo -e "${YELLOW}Vấn đề có thể liên quan đến keyfile và cấu hình security.${NC}"
+        else
+            echo -e "${RED}❌ MongoDB vẫn không khởi động được khi tắt security!${NC}"
+            echo -e "${YELLOW}Kiểm tra quyền thư mục dữ liệu...${NC}"
+            
+            # Kiểm tra và sửa quyền thư mục dữ liệu
+            sudo ls -la /var/lib/mongodb_27017/
+            sudo chown -R mongodb:mongodb /var/lib/mongodb_27017/
+            sudo chmod -R 755 /var/lib/mongodb_27017/
+            
+            # Khôi phục cấu hình
+            sudo cp /etc/mongod_27017.conf.bak /etc/mongod_27017.conf
+        fi
+    fi
+    
+    # 6. Clean data và khởi động lại
+    echo -e "${YELLOW}6. Bạn có muốn xóa dữ liệu MongoDB và khởi động lại? (y/n)${NC}"
+    read -p "Lựa chọn của bạn: " CLEAN_DATA
+    if [[ "$CLEAN_DATA" =~ ^[Yy]$ ]]; then
+        echo -e "${YELLOW}Dừng MongoDB...${NC}"
+        sudo systemctl stop mongod_27017
+        
+        echo -e "${YELLOW}Xóa dữ liệu...${NC}"
+        sudo rm -rf /var/lib/mongodb_27017/*
+        sudo mkdir -p /var/lib/mongodb_27017
+        sudo chown -R mongodb:mongodb /var/lib/mongodb_27017
+        sudo chmod -R 755 /var/lib/mongodb_27017/
+        
+        echo -e "${YELLOW}Xóa log...${NC}"
+        sudo rm -f /var/log/mongodb/mongod_27017.log
+        sudo touch /var/log/mongodb/mongod_27017.log
+        sudo chown mongodb:mongodb /var/log/mongodb/mongod_27017.log
+        
+        echo -e "${YELLOW}Khởi động lại MongoDB...${NC}"
+        sudo systemctl restart mongod_27017
+        sleep 5
+        
+        echo -e "${YELLOW}Kiểm tra trạng thái...${NC}"
+        sudo systemctl status mongod_27017
+    fi
+    
+    # 7. Kiểm tra kết nối mạng
+    echo -e "${YELLOW}7. Kiểm tra kết nối mạng${NC}"
+    LOCAL_IP=$(hostname -I | awk '{print $1}')
+    echo "IP máy này: $LOCAL_IP"
+    
+    echo -e "${YELLOW}Kiểm tra port 27017 có đang mở không:${NC}"
+    sudo netstat -tulnp | grep 27017
+    
+    echo -e "${YELLOW}Kiểm tra firewall:${NC}"
+    sudo ufw status | grep 27017
+    
+    # 8. Thử sửa config để sử dụng localhost
+    echo -e "${YELLOW}8. Bạn có muốn sửa config để sử dụng localhost cho replication? (y/n)${NC}"
+    read -p "Lựa chọn của bạn: " USE_LOCALHOST
+    if [[ "$USE_LOCALHOST" =~ ^[Yy]$ ]]; then
+        if [ -f "/etc/mongod_27017.conf" ]; then
+            echo -e "${YELLOW}Sửa cấu hình replSetName...${NC}"
+            
+            # Kiểm tra replSetName
+            if ! grep -q "replSetName: rs0" /etc/mongod_27017.conf; then
+                echo -e "${YELLOW}Thêm replSetName: rs0 vào cấu hình...${NC}"
+                sudo sed -i '/replication:/a\  replSetName: rs0' /etc/mongod_27017.conf
+            fi
+            
+            # Khởi động lại
+            echo -e "${YELLOW}Khởi động lại MongoDB...${NC}"
+            sudo systemctl restart mongod_27017
+            sleep 5
+            
+            # Kiểm tra trạng thái
+            sudo systemctl status mongod_27017
+        fi
+    fi
+    
+    # 9. Hướng dẫn kết nối thủ công đến PRIMARY
+    echo -e "${YELLOW}9. Thông tin để kết nối thủ công đến PRIMARY:${NC}"
+    echo -e "${GREEN}Kết nối đến PRIMARY và kiểm tra trạng thái:${NC}"
+    echo "mongosh --host <primary_ip> --port 27017 -u <username> -p <password> --authenticationDatabase admin --eval \"rs.status()\""
+    echo -e "${GREEN}Xóa node khỏi replica set (từ PRIMARY):${NC}"
+    echo "mongosh --host <primary_ip> --port 27017 -u <username> -p <password> --authenticationDatabase admin --eval \"rs.remove('$LOCAL_IP:27017')\""
+    echo -e "${GREEN}Thêm lại node (từ PRIMARY):${NC}"
+    echo "mongosh --host <primary_ip> --port 27017 -u <username> -p <password> --authenticationDatabase admin --eval \"rs.add('$LOCAL_IP:27017')\""
+    
+    echo -e "${YELLOW}=== KẾT THÚC KIỂM TRA ===${NC}"
+}
+
+# Thêm tùy chọn menu
+troubleshoot_menu() {
+    echo -e "${GREEN}=== MENU TROUBLESHOOT ===${NC}"
+    echo "1. Kiểm tra chi tiết MongoDB"
+    echo "2. Sửa lỗi không kết nối được replica"
+    echo "3. Kiểm tra và sửa lỗi MongoDB service"
+    echo "4. Quay lại"
+    echo "----------------------------"
+    read -p "Chọn tùy chọn (1-4): " choice
+    
+    case $choice in
+        1)
+            check_mongodb_status
+            ;;
+        2)
+            fix_keyfile_and_restart
+            ;;
+        3)
+            debug_mongodb_service
+            ;;
+        4)
+            return
+            ;;
+        *)
+            echo -e "${RED}Lựa chọn không hợp lệ!${NC}"
+            ;;
+    esac
+    
+    echo
+    read -p "Nhấn Enter để tiếp tục..."
+    troubleshoot_menu
+}
+
 # Main function
 setup_replica_linux() {
     clear
@@ -1318,7 +1510,7 @@ setup_replica_linux() {
            echo -e "SECONDARY IP đã được phát hiện: ${GREEN}$SERVER_IP${NC}"
            read -p "Nhập địa chỉ IP của PRIMARY node: " PRIMARY_IP
            setup_secondary $SERVER_IP $PRIMARY_IP ;;
-        3) troubleshoot_mongodb ;;
+        3) troubleshoot_menu ;;
         4) return 0 ;;
         *) echo -e "${RED}❌ Tùy chọn không hợp lệ${NC}" && return 1 ;;
     esac
