@@ -130,8 +130,6 @@ echo -e "${YELLOW}Cập nhật cấu hình MongoDB...${NC}"
 cat > /etc/mongod.conf << EOF
 storage:
   dbPath: /var/lib/mongodb
-  journal:
-    enabled: true
 
 systemLog:
   destination: file

@@ -287,45 +287,59 @@ EOL
 start_mongodb() {
     echo -e "${YELLOW}Khởi động MongoDB...${NC}"
     
-    # Kiểm tra và tạo thư mục log nếu không tồn tại
-    if [ ! -d "/var/log/mongodb" ]; then
-        echo -e "${YELLOW}Thư mục log không tồn tại, đang tạo...${NC}"
-        sudo mkdir -p /var/log/mongodb
-        sudo chown -R mongodb:mongodb /var/log/mongodb
-        sudo chmod 755 /var/log/mongodb
+    # Dừng MongoDB nếu đang chạy
+    if sudo systemctl is-active --quiet mongod; then
+        echo -e "${YELLOW}MongoDB đang chạy, đang dừng...${NC}"
+        sudo systemctl stop mongod
+        sleep 2
     fi
     
-    # Tạo file log nếu không tồn tại
-    if [ ! -f "/var/log/mongodb/mongod.log" ]; then
-        echo -e "${YELLOW}File log không tồn tại, đang tạo...${NC}"
-        sudo touch /var/log/mongodb/mongod.log
-        sudo chown mongodb:mongodb /var/log/mongodb/mongod.log
+    # Xóa pid file cũ nếu tồn tại
+    if [ -f "/var/run/mongodb/mongod.pid" ]; then
+        echo -e "${YELLOW}Xóa pid file cũ...${NC}"
+        sudo rm -f /var/run/mongodb/mongod.pid
     fi
     
-    # Unmask dịch vụ nếu đang bị masked
-    if systemctl is-enabled mongod 2>&1 | grep -q "masked"; then
-        echo -e "${YELLOW}Dịch vụ MongoDB đang bị masked, đang unmask...${NC}"
-        sudo systemctl unmask mongod
-        sudo systemctl daemon-reload
+    # Kiểm tra và tạo thư mục run nếu chưa tồn tại
+    if [ ! -d "/var/run/mongodb" ]; then
+        echo -e "${YELLOW}Tạo thư mục run...${NC}"
+        sudo mkdir -p /var/run/mongodb
+        sudo chown -R mongodb:mongodb /var/run/mongodb
+        sudo chmod 755 /var/run/mongodb
     fi
     
-    # Khởi động MongoDB
+    # Reload systemd và khởi động MongoDB
+    echo -e "${YELLOW}Reload systemd và khởi động MongoDB...${NC}"
     sudo systemctl daemon-reload
     sudo systemctl enable mongod
-    sudo systemctl restart mongod
+    sudo systemctl start mongod
+    
+    # Đợi và kiểm tra trạng thái
+    echo -e "${YELLOW}Đợi MongoDB khởi động...${NC}"
     sleep 5
     
-    # Kiểm tra trạng thái MongoDB
     if sudo systemctl is-active --quiet mongod; then
         echo -e "${GREEN}✅ MongoDB đã khởi động thành công${NC}"
         sudo systemctl status mongod --no-pager
         return 0
     else
-        echo -e "${RED}❌ MongoDB không thể khởi động${NC}"
-        sudo systemctl status mongod --no-pager
-        echo -e "${YELLOW}Kiểm tra log tại /var/log/mongodb/mongod.log${NC}"
-        sudo tail -n 20 /var/log/mongodb/mongod.log || echo -e "${RED}❌ Không thể đọc file log${NC}"
-        return 1
+        echo -e "${RED}❌ Không thể khởi động MongoDB${NC}"
+        echo -e "${YELLOW}Kiểm tra log để tìm lỗi:${NC}"
+        sudo tail -n 30 /var/log/mongodb/mongod.log
+        
+        # Thử khởi động lại với tùy chọn --bind_ip_all
+        echo -e "${YELLOW}Thử khởi động lại với tùy chọn --bind_ip_all...${NC}"
+        sudo systemctl stop mongod
+        sudo mongod --config /etc/mongod.conf --bind_ip_all &
+        sleep 5
+        
+        if ps aux | grep -v grep | grep -q mongod; then
+            echo -e "${GREEN}✅ MongoDB đã khởi động thành công với --bind_ip_all${NC}"
+            return 0
+        else
+            echo -e "${RED}❌ Vẫn không thể khởi động MongoDB${NC}"
+            return 1
+        fi
     fi
 }
 
