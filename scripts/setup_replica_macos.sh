@@ -141,7 +141,7 @@ setup_replica_secondary_macos() {
     echo "Đang kết nối với PRIMARY server..."
     
     # Đợi PRIMARY server sẵn sàng
-    local max_attempts=30
+    local max_attempts=10
     local attempt=1
     while [ $attempt -le $max_attempts ]; do
         if mongosh --host $primary_server_ip --port $PRIMARY_PORT --eval 'rs.status()' &> /dev/null; then

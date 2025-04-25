@@ -39,7 +39,7 @@ EOL
     sudo mongod --config "$CONFIG_FILE"
     
     # Kiểm tra kết nối
-    local max_attempts=30
+    local max_attempts=10
     local attempt=1
     while [ $attempt -le $max_attempts ]; do
         if mongosh --port $PORT --eval 'db.runCommand({ ping: 1 })' &> /dev/null; then
