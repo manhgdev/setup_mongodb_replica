@@ -7,6 +7,7 @@ source scripts/setup_replica_linux.sh
 source scripts/setup_replica_macos.sh
 source scripts/check_status.sh
 source scripts/uninstall_mongodb.sh
+ARBITER_SCRIPT="multil_server/mongodb_arbiter.sh"
 
 # Màu sắc cho output
 RED='\033[0;31m'
@@ -25,7 +26,8 @@ print_header() {
     echo "1. Cài đặt MongoDB"
     echo "2. Kiểm tra trạng thái"
     echo "3. Cấu hình Replica Set"
-    echo "4. Xóa MongoDB"
+    echo "4. Thêm Arbiter"
+    echo "5. Xóa MongoDB"
     echo "0. Thoát"
 }
 
@@ -44,7 +46,11 @@ main() {
             3)
                 setup_replica
                 ;;
-            4)
+            4)   
+                chmod +x "$ARBITER_SCRIPT"
+                "./$ARBITER_SCRIPT"
+                ;;
+            5)
                 uninstall_mongodb
                 ;;
             0)
