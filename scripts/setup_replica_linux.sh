@@ -5,6 +5,10 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 NC='\033[0m'
 
+# Default admin credentials
+ADMIN_USER="manhg"
+ADMIN_PASS="manhnk"
+
 # Stop MongoDB
 stop_mongodb() {
     echo "Stopping all MongoDB processes..."
@@ -333,25 +337,8 @@ setup_primary() {
         echo "Primary node: $SERVER_IP:$PRIMARY_PORT"
         echo "Arbiter nodes: $SERVER_IP:$ARBITER1_PORT, $SERVER_IP:$ARBITER2_PORT"
         
-        # Check if admin user exists
-        local admin_exists=$(mongosh --port $PRIMARY_PORT --eval "db.getSiblingDB('admin').getUsers()" --quiet 2>&1)
-        if echo "$admin_exists" | grep -q "not authorized"; then
-            echo "Admin user already exists, skipping creation..."
-            # Get existing admin user
-            local existing_users=$(mongosh --port $PRIMARY_PORT --eval "db.getSiblingDB('admin').getUsers()" --quiet)
-            ADMIN_USER=$(echo "$existing_users" | grep -o '"user" : "[^"]*"' | cut -d'"' -f4 | head -n1)
-            echo "Using existing admin user: $ADMIN_USER"
-        else
-            # Create admin user with default values
-            read -p "Enter admin username [manhg]: " ADMIN_USER
-            ADMIN_USER=${ADMIN_USER:-manhg}
-            
-            read -sp "Enter admin password [manhnk]: " ADMIN_PASS
-            ADMIN_PASS=${ADMIN_PASS:-manhnk}
-            echo
-            
-            create_admin_user $PRIMARY_PORT $ADMIN_USER $ADMIN_PASS || return 1
-        fi
+        # Create admin user with default values
+        create_admin_user $PRIMARY_PORT $ADMIN_USER $ADMIN_PASS || return 1
         
         # Create keyfile and update configs with security
         create_keyfile
@@ -542,7 +529,7 @@ setup_secondary() {
     echo -e "\n${GREEN}✅ SECONDARY setup completed successfully${NC}"
     echo -e "\n${GREEN}Next steps:${NC}"
     echo "1. Connect to PRIMARY server and add this node to replica set:"
-    echo "   mongosh --host $PRIMARY_IP --port 27017 -u admin -p admin --authenticationDatabase admin"
+    echo "   mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
     echo "   rs.add('$SERVER_IP:$SECONDARY_PORT')"
     echo "   rs.addArb('$SERVER_IP:$ARBITER1_PORT')"
     echo "   rs.addArb('$SERVER_IP:$ARBITER2_PORT')"
