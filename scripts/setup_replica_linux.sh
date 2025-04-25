@@ -4,6 +4,7 @@
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 NC='\033[0m'
+YELLOW='\033[0;33m'
 
 # Default admin credentials
 ADMIN_USER="manhg"
@@ -424,9 +425,6 @@ systemLog:
 net:
   port: 27017
   bindIp: 0.0.0.0
-security:
-  keyFile: /etc/mongodb.keyfile
-  authorization: enabled
 replication:
   replSetName: rs0
 setParameter:
@@ -481,8 +479,8 @@ EOF"
     echo "  ✓ Dịch vụ đã khởi động"
     
     # Kiểm tra kết nối đến PRIMARY
-    echo -n "→ Xác thực kết nối đến PRIMARY... "
-    if ! mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db.version()" --quiet &>/dev/null; then
+    echo -n "→ Kiểm tra kết nối đến PRIMARY... "
+    if ! mongosh --host $PRIMARY_IP --port 27017 --eval "db.version()" --quiet &>/dev/null; then
         echo -e "${RED}LỖI${NC}"
         return 1
     else
@@ -492,13 +490,16 @@ EOF"
     # Thêm node vào replica set
     echo "→ Thêm các node vào replica set..."
     {
-        mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.add('$SERVER_IP:27017')" --quiet
+        echo "  + Thêm SECONDARY node: $SERVER_IP:27017"
+        mongosh --host $PRIMARY_IP --port 27017 --eval "rs.add('$SERVER_IP:27017')"
         sleep 2
-        mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.addArb('$SERVER_IP:27018')" --quiet
+        echo "  + Thêm ARBITER node 1: $SERVER_IP:27018"
+        mongosh --host $PRIMARY_IP --port 27017 --eval "rs.addArb('$SERVER_IP:27018')"
         sleep 2
-        mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.addArb('$SERVER_IP:27019')" --quiet
+        echo "  + Thêm ARBITER node 2: $SERVER_IP:27019"
+        mongosh --host $PRIMARY_IP --port 27017 --eval "rs.addArb('$SERVER_IP:27019')"
         sleep 2
-    } &>/dev/null
+    }
     echo "  ✓ Đã thêm các node vào replica set"
     
     # Hoàn tất
@@ -506,11 +507,12 @@ EOF"
     echo -e "${GREEN}=== THIẾT LẬP THÀNH CÔNG ===${NC}"
     echo ""
     echo -e "${GREEN}Connection string:${NC}"
-    echo "mongodb://$ADMIN_USER:$ADMIN_PASS@$PRIMARY_IP:27017,$SERVER_IP:27017/admin?replicaSet=rs0&readPreference=primary&retryWrites=true&w=majority"
-    
+    echo "mongodb://$PRIMARY_IP:27017,$SERVER_IP:27017/admin?replicaSet=rs0&readPreference=primary&retryWrites=true&w=majority"
+    echo -e "${YELLOW}CHÚ Ý: MongoDB đang chạy ở chế độ không xác thực (No Authentication)${NC}"
+
     echo ""
     echo -e "${GREEN}Lệnh kiểm tra replica set:${NC}"
-    echo "mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval \"rs.status()\""
+    echo "mongosh --host $PRIMARY_IP --port 27017 --eval \"rs.status()\""
 }
 
 # Create keyfile
