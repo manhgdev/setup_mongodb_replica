@@ -235,6 +235,8 @@ force_reconfigure_node() {
     
     # Tạo file tạm để lưu cấu hình
     local temp_config="/tmp/mongodb_reconfig_$$.js"
+    
+    # Tạo cấu hình JSON trực tiếp
     echo "config = {" > $temp_config
     echo "  _id: 'rs0'," >> $temp_config
     echo "  members: [" >> $temp_config
@@ -284,8 +286,11 @@ force_reconfigure_node() {
     
     # Force reconfigure replica set
     echo -e "${YELLOW}Force reconfigure replica set...${NC}"
+    
+    # Sử dụng file cấu hình trực tiếp
     local reconfigure_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
-    rs.reconfig($(cat $temp_config), {force: true})" --quiet)
+    load('$temp_config');
+    rs.reconfig(config, {force: true})" --quiet)
     
     # Xóa file tạm
     rm -f $temp_config
