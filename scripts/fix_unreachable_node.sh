@@ -232,7 +232,10 @@ force_reconfigure_node() {
     
     # Tạo cấu hình mới cho replica set
     echo -e "${YELLOW}Tạo cấu hình mới cho replica set...${NC}"
-    local config="{ _id: 'rs0', members: ["
+    
+    # Tạo file tạm để lưu cấu hình
+    local temp_config="/tmp/mongodb_reconfig_$$.js"
+    echo "config = { _id: 'rs0', members: [" > $temp_config
     
     # Thêm các node vào cấu hình
     local first=true
@@ -240,16 +243,18 @@ force_reconfigure_node() {
         if [ "$first" = true ]; then
             first=false
         else
-            config="$config,"
+            echo "," >> $temp_config
         fi
         
         # Kiểm tra node có phải là node cần khôi phục không
         if [ "$member" = "$NODE_IP:$NODE_PORT" ]; then
             # Đặt priority cao hơn để node này trở thành PRIMARY
-            config="$config{ _id: $(echo "$status" | grep -A 10 "$member" | grep "_id" | awk '{print $2}' | tr -d ','), host: '$member', priority: 10 }"
+            local member_id=$(echo "$status" | grep -A 10 "$member" | grep "_id" | awk '{print $2}' | tr -d ',')
+            echo "  { _id: $member_id, host: '$member', priority: 10 }" >> $temp_config
         else
             # Các node khác giữ nguyên priority
-            config="$config{ _id: $(echo "$status" | grep -A 10 "$member" | grep "_id" | awk '{print $2}' | tr -d ','), host: '$member' }"
+            local member_id=$(echo "$status" | grep -A 10 "$member" | grep "_id" | awk '{print $2}' | tr -d ',')
+            echo "  { _id: $member_id, host: '$member' }" >> $temp_config
         fi
     done
     
@@ -258,26 +263,29 @@ force_reconfigure_node() {
         if [ "$first" = true ]; then
             first=false
         else
-            config="$config,"
+            echo "," >> $temp_config
         fi
         
         # Tìm ID cao nhất và tăng thêm 1
         local max_id=$(echo "$status" | grep "_id" | awk '{print $2}' | sort -n | tail -1)
         local new_id=$((max_id + 1))
         
-        config="$config{ _id: $new_id, host: '$NODE_IP:$NODE_PORT', priority: 10 }"
+        echo "  { _id: $new_id, host: '$NODE_IP:$NODE_PORT', priority: 10 }" >> $temp_config
     fi
     
-    config="$config ] }"
+    echo "] }" >> $temp_config
     
     # In ra cấu hình mới
     echo -e "${YELLOW}Cấu hình mới:${NC}"
-    echo "$config"
+    cat $temp_config
     
     # Force reconfigure replica set
     echo -e "${YELLOW}Force reconfigure replica set...${NC}"
     local reconfigure_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
-    rs.reconfig($config, {force: true})" --quiet)
+    rs.reconfig($(cat $temp_config), {force: true})" --quiet)
+    
+    # Xóa file tạm
+    rm -f $temp_config
     
     if echo "$reconfigure_result" | grep -q "ok"; then
         echo -e "${GREEN}✅ Đã force reconfigure replica set thành công${NC}"
@@ -288,8 +296,8 @@ force_reconfigure_node() {
     fi
     
     # Đợi replica set ổn định
-    echo -e "${YELLOW}Đợi replica set ổn định (5 giây)...${NC}"
-    sleep 5
+    echo -e "${YELLOW}Đợi replica set ổn định (30 giây)...${NC}"
+    sleep 30
     
     # Kiểm tra trạng thái node
     local status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
