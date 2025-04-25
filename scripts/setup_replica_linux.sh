@@ -63,6 +63,9 @@ create_config() {
     
     echo "Creating MongoDB config for port $PORT..."
     
+    # Get private IP
+    local PRIVATE_IP=$(hostname -I | awk '{print $1}')
+    
     # Create base config
     cat > $CONFIG_FILE << EOF
 storage:
@@ -73,7 +76,7 @@ systemLog:
   path: $LOG_PATH/mongod_${PORT}.log
 net:
   port: ${PORT}
-  bindIp: 0.0.0.0
+  bindIp: ${PRIVATE_IP},127.0.0.1
 processManagement:
   timeZoneInfo: /usr/share/zoneinfo
 replication:
@@ -240,8 +243,8 @@ setup_primary() {
     
     # Start all nodes
     echo "Starting PRIMARY node..."
-    mongod --dbpath /var/lib/mongodb_27017 --port 27017 --fork --logpath /var/log/mongodb/mongod_27017.log --replSet rs0 --setParameter allowMultipleArbiters=true
-    sleep 10
+    mongod --config /etc/mongod_27017.conf --fork
+    sleep 5
     
     # Check if PRIMARY is running
     if ! mongosh --port $PRIMARY_PORT --eval "db.version()" --quiet &>/dev/null; then
@@ -252,8 +255,8 @@ setup_primary() {
     fi
     
     echo "Starting ARBITER 1 node..."
-    mongod --dbpath /var/lib/mongodb_27018 --port 27018 --fork --logpath /var/log/mongodb/mongod_27018.log --replSet rs0 --setParameter allowMultipleArbiters=true
-    sleep 10
+    mongod --config /etc/mongod_27018.conf --fork
+    sleep 5
     
     # Check if ARBITER 1 is running
     if ! mongosh --port $ARBITER1_PORT --eval "db.version()" --quiet &>/dev/null; then
@@ -264,8 +267,8 @@ setup_primary() {
     fi
     
     echo "Starting ARBITER 2 node..."
-    mongod --dbpath /var/lib/mongodb_27019 --port 27019 --fork --logpath /var/log/mongodb/mongod_27019.log --replSet rs0 --setParameter allowMultipleArbiters=true
-    sleep 10
+    mongod --config /etc/mongod_27019.conf --fork
+    sleep 5
     
     # Check if ARBITER 2 is running
     if ! mongosh --port $ARBITER2_PORT --eval "db.version()" --quiet &>/dev/null; then
@@ -275,7 +278,7 @@ setup_primary() {
         return 1
     fi
     
-    # Initialize replica set
+    # Initialize replica set using private IP
     echo "Initializing replica set..."
     local init_result=$(mongosh --port $PRIMARY_PORT --eval "
     rs.initiate({
