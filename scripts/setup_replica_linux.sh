@@ -5,23 +5,44 @@ setup_node_linux() {
     local NODE_TYPE=$2
     local ENABLE_SECURITY=$3 # "yes" or "no"
     local CONFIG_FILE="/etc/mongod_${PORT}.conf"
+    local LOG_FILE="/var/log/mongodb/mongod_${PORT}.log"
+    local DB_PATH="/var/lib/mongodb_${PORT}"
 
-    # Kill any existing MongoDB process on this port
+    # Ensure no conflicting MongoDB instance is running on this port
+    echo "Stopping any MongoDB process running on port $PORT..."
     pkill -f "mongod.*--port ${PORT}" || true
-    sleep 2
+    sleep 3
 
-    mkdir -p "/var/lib/mongodb_${PORT}"
+    # Clean up database directory if needed
+    if [ "$NODE_TYPE" = "arbiter" ]; then
+        echo "Cleaning up arbiter database directory..."
+        rm -rf "${DB_PATH}"/*
+    fi
+
+    # Create necessary directories
+    echo "Creating directories for MongoDB on port $PORT..."
+    mkdir -p "${DB_PATH}"
     mkdir -p "/var/log/mongodb"
-    chown -R mongodb:mongodb "/var/lib/mongodb_${PORT}" 2>/dev/null || true
-    chown -R mongodb:mongodb "/var/log/mongodb" 2>/dev/null || true
+    
+    # Set permissions - handle potential permission errors gracefully
+    echo "Setting permissions..."
+    if ! chown -R mongodb:mongodb "${DB_PATH}" 2>/dev/null; then
+        echo "Note: Could not set permissions on ${DB_PATH} - may need sudo"
+    fi
+    
+    if ! chown -R mongodb:mongodb "/var/log/mongodb" 2>/dev/null; then
+        echo "Note: Could not set permissions on /var/log/mongodb - may need sudo"
+    fi
 
+    # Create MongoDB configuration file
+    echo "Creating MongoDB config file for port $PORT..."
     cat > "$CONFIG_FILE" <<EOL
 systemLog:
   destination: file
-  path: /var/log/mongodb/mongod_${PORT}.log
+  path: ${LOG_FILE}
   logAppend: true
 storage:
-  dbPath: /var/lib/mongodb_${PORT}
+  dbPath: ${DB_PATH}
 net:
   bindIp: 0.0.0.0
   port: ${PORT}
@@ -29,6 +50,8 @@ replication:
   replSetName: rs0
 setParameter:
   allowMultipleArbiters: true
+processManagement:
+  fork: true
 EOL
 
     if [ "$ENABLE_SECURITY" = "yes" ]; then
@@ -39,17 +62,24 @@ security:
 EOL
     fi
 
-    # Try to start MongoDB, with more error handling
+    # Try to start MongoDB
     echo "Starting MongoDB on port $PORT..."
-    if ! mongod --config "$CONFIG_FILE" --fork; then
+    mongod --config "$CONFIG_FILE"
+    
+    # Check if MongoDB is running
+    sleep 3
+    if pgrep -f "mongod.*--port ${PORT}" > /dev/null; then
+        echo -e "${GREEN}✅ MongoDB started successfully on port $PORT${NC}"
+        return 0
+    else
         echo -e "${RED}❌ Failed to start MongoDB on port $PORT. Checking logs...${NC}"
-        tail -n 20 /var/log/mongodb/mongod_${PORT}.log
+        if [ -f "$LOG_FILE" ]; then
+            tail -n 20 "$LOG_FILE"
+        else
+            echo "Log file $LOG_FILE doesn't exist!"
+        fi
         return 1
     fi
-    
-    # Give the server a moment to stabilize
-    sleep 3
-    return 0
 }
 
 create_keyfile_linux() {
@@ -121,18 +151,20 @@ setup_replica_primary_linux() {
     # Stop all MongoDB instances
     echo "Stopping any running MongoDB instances..."
     pkill -f mongod || true
-    sleep 3
+    sleep 5
+    
+    # Check if any MongoDB processes are still running
+    if pgrep -f mongod > /dev/null; then
+        echo -e "${YELLOW}⚠️ Some MongoDB processes are still running. They might interfere with setup.${NC}"
+        ps aux | grep mongod | grep -v grep
+    fi
 
     # Step 1: Start nodes WITHOUT security
+    echo -e "\n${YELLOW}Step 1: Starting nodes WITHOUT security${NC}"
+    
     echo "Starting PRIMARY node without security..."
     if ! setup_node_linux $PRIMARY_PORT "primary" "no"; then
         echo -e "${RED}❌ Failed to start PRIMARY node${NC}"
-        return 1
-    fi
-    
-    # Wait for primary to be ready
-    if ! wait_for_mongodb_ready "localhost" $PRIMARY_PORT "no"; then
-        echo -e "${RED}❌ PRIMARY node failed to start properly${NC}"
         return 1
     fi
     
@@ -147,57 +179,103 @@ setup_replica_primary_linux() {
         echo -e "${RED}❌ Failed to start ARBITER 2 node${NC}"
         return 1
     fi
-
-    # Step 2: Initialize replica set
-    echo "Initializing replica set..."
-    mongosh --port $PRIMARY_PORT --eval 'rs.initiate({
-        _id: "rs0",
-        members: [
-            { _id: 0, host: "'$SERVER_IP:$PRIMARY_PORT'", priority: 2 },
-            { _id: 1, host: "'$SERVER_IP:$ARBITER1_PORT'", arbiterOnly: true },
-            { _id: 2, host: "'$SERVER_IP:$ARBITER2_PORT'", arbiterOnly: true }
-        ]
-    })'
     
-    # Wait for replica set to initialize
-    echo "Waiting for replica set to initialize..."
+    echo "Waiting for all MongoDB instances to be ready..."
     sleep 10
     
-    # Check replica set status
-    mongosh --port $PRIMARY_PORT --eval 'rs.status()'
+    # Check all MongoDB instances are running
+    for PORT in $PRIMARY_PORT $ARBITER1_PORT $ARBITER2_PORT; do
+        if ! pgrep -f "mongod.*--port ${PORT}" > /dev/null; then
+            echo -e "${RED}❌ MongoDB on port $PORT is not running${NC}"
+            return 1
+        fi
+    done
 
-    # Step 3: Create admin user
-    echo "Creating admin user..."
+    # Step 2: Initialize replica set
+    echo -e "\n${YELLOW}Step 2: Initializing replica set${NC}"
     mongosh --port $PRIMARY_PORT --eval '
+        print("Initializing replica set...");
+        var config = {
+            _id: "rs0",
+            members: [
+                { _id: 0, host: "'$SERVER_IP:$PRIMARY_PORT'", priority: 2 },
+                { _id: 1, host: "'$SERVER_IP:$ARBITER1_PORT'", arbiterOnly: true },
+                { _id: 2, host: "'$SERVER_IP:$ARBITER2_PORT'", arbiterOnly: true }
+            ]
+        };
+        rs.initiate(config);
+        
+        // Wait for replica set to initialize
+        var attempts = 0;
+        var maxAttempts = 30;
+        while(attempts < maxAttempts) {
+            var status = rs.status();
+            if(status.ok === 1) {
+                print("Replica set initialized successfully");
+                printjson(status);
+                break;
+            }
+            print("Waiting for replica set to initialize... Attempt " + (attempts + 1) + "/" + maxAttempts);
+            sleep(1000);
+            attempts++;
+        }
+        
+        if(attempts >= maxAttempts) {
+            print("Failed to initialize replica set after " + maxAttempts + " attempts");
+        }
+    '
+    
+    # Step 3: Create admin user
+    echo -e "\n${YELLOW}Step 3: Creating admin user${NC}"
+    mongosh --port $PRIMARY_PORT --eval '
+        // Wait for primary to be ready
+        var attempts = 0;
+        var maxAttempts = 30;
+        while(attempts < maxAttempts) {
+            var status = rs.status();
+            if(status.ok === 1 && status.members.find(m => m.state === 1)) {
+                print("Primary node is ready");
+                break;
+            }
+            print("Waiting for primary node... Attempt " + (attempts + 1) + "/" + maxAttempts);
+            sleep(1000);
+            attempts++;
+        }
+        
+        if(attempts >= maxAttempts) {
+            print("Failed to find primary node after " + maxAttempts + " attempts");
+            quit(1);
+        }
+        
+        // Create admin user
         db = db.getSiblingDB("admin");
-        if (!db.getUser("'$admin_username'")) {
-            db.createUser({user: "'$admin_username'", pwd: "'$admin_password'", roles: [ { role: "root", db: "admin" }, { role: "clusterAdmin", db: "admin" } ]});
+        if(!db.getUser("'$admin_username'")) {
+            print("Creating admin user: '$admin_username'");
+            db.createUser({
+                user: "'$admin_username'", 
+                pwd: "'$admin_password'", 
+                roles: [ 
+                    { role: "root", db: "admin" }, 
+                    { role: "clusterAdmin", db: "admin" } 
+                ]
+            });
             print("Admin user created successfully");
         } else {
             print("Admin user already exists");
         }
     '
-    
-    # Wait a moment for the user creation to take effect
-    sleep 3
 
     # Step 4: Enable security, restart nodes
-    echo "Creating keyfile..."
+    echo -e "\n${YELLOW}Step 4: Enabling security and restarting nodes${NC}"
     create_keyfile_linux
     
-    echo "Stopping MongoDB instances to restart with security..."
+    echo "Stopping all MongoDB instances..."
     pkill -f mongod || true
     sleep 5
     
     echo "Starting PRIMARY node with security enabled..."
     if ! setup_node_linux $PRIMARY_PORT "primary" "yes"; then
         echo -e "${RED}❌ Failed to start PRIMARY node with security${NC}"
-        return 1
-    fi
-    
-    # Wait for primary to be ready with authentication
-    if ! wait_for_mongodb_ready "localhost" $PRIMARY_PORT "yes" "$admin_username" "$admin_password"; then
-        echo -e "${RED}❌ PRIMARY node with security failed to start properly${NC}"
         return 1
     fi
     
@@ -213,20 +291,36 @@ setup_replica_primary_linux() {
         return 1
     fi
     
-    # Wait for all nodes to be ready
-    sleep 10
+    # Wait for MongoDB instances to be ready with security
+    echo "Waiting for MongoDB instances to be ready with security..."
+    sleep 15
 
-    # Step 5: Check login and replica set status
-    echo "Verifying replica set status..."
-    if mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.status()' &> /dev/null; then
+    # Step 5: Check login and verify replica set status
+    echo -e "\n${YELLOW}Step 5: Verifying replica set status${NC}"
+    mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval '
+        try {
+            print("Testing connection...");
+            db.runCommand({ping: 1});
+            print("Connection successful!");
+            
+            print("\nReplica set status:");
+            var status = rs.status();
+            printjson(status);
+            
+            print("\nReplica set configuration:");
+            var config = rs.conf();
+            printjson(config);
+        } catch(err) {
+            print("Error verifying replica set: " + err);
+            quit(1);
+        }
+    '
+    
+    if [ $? -eq 0 ]; then
         echo -e "\n${GREEN}✅ Successfully configured MongoDB Replica Set PRIMARY${NC}"
         echo "Connection: mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin"
-        
-        # Show replica set status
-        echo -e "\n${YELLOW}Replica Set Status:${NC}"
-        mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.status()'
     else
-        echo -e "${RED}❌ Login failed or replica set is not functioning correctly. Check logs.${NC}"
+        echo -e "${RED}❌ Failed to verify replica set. Check logs.${NC}"
     fi
 }
 
