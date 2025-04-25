@@ -385,6 +385,7 @@ setup_replica_secondary_linux() {
     
 }
 
+# Function to be called from main.sh
 setup_replica_linux() {
     echo "MongoDB Replica Set Setup for Linux"
     echo "===================================="
@@ -426,4 +427,5 @@ setup_replica_linux() {
             ;;
     esac
 }
+
 
