@@ -22,8 +22,8 @@ THIS_SERVER_IP=$(hostname -I | awk '{print $1}')
 echo -e "${BLUE}=== THIẾT LẬP MONGODB REPLICA SET (NHIỀU SERVER) ===${NC}"
 
 # Hỏi thông tin server
-read -p "Server này là PRIMARY? (y/n): " IS_PRIMARY
-read -p "Số lượng server khác (không tính server này): " OTHER_SERVER_COUNT
+read -p "Địa chỉ IP của server chứa node 27017: " PRIMARY_27017_IP
+read -p "Số lượng server khác (không tính server chứa node 27017): " OTHER_SERVER_COUNT
 
 # Lưu danh sách IP của các server khác
 OTHER_SERVER_IPS=()
@@ -167,15 +167,15 @@ done
 echo -e "${YELLOW}Đợi các node khởi động (5 giây)...${NC}"
 sleep 5
 
-# 5. Nếu là PRIMARY, khởi tạo replica set
-if [[ "$IS_PRIMARY" == "y" ]]; then
+# 5. Nếu là server chứa node 27017, khởi tạo replica set
+if [[ "$THIS_SERVER_IP" == "$PRIMARY_27017_IP" ]]; then
     echo -e "${YELLOW}Khởi tạo replica set...${NC}"
     
     # Tạo chuỗi members cho replica set
     MEMBERS_JSON="[
-        { _id: 0, host: '$THIS_SERVER_IP:$BASE_PORT', priority: 2 },
-        { _id: 1, host: '$THIS_SERVER_IP:$((BASE_PORT + 1))', arbiterOnly: true },
-        { _id: 2, host: '$THIS_SERVER_IP:$((BASE_PORT + 2))', arbiterOnly: true }"
+        { _id: 0, host: '$PRIMARY_27017_IP:$BASE_PORT', priority: 10 },
+        { _id: 1, host: '$PRIMARY_27017_IP:$((BASE_PORT + 1))', arbiterOnly: true },
+        { _id: 2, host: '$PRIMARY_27017_IP:$((BASE_PORT + 2))', arbiterOnly: true }"
     
     # Thêm các server khác vào members
     MEMBER_ID=3
@@ -209,8 +209,8 @@ if [[ "$IS_PRIMARY" == "y" ]]; then
         roles: ['root']
     })"
 else
-    # Nếu là SECONDARY, đợi PRIMARY khởi tạo xong
-    echo -e "${YELLOW}Đợi PRIMARY khởi tạo replica set (10 giây)...${NC}"
+    # Nếu là server khác, đợi server chứa node 27017 khởi tạo xong
+    echo -e "${YELLOW}Đợi server chứa node 27017 khởi tạo replica set (10 giây)...${NC}"
     sleep 10
 fi
 
@@ -220,19 +220,59 @@ mongosh "mongodb://$USERNAME:$PASSWORD@localhost:$BASE_PORT/admin" --eval "rs.st
 
 echo -e "${GREEN}=== HOÀN THÀNH THIẾT LẬP ===${NC}"
 echo -e "Các node đã được thiết lập:"
-echo -e "Server hiện tại ($THIS_SERVER_IP):"
-echo -e "- PRIMARY/SECONDARY: $THIS_SERVER_IP:$BASE_PORT"
-echo -e "- ARBITER 1: $THIS_SERVER_IP:$((BASE_PORT + 1))"
-echo -e "- ARBITER 2: $THIS_SERVER_IP:$((BASE_PORT + 2))"
+echo -e "Server chứa node 27017 ($PRIMARY_27017_IP):"
+echo -e "- PRIMARY/SECONDARY: $PRIMARY_27017_IP:$BASE_PORT (priority: 10)"
+echo -e "- ARBITER 1: $PRIMARY_27017_IP:$((BASE_PORT + 1))"
+echo -e "- ARBITER 2: $PRIMARY_27017_IP:$((BASE_PORT + 2))"
 
 for IP in "${OTHER_SERVER_IPS[@]}"; do
     echo -e "Server khác ($IP):"
-    echo -e "- PRIMARY/SECONDARY: $IP:$BASE_PORT"
+    echo -e "- PRIMARY/SECONDARY: $IP:$BASE_PORT (priority: 1)"
     echo -e "- ARBITER 1: $IP:$((BASE_PORT + 1))"
     echo -e "- ARBITER 2: $IP:$((BASE_PORT + 2))"
 done
 
 echo -e "Lệnh kiểm tra trạng thái:"
 echo -e "  mongosh \"mongodb://$USERNAME:$PASSWORD@localhost:$BASE_PORT/admin\" --eval \"rs.status()\""
+
+echo -e "\n${BLUE}=== HƯỚNG DẪN THAO TÁC TRÊN SERVER KHÁC ===${NC}"
+echo -e "1. Copy keyfile sang các server khác:"
+echo -e "   scp $KEYFILE root@[IP_SERVER_KHÁC]:$KEYFILE"
+echo -e "   ssh root@[IP_SERVER_KHÁC] \"chmod 400 $KEYFILE && chown mongodb:mongodb $KEYFILE\""
+
+echo -e "\n2. Copy script cài đặt sang các server khác:"
+echo -e "   scp $0 root@[IP_SERVER_KHÁC]:/root/setup_mongodb_distributed_replica.sh"
+echo -e "   ssh root@[IP_SERVER_KHÁC] \"chmod +x /root/setup_mongodb_distributed_replica.sh\""
+
+echo -e "\n3. Chạy script trên từng server khác:"
+echo -e "   ssh root@[IP_SERVER_KHÁC] \"/root/setup_mongodb_distributed_replica.sh\""
+echo -e "   - Nhập IP của server chứa node 27017: $PRIMARY_27017_IP"
+echo -e "   - Nhập số lượng server khác: $OTHER_SERVER_COUNT"
+echo -e "   - Nhập IP của từng server khác theo thứ tự"
+
+echo -e "\n4. Sau khi cài đặt xong, kiểm tra trạng thái replica set:"
+echo -e "   mongosh \"mongodb://$USERNAME:$PASSWORD@$PRIMARY_27017_IP:$BASE_PORT/admin\" --eval \"rs.status()\""
+
+echo -e "\n5. Nếu cần thêm server mới vào replica set:"
+echo -e "   mongosh \"mongodb://$USERNAME:$PASSWORD@$PRIMARY_27017_IP:$BASE_PORT/admin\" --eval \""
+echo -e "   rs.add({ host: '[IP_SERVER_MỚI]:$BASE_PORT', priority: 1 })"
+echo -e "   rs.add({ host: '[IP_SERVER_MỚI]:$((BASE_PORT + 1))', arbiterOnly: true })"
+echo -e "   rs.add({ host: '[IP_SERVER_MỚI]:$((BASE_PORT + 2))', arbiterOnly: true })"
+echo -e "   \""
+
+echo -e "\n6. Nếu cần xóa server khỏi replica set:"
+echo -e "   mongosh \"mongodb://$USERNAME:$PASSWORD@$PRIMARY_27017_IP:$BASE_PORT/admin\" --eval \""
+echo -e "   rs.remove('[IP_SERVER]:$BASE_PORT')"
+echo -e "   rs.remove('[IP_SERVER]:$((BASE_PORT + 1))')"
+echo -e "   rs.remove('[IP_SERVER]:$((BASE_PORT + 2))')"
+echo -e "   \""
+
+echo -e "\n7. Nếu cần thay đổi PRIMARY:"
+echo -e "   mongosh \"mongodb://$USERNAME:$PASSWORD@$PRIMARY_27017_IP:$BASE_PORT/admin\" --eval \""
+echo -e "   cfg = rs.conf()"
+echo -e "   cfg.members[0].priority = 1"
+echo -e "   cfg.members[3].priority = 10"
+echo -e "   rs.reconfig(cfg, {force: true})"
+echo -e "   \""
 
 exit 0
