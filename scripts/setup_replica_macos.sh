@@ -117,17 +117,56 @@ setup_replica_secondary_macos() {
     sleep 2
     
     # Thiết lập các node
-    setup_node_macos $PRIMARY_PORT "secondary"
-    setup_node_macos $ARBITER1_PORT "arbiter"
-    setup_node_macos $ARBITER2_PORT "arbiter"
+    echo "Đang thiết lập node SECONDARY..."
+    if ! setup_node_macos $PRIMARY_PORT "secondary"; then
+        echo -e "${RED}❌ Không thể khởi động node SECONDARY${NC}"
+        return 1
+    fi
+    
+    echo "Đang thiết lập node ARBITER 1..."
+    if ! setup_node_macos $ARBITER1_PORT "arbiter"; then
+        echo -e "${RED}❌ Không thể khởi động node ARBITER 1${NC}"
+        return 1
+    fi
+    
+    echo "Đang thiết lập node ARBITER 2..."
+    if ! setup_node_macos $ARBITER2_PORT "arbiter"; then
+        echo -e "${RED}❌ Không thể khởi động node ARBITER 2${NC}"
+        return 1
+    fi
     
     sleep 5
     
     # Kết nối với PRIMARY server
     echo "Đang kết nối với PRIMARY server..."
-    mongosh --port $PRIMARY_PORT --eval 'rs.add("'$SERVER_IP:$PRIMARY_PORT'")'
-    mongosh --port $PRIMARY_PORT --eval 'rs.addArb("'$SERVER_IP:$ARBITER1_PORT'")'
-    mongosh --port $PRIMARY_PORT --eval 'rs.addArb("'$SERVER_IP:$ARBITER2_PORT'")'
+    
+    # Đợi PRIMARY server sẵn sàng
+    local max_attempts=30
+    local attempt=1
+    while [ $attempt -le $max_attempts ]; do
+        if mongosh --host $primary_server_ip --port $PRIMARY_PORT --eval 'rs.status()' &> /dev/null; then
+            echo "✅ PRIMARY server đã sẵn sàng"
+            break
+        fi
+        echo "Đang chờ PRIMARY server sẵn sàng... ($attempt/$max_attempts)"
+        sleep 2
+        attempt=$((attempt + 1))
+    done
+    
+    if [ $attempt -gt $max_attempts ]; then
+        echo -e "${RED}❌ Không thể kết nối đến PRIMARY server${NC}"
+        return 1
+    fi
+    
+    # Thêm các node vào replica set
+    echo "Đang thêm node SECONDARY vào replica set..."
+    mongosh --host $primary_server_ip --port $PRIMARY_PORT --eval 'rs.add("'$SERVER_IP:$PRIMARY_PORT'")'
+    
+    echo "Đang thêm node ARBITER 1 vào replica set..."
+    mongosh --host $primary_server_ip --port $PRIMARY_PORT --eval 'rs.addArb("'$SERVER_IP:$ARBITER1_PORT'")'
+    
+    echo "Đang thêm node ARBITER 2 vào replica set..."
+    mongosh --host $primary_server_ip --port $PRIMARY_PORT --eval 'rs.addArb("'$SERVER_IP:$ARBITER2_PORT'")'
     
     # Kiểm tra trạng thái
     if check_replica_status $PRIMARY_PORT; then
