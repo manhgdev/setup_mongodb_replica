@@ -22,10 +22,59 @@ check_and_fix_unreachable() {
         return 1
     fi
     
+    # Kiểm tra MongoDB có đang chạy không
+    echo -e "${YELLOW}Kiểm tra MongoDB có đang chạy không...${NC}"
+    local mongo_status=$(ssh $NODE_IP "sudo systemctl status mongod_${NODE_PORT}" 2>&1)
+    
+    if echo "$mongo_status" | grep -q "Active: active (running)"; then
+        echo -e "${GREEN}✅ MongoDB đang chạy trên port $NODE_PORT${NC}"
+    else
+        echo -e "${RED}❌ MongoDB không chạy trên port $NODE_PORT${NC}"
+        echo -e "${YELLOW}Đang khởi động MongoDB...${NC}"
+        ssh $NODE_IP "sudo systemctl start mongod_${NODE_PORT}"
+        sleep 5
+        
+        # Kiểm tra lại sau khi khởi động
+        mongo_status=$(ssh $NODE_IP "sudo systemctl status mongod_${NODE_PORT}" 2>&1)
+        if ! echo "$mongo_status" | grep -q "Active: active (running)"; then
+            echo -e "${RED}❌ Không thể khởi động MongoDB trên port $NODE_PORT${NC}"
+            echo "Lỗi: $mongo_status"
+            return 1
+        fi
+    fi
+    
     # Kiểm tra port có mở không
     if ! nc -z -w 5 $NODE_IP $NODE_PORT &>/dev/null; then
         echo -e "${RED}❌ Port $NODE_PORT không mở trên node $NODE_IP${NC}"
-        return 1
+        echo -e "${YELLOW}Đang kiểm tra cấu hình bindIp...${NC}"
+        
+        # Kiểm tra bindIp trong cấu hình
+        local config=$(ssh $NODE_IP "cat /etc/mongod_${NODE_PORT}.conf" 2>/dev/null)
+        if [ $? -eq 0 ]; then
+            if ! echo "$config" | grep -q "bindIp: 0.0.0.0"; then
+                echo -e "${YELLOW}⚠️ Cấu hình bindIp không đúng trên node $NODE_IP${NC}"
+                echo -e "${YELLOW}Đang sửa cấu hình bindIp...${NC}"
+                ssh $NODE_IP "sudo sed -i 's/bindIp: .*/bindIp: 0.0.0.0/' /etc/mongod_${NODE_PORT}.conf"
+                ssh $NODE_IP "sudo systemctl restart mongod_${NODE_PORT}"
+                sleep 5
+            fi
+        fi
+        
+        # Kiểm tra tường lửa
+        local firewall_status=$(ssh $NODE_IP "sudo ufw status" 2>/dev/null)
+        if [ $? -eq 0 ]; then
+            if ! echo "$firewall_status" | grep -q "$NODE_PORT/tcp"; then
+                echo -e "${YELLOW}⚠️ Port $NODE_PORT chưa được mở trên tường lửa của node $NODE_IP${NC}"
+                echo -e "${YELLOW}Đang mở port trên tường lửa...${NC}"
+                ssh $NODE_IP "sudo ufw allow $NODE_PORT/tcp"
+            fi
+        fi
+        
+        # Kiểm tra lại port sau khi sửa
+        if ! nc -z -w 5 $NODE_IP $NODE_PORT &>/dev/null; then
+            echo -e "${RED}❌ Vẫn không thể kết nối tới port $NODE_PORT sau khi sửa${NC}"
+            return 1
+        fi
     fi
     
     # Kiểm tra trạng thái replica set
@@ -41,28 +90,6 @@ check_and_fix_unreachable() {
     if echo "$status" | grep -q "NotYetInitialized"; then
         echo -e "${RED}❌ Node $NODE_IP:$NODE_PORT chưa được khởi tạo replica set${NC}"
         return 1
-    fi
-    
-    # Kiểm tra bindIp trong cấu hình
-    local config=$(ssh $NODE_IP "cat /etc/mongod_${NODE_PORT}.conf" 2>/dev/null)
-    if [ $? -eq 0 ]; then
-        if ! echo "$config" | grep -q "bindIp: 0.0.0.0"; then
-            echo -e "${YELLOW}⚠️ Cấu hình bindIp không đúng trên node $NODE_IP${NC}"
-            echo -e "${YELLOW}Đang sửa cấu hình bindIp...${NC}"
-            ssh $NODE_IP "sudo sed -i 's/bindIp: .*/bindIp: 0.0.0.0/' /etc/mongod_${NODE_PORT}.conf"
-            ssh $NODE_IP "sudo systemctl restart mongod_${NODE_PORT}"
-            sleep 5
-        fi
-    fi
-    
-    # Kiểm tra tường lửa
-    local firewall_status=$(ssh $NODE_IP "sudo ufw status" 2>/dev/null)
-    if [ $? -eq 0 ]; then
-        if ! echo "$firewall_status" | grep -q "$NODE_PORT/tcp"; then
-            echo -e "${YELLOW}⚠️ Port $NODE_PORT chưa được mở trên tường lửa của node $NODE_IP${NC}"
-            echo -e "${YELLOW}Đang mở port trên tường lửa...${NC}"
-            ssh $NODE_IP "sudo ufw allow $NODE_PORT/tcp"
-        fi
     fi
     
     # Kiểm tra kết nối từ PRIMARY
@@ -163,6 +190,24 @@ force_recover_node() {
     
     echo -e "${YELLOW}Đang khôi phục node $NODE_IP:$NODE_PORT...${NC}"
     
+    # Kiểm tra MongoDB có đang chạy không
+    echo -e "${YELLOW}Kiểm tra MongoDB có đang chạy không...${NC}"
+    local mongo_status=$(ssh $NODE_IP "sudo systemctl status mongod_${NODE_PORT}" 2>&1)
+    
+    if ! echo "$mongo_status" | grep -q "Active: active (running)"; then
+        echo -e "${YELLOW}⚠️ MongoDB không chạy, đang khởi động lại...${NC}"
+        ssh $NODE_IP "sudo systemctl start mongod_${NODE_PORT}"
+        sleep 5
+        
+        # Kiểm tra lại sau khi khởi động
+        mongo_status=$(ssh $NODE_IP "sudo systemctl status mongod_${NODE_PORT}" 2>&1)
+        if ! echo "$mongo_status" | grep -q "Active: active (running)"; then
+            echo -e "${RED}❌ Không thể khởi động MongoDB trên port $NODE_PORT${NC}"
+            echo "Lỗi: $mongo_status"
+            return 1
+        fi
+    fi
+    
     # Kiểm tra trạng thái replica set
     local status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
     
@@ -185,16 +230,6 @@ force_recover_node() {
         # Đợi node được xóa
         echo -e "${YELLOW}Đợi node được xóa (10 giây)...${NC}"
         sleep 10
-    fi
-    
-    # Kiểm tra MongoDB có đang chạy không
-    echo -e "${YELLOW}Kiểm tra MongoDB có đang chạy không...${NC}"
-    ssh $NODE_IP "sudo systemctl status mongod_${NODE_PORT}" &>/dev/null
-    
-    if [ $? -ne 0 ]; then
-        echo -e "${YELLOW}⚠️ MongoDB không chạy, đang khởi động lại...${NC}"
-        ssh $NODE_IP "sudo systemctl restart mongod_${NODE_PORT}"
-        sleep 5
     fi
     
     # Kiểm tra cấu hình bindIp
