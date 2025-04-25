@@ -378,24 +378,12 @@ setup_secondary() {
     read -p "Nhập IP của SERVER PRIMARY: " PRIMARY_IP
     [ -z "$PRIMARY_IP" ] && echo -e "${RED}❌ Cần IP PRIMARY${NC}" && return 1
     
-    # Kiểm tra kết nối - gộp thông báo
-    echo -n "→ Kiểm tra kết nối đến PRIMARY... "
-    if ! nc -z $PRIMARY_IP 27017 &>/dev/null; then 
-        echo -e "${RED}KHÔNG KẾT NỐI ĐƯỢC${NC}" 
-        return 1
-    else
-        echo -e "${GREEN}OK${NC}"
-    fi
-    
     # Thông báo dọn dẹp
     echo "→ Dọn dẹp môi trường MongoDB..."
     # Tắt dịch vụ và xóa tiến trình - không hiển thị output
     {
         sudo systemctl stop mongod_27017 mongod_27018 mongod_27019 || true
-        sleep 1
-        sudo pkill -f mongod || true
-        sleep 1
-        sudo pkill -9 -f mongod || true
+
         sleep 1
         sudo fuser -k 27017/tcp || true
         sudo fuser -k 27018/tcp || true
@@ -435,7 +423,7 @@ systemLog:
   path: /var/log/mongodb/mongod_27017.log
 net:
   port: 27017
-  bindIp: 0.0.0.0,127.0.0.1
+  bindIp: 0.0.0.0
 security:
   keyFile: /etc/mongodb.keyfile
   authorization: enabled
