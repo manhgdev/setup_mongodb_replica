@@ -49,31 +49,23 @@ processManagement:
 EOL
 
     # Start MongoDB
-    echo "Starting MongoDB on port $PORT..."
-    if ! mongod --config "$CONFIG_FILE" --fork; then
+    if ! mongod --config "$CONFIG_FILE" --fork &>/dev/null; then
         echo -e "${RED}❌ Failed to start MongoDB on port $PORT${NC}"
-        echo "Error log:"
-        grep -i "error\|failed\|exception" "$LOG_PATH/mongod_${PORT}.log" | tail -n 20
         return 1
     fi
     
     # Wait for MongoDB to start
     local attempt=1
     while [ $attempt -le 3 ]; do
-        echo "Waiting for MongoDB to start (attempt $attempt/3)..."
         sleep 3
-        
         if mongosh --port $PORT --eval "db.version()" --quiet &>/dev/null; then
             echo -e "${GREEN}✅ MongoDB started successfully on port $PORT${NC}"
             return 0
         fi
-        
         attempt=$((attempt + 1))
     done
     
     echo -e "${RED}❌ Failed to connect to MongoDB on port $PORT${NC}"
-    echo "Error log:"
-    grep -i "error\|failed\|exception" "$LOG_PATH/mongod_${PORT}.log" | tail -n 20
     return 1
 }
 
@@ -103,13 +95,9 @@ setup_primary() {
             { _id: 1, host: '$SERVER_IP:$ARBITER1_PORT', arbiterOnly: true, priority: 0 },
             { _id: 2, host: '$SERVER_IP:$ARBITER2_PORT', arbiterOnly: true, priority: 0 }
         ]
-    })"
+    })" &>/dev/null
     
     sleep 5
-    
-    mongosh --port $PRIMARY_PORT --eval "
-    print('Replica set status:');
-    printjson(rs.status())"
     
     echo -e "\n${GREEN}✅ MongoDB Replica Set setup completed successfully.${NC}"
     echo "Primary node: $SERVER_IP:$PRIMARY_PORT"
@@ -140,13 +128,9 @@ setup_secondary() {
     
     mongosh --host $PRIMARY_IP --port $PRIMARY_PORT --eval "
     rs.add('$SERVER_IP:$PRIMARY_PORT');
-    rs.addArb('$SERVER_IP:$ARBITER_PORT')"
+    rs.addArb('$SERVER_IP:$ARBITER_PORT')" &>/dev/null
     
     sleep 5
-    
-    mongosh --host $PRIMARY_IP --port $PRIMARY_PORT --eval "
-    print('Replica set status:');
-    printjson(rs.status())"
     
     echo -e "\n${GREEN}✅ SECONDARY setup completed${NC}"
     echo "This server (SECONDARY): $SERVER_IP:$PRIMARY_PORT"
