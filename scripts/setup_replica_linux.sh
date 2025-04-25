@@ -151,10 +151,39 @@ create_keyfile() {
   else
     # Nếu không phải PRIMARY thì copy keyfile từ PRIMARY
     echo -e "${YELLOW}Copy keyfile từ PRIMARY ($primary_ip)...${NC}"
-    scp root@$primary_ip:$keyfile $keyfile
-    sudo chmod 400 $keyfile
-    sudo chown mongodb:mongodb $keyfile
-    echo -e "${GREEN}✅ Đã copy keyfile từ PRIMARY${NC}"
+    
+    # Kiểm tra nếu keyfile tồn tại trên PRIMARY
+    ssh -o StrictHostKeyChecking=accept-new root@$primary_ip "test -f $keyfile" 2>/dev/null
+    if [ $? -ne 0 ]; then
+      echo -e "${RED}❌ Keyfile không tồn tại trên PRIMARY. Đang tạo keyfile mới trên PRIMARY...${NC}"
+      
+      # Tạo keyfile trên PRIMARY
+      ssh -o StrictHostKeyChecking=accept-new root@$primary_ip "openssl rand -base64 756 | sudo tee $keyfile > /dev/null && sudo chmod 400 $keyfile && sudo chown mongodb:mongodb $keyfile" 2>/dev/null
+      if [ $? -ne 0 ]; then
+        echo -e "${RED}❌ Không thể tạo keyfile trên PRIMARY. Đang tạo keyfile cục bộ...${NC}"
+        # Tạo keyfile cục bộ
+        openssl rand -base64 756 | sudo tee $keyfile > /dev/null
+        sudo chmod 400 $keyfile
+        sudo chown mongodb:mongodb $keyfile
+        echo -e "${YELLOW}⚠️ Keyfile được tạo cục bộ. Cần sao chép thủ công sang PRIMARY${NC}"
+        return 0
+      fi
+    fi
+    
+    # Tiến hành sao chép keyfile
+    scp -o StrictHostKeyChecking=accept-new root@$primary_ip:$keyfile $keyfile 2>/dev/null
+    if [ $? -ne 0 ]; then
+      echo -e "${RED}❌ Không thể sao chép keyfile từ PRIMARY. Đang tạo keyfile cục bộ...${NC}"
+      # Tạo keyfile cục bộ
+      openssl rand -base64 756 | sudo tee $keyfile > /dev/null
+      sudo chmod 400 $keyfile
+      sudo chown mongodb:mongodb $keyfile
+      echo -e "${YELLOW}⚠️ Đã tạo keyfile cục bộ. Cần sao chép thủ công sang PRIMARY${NC}"
+    else
+      sudo chmod 400 $keyfile
+      sudo chown mongodb:mongodb $keyfile
+      echo -e "${GREEN}✅ Đã copy keyfile từ PRIMARY${NC}"
+    fi
   fi
 }
 
@@ -607,13 +636,26 @@ setup_secondary() {
     
     if ! start_mongodb; then
         echo -e "${RED}❌ Không thể khởi động MongoDB không bảo mật${NC}"
-        return 1
+        echo -e "${YELLOW}Đang thử khắc phục sự cố...${NC}"
+        if ! check_and_restart_mongodb false; then
+            echo -e "${RED}❌ Không thể khởi động MongoDB. Vui lòng chạy tùy chọn 'Troubleshoot' từ menu chính${NC}"
+            return 1
+        fi
     fi
     
     # Kiểm tra kết nối
     if ! verify_mongodb_connection false "" "" $SERVER_IP; then
         echo -e "${RED}❌ Không thể kết nối đến MongoDB${NC}"
-        return 1
+        echo -e "${YELLOW}Thử kết nối với localhost...${NC}"
+        if ! verify_mongodb_connection false "" "" "localhost"; then
+            echo -e "${RED}❌ Không thể kết nối đến MongoDB ngay cả với localhost${NC}"
+            echo -e "${YELLOW}Đang thử khắc phục sự cố...${NC}"
+            check_and_restart_mongodb false
+            if ! verify_mongodb_connection false "" "" "localhost"; then
+                echo -e "${RED}❌ Vẫn không thể kết nối. Vui lòng chạy tùy chọn 'Troubleshoot' từ menu chính${NC}"
+                return 1
+            fi
+        fi
     fi
     
     # BƯỚC 2: Tạo user admin
@@ -627,7 +669,12 @@ setup_secondary() {
     
     if ! create_admin_user $SEC_USER $SEC_PASS; then
         echo -e "${RED}❌ Không thể tạo user admin trên SECONDARY${NC}"
-        return 1
+        echo -e "${YELLOW}Đang thử lại sau khi khởi động lại MongoDB...${NC}"
+        check_and_restart_mongodb false
+        if ! create_admin_user $SEC_USER $SEC_PASS; then
+            echo -e "${RED}❌ Vẫn không thể tạo user admin. Vui lòng kiểm tra logs.${NC}"
+            return 1
+        fi
     fi
     
     # BƯỚC 3: Dừng MongoDB và cấu hình lại với replica set (nhưng chưa có bảo mật)
@@ -639,13 +686,26 @@ setup_secondary() {
     
     if ! start_mongodb; then
         echo -e "${RED}❌ Không thể khởi động MongoDB với cấu hình replica set${NC}"
-        return 1
+        check_and_restart_mongodb false
+        if ! verify_mongodb_connection false "" "" "localhost"; then
+            echo -e "${RED}❌ Vẫn không thể khởi động MongoDB. Vui lòng kiểm tra logs.${NC}"
+            return 1
+        fi
     fi
     
     # Kiểm tra kết nối
     if ! verify_mongodb_connection false "" "" $SERVER_IP; then
         echo -e "${RED}❌ Không thể kết nối đến MongoDB sau khi cấu hình replica set${NC}"
-        return 1
+        echo -e "${YELLOW}Thử kết nối với localhost...${NC}"
+        if ! verify_mongodb_connection false "" "" "localhost"; then
+            echo -e "${RED}❌ Không thể kết nối đến MongoDB ngay cả với localhost${NC}"
+            echo -e "${YELLOW}Đang thử khắc phục sự cố...${NC}"
+            check_and_restart_mongodb false
+            if ! verify_mongodb_connection false "" "" "localhost"; then
+                echo -e "${RED}❌ Vẫn không thể kết nối. Vui lòng chạy tùy chọn 'Troubleshoot' từ menu chính${NC}"
+                return 1
+            fi
+        fi
     fi
     
     # BƯỚC 4: Kết nối tới PRIMARY và thêm node này
@@ -665,6 +725,16 @@ setup_secondary() {
     if [ $? -ne 0 ]; then
         echo -e "${RED}❌ Không thể thêm node vào Replica Set${NC}"
         echo "Lỗi: $add_result"
+        echo -e "${YELLOW}Kiểm tra kết nối với PRIMARY...${NC}"
+        if ! ping -c 1 -W 2 $PRIMARY_IP > /dev/null; then
+            echo -e "${RED}❌ Không thể ping tới PRIMARY server $PRIMARY_IP${NC}"
+            echo -e "${YELLOW}Kiểm tra kết nối mạng và firewall.${NC}"
+        fi
+        echo -e "${YELLOW}Kiểm tra nếu PRIMARY đang chạy...${NC}"
+        nc -z -v -w 5 $PRIMARY_IP 27017 2>/dev/null
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}❌ Không thể kết nối tới PRIMARY server $PRIMARY_IP:27017${NC}"
+        fi
         return 1
     fi
     
@@ -681,7 +751,7 @@ setup_secondary() {
         echo -e "${YELLOW}Đang kiểm tra và khắc phục...${NC}"
         
         # Kiểm tra và khắc phục lỗi
-        if ! check_and_fix_unreachable $SERVER_IP $SECONDARY_PORT $PRIMARY_USER $PRIMARY_PASS; then
+        if ! check_and_restart_mongodb false; then
             echo -e "${RED}❌ Không thể khắc phục lỗi node không reachable/healthy${NC}"
             echo -e "${YELLOW}Vui lòng kiểm tra thủ công:${NC}"
             echo "1. Kiểm tra tường lửa: sudo ufw status"
@@ -708,7 +778,13 @@ setup_secondary() {
     echo -e "${YELLOW}Khởi động lại với bảo mật...${NC}"
     create_systemd_service true
     if ! start_mongodb; then
-        return 1
+        echo -e "${RED}❌ Không thể khởi động MongoDB với bảo mật${NC}"
+        check_and_restart_mongodb true
+        if ! verify_mongodb_connection true $SEC_USER $SEC_PASS "localhost"; then
+            echo -e "${RED}❌ Vẫn không thể khởi động MongoDB với bảo mật. Vui lòng kiểm tra logs.${NC}"
+            sudo tail -n 30 /var/log/mongodb/mongod_${SECONDARY_PORT}.log
+            return 1
+        fi
     fi
     
     # Kiểm tra trạng thái replica set
@@ -731,14 +807,156 @@ setup_secondary() {
     fi
 }
 
+# Check and restart MongoDB if needed
+check_and_restart_mongodb() {
+  local PORT=27017
+  local SERVICE_NAME="mongod_${PORT}"
+  local WITH_SECURITY=$1
+  
+  echo -e "${YELLOW}Kiểm tra trạng thái MongoDB...${NC}"
+  
+  # Kiểm tra dịch vụ
+  if ! sudo systemctl is-active --quiet $SERVICE_NAME; then
+    echo -e "${RED}MongoDB không chạy. Đang khởi động lại...${NC}"
+    
+    # Kiểm tra log
+    echo "Nội dung log MongoDB gần nhất:"
+    sudo tail -n 20 /var/log/mongodb/mongod_${PORT}.log || true
+    
+    # Kiểm tra lỗi liên quan đến keyfile
+    if sudo grep -q "Permission denied" /var/log/mongodb/mongod_${PORT}.log; then
+      echo -e "${YELLOW}Phát hiện lỗi quyền truy cập. Sửa quyền cho keyfile...${NC}"
+      sudo chmod 400 /etc/mongodb.keyfile
+      sudo chown mongodb:mongodb /etc/mongodb.keyfile
+    fi
+    
+    # Kiểm tra lỗi liên quan đến thư mục dữ liệu
+    if sudo grep -q "Permission denied.*data" /var/log/mongodb/mongod_${PORT}.log; then
+      echo -e "${YELLOW}Phát hiện lỗi quyền truy cập thư mục dữ liệu. Sửa quyền...${NC}"
+      sudo chown -R mongodb:mongodb /var/lib/mongodb_${PORT}
+      sudo chmod 750 /var/lib/mongodb_${PORT}
+    fi
+    
+    # Kiểm tra lỗi port bị chiếm dụng
+    if sudo lsof -i :${PORT} | grep -q LISTEN; then
+      echo -e "${YELLOW}Port ${PORT} đang bị sử dụng. Giải phóng port...${NC}"
+      sudo lsof -ti :${PORT} | xargs sudo kill -9 || true
+      sleep 2
+    fi
+    
+    # Xóa lock file nếu tồn tại
+    if [ -f "/var/lib/mongodb_${PORT}/mongod.lock" ]; then
+      echo -e "${YELLOW}Xóa file lock...${NC}"
+      sudo rm -f /var/lib/mongodb_${PORT}/mongod.lock
+    fi
+    
+    # Thử khởi động lại
+    echo -e "${YELLOW}Khởi động lại MongoDB...${NC}"
+    sudo systemctl restart $SERVICE_NAME
+    sleep 5
+    
+    # Kiểm tra lại
+    if sudo systemctl is-active --quiet $SERVICE_NAME; then
+      echo -e "${GREEN}✅ MongoDB đã khởi động lại thành công${NC}"
+      return 0
+    else
+      echo -e "${RED}❌ Không thể khởi động MongoDB qua systemd. Thử khởi động trực tiếp...${NC}"
+      sudo -u mongodb mongod --config /etc/mongod_${PORT}.conf --fork --logpath /var/log/mongodb/mongod_direct.log
+      if [ $? -eq 0 ]; then
+        echo -e "${GREEN}✅ MongoDB đã khởi động trực tiếp thành công${NC}"
+        return 0
+      else
+        echo -e "${RED}❌ Không thể khởi động MongoDB. Kiểm tra logs để biết thêm chi tiết:${NC}"
+        sudo cat /var/log/mongodb/mongod_direct.log || sudo tail -n 30 /var/log/mongodb/mongod_${PORT}.log
+        return 1
+      fi
+    fi
+  else
+    echo -e "${GREEN}✅ MongoDB đang chạy bình thường${NC}"
+    return 0
+  fi
+}
+
+# Troubleshoot MongoDB connection issues
+troubleshoot_mongodb() {
+  local PORT=27017
+  
+  echo -e "${YELLOW}=== TROUBLESHOOTING MONGODB ===${NC}"
+  
+  # Kiểm tra nếu MongoDB chạy
+  if sudo systemctl is-active --quiet mongod_${PORT}; then
+    echo -e "${GREEN}✓ Dịch vụ MongoDB đang chạy${NC}"
+  else
+    echo -e "${RED}✗ Dịch vụ MongoDB không chạy${NC}"
+    echo -e "${YELLOW}Đang cố khởi động lại...${NC}"
+    sudo systemctl restart mongod_${PORT}
+    sleep 5
+  fi
+  
+  # Kiểm tra nếu port đang mở
+  if sudo ss -tulpn | grep -q ":${PORT}"; then
+    echo -e "${GREEN}✓ Port ${PORT} đang mở${NC}"
+    sudo ss -tulpn | grep ":${PORT}"
+  else
+    echo -e "${RED}✗ Port ${PORT} không mở${NC}"
+    echo -e "${YELLOW}Kiểm tra log lỗi:${NC}"
+    sudo tail -n 30 /var/log/mongodb/mongod_${PORT}.log
+  fi
+  
+  # Kiểm tra SELinux nếu có
+  if command -v getenforce &> /dev/null; then
+    echo -e "${YELLOW}Trạng thái SELinux: $(getenforce)${NC}"
+    if [ "$(getenforce)" = "Enforcing" ]; then
+      echo -e "${YELLOW}⚠️ SELinux đang bật, có thể gây ra lỗi quyền truy cập${NC}"
+      echo "Thử tạm thời tắt SELinux:"
+      echo "sudo setenforce 0"
+    fi
+  fi
+  
+  # Kiểm tra quyền truy cập thư mục
+  echo -e "${YELLOW}Kiểm tra quyền thư mục dữ liệu:${NC}"
+  ls -la /var/lib/mongodb_${PORT}/
+  echo -e "${YELLOW}Kiểm tra quyền keyfile:${NC}"
+  ls -la /etc/mongodb.keyfile 2>/dev/null || echo "Keyfile không tồn tại"
+  
+  # Hiển thị thông tin cấu hình
+  echo -e "${YELLOW}Cấu hình MongoDB:${NC}"
+  grep -v "^#" /etc/mongod_${PORT}.conf | grep -v "^$"
+  
+  # Hướng dẫn khắc phục
+  echo -e "\n${YELLOW}=== HƯỚNG DẪN KHẮC PHỤC ===${NC}"
+  echo "1. Kiểm tra log lỗi:"
+  echo "   sudo tail -f /var/log/mongodb/mongod_${PORT}.log"
+  echo "2. Kiểm tra trạng thái dịch vụ:"
+  echo "   sudo systemctl status mongod_${PORT}"
+  echo "3. Khởi động lại dịch vụ:"
+  echo "   sudo systemctl restart mongod_${PORT}"
+  echo "4. Nếu lỗi quyền truy cập:"
+  echo "   sudo chown -R mongodb:mongodb /var/lib/mongodb_${PORT} /var/log/mongodb"
+  echo "   sudo chmod 400 /etc/mongodb.keyfile"
+  echo "   sudo chown mongodb:mongodb /etc/mongodb.keyfile"
+  
+  echo -e "\n${YELLOW}Bạn có muốn chạy cài đặt lại từ đầu không? (y/n)${NC} "
+  read -p "> " RESET_MONGO
+  if [[ "$RESET_MONGO" =~ ^[Yy]$ ]]; then
+    stop_mongodb
+    create_dirs
+    create_config false "no_repl"
+    create_systemd_service false "no_repl"
+    start_mongodb
+    echo -e "${GREEN}✅ Đã khởi động lại MongoDB với cấu hình cơ bản${NC}"
+  fi
+}
+
 # Main function
 setup_replica_linux() {
     echo "MongoDB Replica Set Setup for Linux"
     echo "===================================="
     echo "1. Setup PRIMARY server"
     echo "2. Setup SECONDARY server"
-    echo "3. Return to main menu"
-    read -p "Select option (1-3): " option
+    echo "3. Khắc phục sự cố (Troubleshoot)"
+    echo "4. Return to main menu"
+    read -p "Select option (1-4): " option
 
     SERVER_IP=$(hostname -I | awk '{print $1}')
     echo "Using server IP: $SERVER_IP"
@@ -748,7 +966,8 @@ setup_replica_linux() {
         2) 
            read -p "Enter PRIMARY server IP: " PRIMARY_IP
            setup_secondary $SERVER_IP $PRIMARY_IP ;;
-        3) return 0 ;;
+        3) troubleshoot_mongodb ;;
+        4) return 0 ;;
         *) echo -e "${RED}❌ Invalid option${NC}" && return 1 ;;
     esac
 }
