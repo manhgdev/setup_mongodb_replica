@@ -47,13 +47,13 @@ systemLog:
   logAppend: true
 storage:
   dbPath: $DB_PATH
+  journal:
+    enabled: true
 net:
   bindIp: 0.0.0.0
   port: $PORT
   unixDomainSocket:
-    enabled: true
-    pathPrefix: /tmp
-    filePermissions: 0700
+    enabled: false
 replication:
   replSetName: rs0
 setParameter:
@@ -84,7 +84,7 @@ EOL
 
     # Start mongod with sudo for proper permissions
     echo "Starting MongoDB on port $PORT..."
-    sudo mongod --config "$CONFIG_FILE"
+    sudo mongod --config "$CONFIG_FILE" --fork
     
     # Check if MongoDB started successfully with more thorough verification
     local max_attempts=10
@@ -97,14 +97,8 @@ EOL
         
         if pgrep -f "mongod.*--port $PORT" > /dev/null; then
             # MongoDB process exists, try connecting
-            if [ "$PORT" = "27017" ]; then  # Only check connection on main port
-                if mongosh --port $PORT --eval "db.version()" --quiet &>/dev/null; then
-                    echo -e "${GREEN}✅ MongoDB started successfully on port $PORT${NC}"
-                    started=true
-                    break
-                fi
-            else
-                echo -e "${GREEN}✅ MongoDB process running on port $PORT${NC}"
+            if mongosh --port $PORT --eval "db.version()" --quiet &>/dev/null; then
+                echo -e "${GREEN}✅ MongoDB started successfully on port $PORT${NC}"
                 started=true
                 break
             fi
@@ -116,17 +110,26 @@ EOL
     if [ "$started" = "false" ]; then
         echo -e "${RED}❌ Failed to start MongoDB on port $PORT${NC}"
         echo "Last 10 lines of log:"
-        sudo tail -n 20 "$LOG_PATH/mongod_${PORT}.log"
+        if [ -r "$LOG_PATH/mongod_${PORT}.log" ]; then
+            tail -n 10 "$LOG_PATH/mongod_${PORT}.log"
+        else
+            sudo tail -n 10 "$LOG_PATH/mongod_${PORT}.log"
+        fi
         
-        # Additional debugging information
-        echo "Checking socket file:"
-        ls -la $SOCKET_FILE 2>/dev/null || echo "Socket file does not exist."
-        
-        echo "Checking port status:"
-        netstat -tuln | grep $PORT || echo "Port $PORT is not in use."
-        
-        echo "Checking MongoDB processes:"
-        ps aux | grep mongod | grep -v grep
+        # Try to get more detailed error information
+        echo "Checking for common issues:"
+        if [ ! -d "$DB_PATH" ]; then
+            echo "- Database directory does not exist: $DB_PATH"
+        fi
+        if [ ! -w "$DB_PATH" ]; then
+            echo "- Database directory is not writable: $DB_PATH"
+        fi
+        if [ ! -f "$CONFIG_FILE" ]; then
+            echo "- Config file does not exist: $CONFIG_FILE"
+        fi
+        if [ ! -r "$CONFIG_FILE" ]; then
+            echo "- Config file is not readable: $CONFIG_FILE"
+        fi
         
         return 1
     fi
@@ -212,20 +215,20 @@ setup_replica_primary_linux() {
     sleep 2
     
     # Clean start for better initialization
-    setup_node_linux $PRIMARY_PORT "no" "clean"
-    if [ $? -ne 0 ]; then
+    echo "Starting PRIMARY node..."
+    if ! setup_node_linux $PRIMARY_PORT "no" "clean"; then
         echo -e "${RED}❌ Failed to start PRIMARY node${NC}"
         return 1
     fi
     
-    setup_node_linux $ARBITER1_PORT "no" "clean"
-    if [ $? -ne 0 ]; then
+    echo "Starting ARBITER1 node..."
+    if ! setup_node_linux $ARBITER1_PORT "no" "clean"; then
         echo -e "${RED}❌ Failed to start ARBITER1 node${NC}"
         return 1
     fi
     
-    setup_node_linux $ARBITER2_PORT "no" "clean" 
-    if [ $? -ne 0 ]; then
+    echo "Starting ARBITER2 node..."
+    if ! setup_node_linux $ARBITER2_PORT "no" "clean"; then
         echo -e "${RED}❌ Failed to start ARBITER2 node${NC}"
         return 1
     fi
@@ -307,12 +310,6 @@ setup_replica_primary_linux() {
     echo "Step 5: Creating keyFile and restarting with security..."
     create_keyfile_linux
     
-    # Save connection info for verification
-    echo "Saving connection info for verification..."
-    echo "$SERVER_IP" > /tmp/mongodb_server_ip
-    echo "$admin_username" > /tmp/mongodb_username
-    echo "$admin_password" > /tmp/mongodb_password
-    
     pkill -f mongod || true
     sleep 5
     
@@ -323,9 +320,23 @@ setup_replica_primary_linux() {
         sleep 2
     fi
     
-    setup_node_linux $PRIMARY_PORT "yes"
-    setup_node_linux $ARBITER1_PORT "yes"
-    setup_node_linux $ARBITER2_PORT "yes"
+    echo "Restarting PRIMARY node with security..."
+    if ! setup_node_linux $PRIMARY_PORT "yes"; then
+        echo -e "${RED}❌ Failed to restart PRIMARY node with security${NC}"
+        return 1
+    fi
+    
+    echo "Restarting ARBITER1 node with security..."
+    if ! setup_node_linux $ARBITER1_PORT "yes"; then
+        echo -e "${RED}❌ Failed to restart ARBITER1 node with security${NC}"
+        return 1
+    fi
+    
+    echo "Restarting ARBITER2 node with security..."
+    if ! setup_node_linux $ARBITER2_PORT "yes"; then
+        echo -e "${RED}❌ Failed to restart ARBITER2 node with security${NC}"
+        return 1
+    fi
     
     # Wait for MongoDB to be fully ready
     echo "Waiting for MongoDB to be ready with security..."
@@ -371,117 +382,9 @@ setup_replica_primary_linux() {
 }
 
 setup_replica_secondary_linux() {
-    local SERVER_IP=$1
-    local PRIMARY_PORT=27017
-    local ARBITER_PORT=27018
     
-    # Get primary server information
-    echo -e "${YELLOW}Setting up a SECONDARY MongoDB server${NC}"
-    read -p "Enter PRIMARY server IP address: " PRIMARY_IP
-    if [ -z "$PRIMARY_IP" ]; then
-        echo -e "${RED}❌ ERROR: PRIMARY server IP is required${NC}"
-        return 1
-    fi
-    
-    read -p "Enter admin username on PRIMARY (default: manhg): " admin_username
-    admin_username=${admin_username:-manhg}
-    read -p "Enter admin password on PRIMARY (default: manhnk): " admin_password
-    admin_password=${admin_password:-manhnk}
-    
-    # Step 1: Stop any existing MongoDB processes
-    echo "Step 1: Stopping any existing MongoDB processes..."
-    pkill -f mongod || true
-    sleep 5
-    
-    # Step 2: Create keyfile (needs to be the same as primary)
-    echo "Step 2: Creating keyFile..."
-    create_keyfile_linux
-    
-    # Step 3: Start MongoDB without security first
-    echo "Step 3: Starting MongoDB without security..."
-    setup_node_linux $PRIMARY_PORT "no" "clean"  # Add clean flag
-    setup_node_linux $ARBITER_PORT "no" "clean"  # Add clean flag
-    
-    # Step 4: Test connection to primary
-    echo "Step 4: Testing connection to PRIMARY server..."
-    if ! mongosh --host $PRIMARY_IP --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'db.runCommand({ping:1})' &>/dev/null; then
-        echo -e "${RED}❌ Failed to connect to PRIMARY server. Check IP address and credentials.${NC}"
-        return 1
-    fi
-    echo -e "${GREEN}✅ Connection to PRIMARY server successful${NC}"
-    
-    # Step 5: Add this server to replica set
-    echo "Step 5: Adding this server to replica set..."
-    mongosh --host $PRIMARY_IP --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval '
-    try {
-        print("Adding secondary node: '$SERVER_IP:$PRIMARY_PORT'");
-        rs.add("'$SERVER_IP:$PRIMARY_PORT'");
-        
-        print("Adding arbiter node: '$SERVER_IP:$ARBITER_PORT'");
-        rs.addArb("'$SERVER_IP:$ARBITER_PORT'");
-        
-        print("Updated replica set configuration:");
-        printjson(rs.conf());
-    } catch(err) {
-        print("Error: " + err);
-        quit(1);
-    }
-    '
-    
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}❌ Failed to add server to replica set${NC}"
-        return 1
-    fi
-    
-    # Step 6: Restart with security enabled
-    echo "Step 6: Restarting MongoDB with security enabled..."
-    pkill -f mongod || true
-    sleep 5
-    
-    setup_node_linux $PRIMARY_PORT "yes"
-    setup_node_linux $ARBITER_PORT "yes"
-    sleep 10
-    
-    # Step 7: Verify replica set status
-    echo "Step 7: Verifying replica set status..."
-    mongosh --host $PRIMARY_IP --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval '
-    try {
-        print("Replica set status:");
-        printjson(rs.status());
-        
-        const members = rs.status().members;
-        const secondary = members.find(m => m.name.includes("'$SERVER_IP:$PRIMARY_PORT'"));
-        const arbiter = members.find(m => m.name.includes("'$SERVER_IP:$ARBITER_PORT'"));
-        
-        if (secondary && (secondary.state === 2 || secondary.stateStr === "SECONDARY")) {
-            print("✅ SECONDARY node is properly configured");
-        } else if (secondary) {
-            print("⚠️ SECONDARY node found but not yet fully synced. Current state: " + (secondary.stateStr || secondary.state));
-        } else {
-            print("❌ SECONDARY node not found in replica set");
-        }
-        
-        if (arbiter && (arbiter.state === 7 || arbiter.stateStr === "ARBITER")) {
-            print("✅ ARBITER node is properly configured");
-        } else if (arbiter) {
-            print("⚠️ ARBITER node found but in unexpected state: " + (arbiter.stateStr || arbiter.state));
-        } else {
-            print("❌ ARBITER node not found in replica set");
-        }
-    } catch(err) {
-        print("Error verifying replica set: " + err);
-    }
-    '
-    
-    # Final status
-    echo -e "\n${GREEN}✅ MongoDB SECONDARY setup completed${NC}"
-    echo "This server (SECONDARY): $SERVER_IP:$PRIMARY_PORT"
-    echo "Arbiter node on this server: $SERVER_IP:$ARBITER_PORT"
-    echo "Connected to PRIMARY server: $PRIMARY_IP:$PRIMARY_PORT"
-    echo "Connect to this SECONDARY: mongosh --host $SERVER_IP --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin"
 }
 
-# Function to be called from main.sh
 setup_replica_linux() {
     echo "MongoDB Replica Set Setup for Linux"
     echo "===================================="
@@ -523,5 +426,4 @@ setup_replica_linux() {
             ;;
     esac
 }
-
 
