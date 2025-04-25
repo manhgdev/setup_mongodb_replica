@@ -69,6 +69,40 @@ EOL
     return 1
 }
 
+# Create keyfile
+create_keyfile() {
+    local KEYFILE="/etc/mongodb.keyfile"
+    openssl rand -base64 756 > $KEYFILE
+    chown mongodb:mongodb $KEYFILE
+    chmod 400 $KEYFILE
+    echo -e "${GREEN}✅ Keyfile created successfully${NC}"
+}
+
+# Create admin user
+create_admin_user() {
+    local PORT=$1
+    local USERNAME=$2
+    local PASSWORD=$3
+    
+    echo "Creating admin user..."
+    local result=$(mongosh --port $PORT --eval "
+    db.getSiblingDB('admin').createUser({
+        user: '$USERNAME',
+        pwd: '$PASSWORD',
+        roles: [
+            { role: 'root', db: 'admin' },
+            { role: 'clusterAdmin', db: 'admin' }
+        ]
+    })")
+    
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}❌ Failed to create admin user${NC}"
+        echo "Error: $result"
+        return 1
+    fi
+    echo -e "${GREEN}✅ Admin user created successfully${NC}"
+}
+
 # Setup PRIMARY server
 setup_primary() {
     local SERVER_IP=$1
@@ -80,6 +114,15 @@ setup_primary() {
     create_dirs $PRIMARY_PORT
     create_dirs $ARBITER1_PORT
     create_dirs $ARBITER2_PORT
+    
+    # Create keyfile
+    create_keyfile
+    
+    # Update config with keyfile
+    local CONFIG_FILE="/etc/mongod_${PRIMARY_PORT}.conf"
+    echo "security:
+  keyFile: /etc/mongodb.keyfile
+  authorization: enabled" >> $CONFIG_FILE
     
     setup_node $PRIMARY_PORT || return 1
     setup_node $ARBITER1_PORT || return 1
@@ -117,7 +160,30 @@ setup_primary() {
         echo -e "\n${GREEN}✅ MongoDB Replica Set setup completed successfully.${NC}"
         echo "Primary node: $SERVER_IP:$PRIMARY_PORT"
         echo "Arbiter nodes: $SERVER_IP:$ARBITER1_PORT, $SERVER_IP:$ARBITER2_PORT"
-        echo "Connection command: mongosh --host $SERVER_IP --port $PRIMARY_PORT"
+        
+        # Create admin user
+        read -p "Enter admin username: " ADMIN_USER
+        read -sp "Enter admin password: " ADMIN_PASS
+        echo
+        create_admin_user $PRIMARY_PORT $ADMIN_USER $ADMIN_PASS || return 1
+        
+        # Restart with authentication
+        echo "Restarting MongoDB with authentication..."
+        stop_mongodb
+        sleep 2
+        setup_node $PRIMARY_PORT || return 1
+        setup_node $ARBITER1_PORT || return 1
+        setup_node $ARBITER2_PORT || return 1
+        
+        # Verify connection with auth
+        echo "Verifying connection with authentication..."
+        if mongosh --port $PRIMARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet &>/dev/null; then
+            echo -e "${GREEN}✅ Authentication verified successfully${NC}"
+            echo "Connection command: mongosh --host $SERVER_IP --port $PRIMARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
+        else
+            echo -e "${RED}❌ Authentication verification failed${NC}"
+            return 1
+        fi
     else
         echo -e "${RED}❌ Replica set initialization failed - Node not promoted to PRIMARY${NC}"
         echo "Current status:"
