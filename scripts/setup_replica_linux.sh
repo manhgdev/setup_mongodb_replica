@@ -93,6 +93,7 @@ net:
 # how the process runs
 processManagement:
   timeZoneInfo: /usr/share/zoneinfo
+  fork: true
 
 #security:
 security:
@@ -295,7 +296,20 @@ check_fix_keyfile() {
         echo "Owner: $keyfile_owner"
         echo "Group: $keyfile_group"
         echo "Permissions: $keyfile_perms"
-        return 1
+        
+        # Try as root
+        echo "Trying with sudo..."
+        sudo chown mongodb:mongodb $KEYFILE
+        sudo chmod 400 $KEYFILE
+        
+        keyfile_owner=$(stat -c %U $KEYFILE)
+        keyfile_group=$(stat -c %G $KEYFILE)
+        keyfile_perms=$(stat -c %a $KEYFILE)
+        
+        if [ "$keyfile_owner" != "mongodb" ] || [ "$keyfile_group" != "mongodb" ] || [ "$keyfile_perms" != "400" ]; then
+            echo -e "${RED}❌ Still failed to set correct permissions${NC}"
+            return 1
+        fi
     fi
     
     echo -e "${GREEN}✅ Keyfile verified and permissions set correctly${NC}"
@@ -466,17 +480,6 @@ setup_secondary() {
         return 1
     fi
     
-    # Check if this server is already a PRIMARY
-    echo "Checking if this server is already a PRIMARY..."
-    if mongosh --port $SECONDARY_PORT --eval "rs.status()" --quiet &>/dev/null; then
-        local current_status=$(mongosh --port $SECONDARY_PORT --eval "rs.status()" --quiet)
-        if echo "$current_status" | grep -q "stateStr.*PRIMARY"; then
-            echo -e "${RED}❌ This server is already a PRIMARY node${NC}"
-            echo "Please stop all MongoDB services and remove data before setting up as SECONDARY"
-            return 1
-        fi
-    fi
-    
     # Check network connectivity to PRIMARY
     echo "Checking network connectivity to PRIMARY server..."
     if ! ping -c 1 $PRIMARY_IP &>/dev/null; then
@@ -500,45 +503,39 @@ setup_secondary() {
     stop_mongodb
     sudo rm -rf /var/lib/mongodb_27017/* /var/lib/mongodb_27018/* /var/lib/mongodb_27019/*
     
-    create_dirs $SECONDARY_PORT
-    create_dirs $ARBITER1_PORT
-    create_dirs $ARBITER2_PORT
+    # Create directories with correct permissions
+    echo "Creating directories with correct permissions..."
+    for port in $SECONDARY_PORT $ARBITER1_PORT $ARBITER2_PORT; do
+        local DB_PATH="/var/lib/mongodb_${port}"
+        local LOG_PATH="/var/log/mongodb"
+        
+        sudo mkdir -p $DB_PATH $LOG_PATH
+        sudo chown -R mongodb:mongodb $DB_PATH $LOG_PATH
+        sudo chmod 755 $DB_PATH
+        sudo chmod 755 $LOG_PATH
+    done
     
     # Check and fix keyfile
     check_fix_keyfile $PRIMARY_IP || return 1
     
     # Create configs with security
+    echo "Creating configs with security..."
     create_config $SECONDARY_PORT true false false
     create_config $ARBITER1_PORT true true false
     create_config $ARBITER2_PORT true true false
     
-    # Start SECONDARY node
-    echo "Starting SECONDARY node..."
-    mongod --config /etc/mongod_${SECONDARY_PORT}.conf --fork
-    sleep 2
-    
-    # Start ARBITER 1 node
-    echo "Starting ARBITER 1 node..."
-    mongod --config /etc/mongod_${ARBITER1_PORT}.conf --fork
-    sleep 2
-    
-    # Start ARBITER 2 node
-    echo "Starting ARBITER 2 node..."
-    mongod --config /etc/mongod_${ARBITER2_PORT}.conf --fork
-    sleep 2
-    
-    # Create systemd services
+    # Start services with systemd
     echo "Creating systemd services..."
     create_systemd_service $SECONDARY_PORT || return 1
     create_systemd_service $ARBITER1_PORT || return 1
     create_systemd_service $ARBITER2_PORT || return 1
     
     # Restart services
-    echo "Restarting services..."
+    echo "Starting/restarting services..."
     sudo systemctl restart mongod_${SECONDARY_PORT}
     sudo systemctl restart mongod_${ARBITER1_PORT}
     sudo systemctl restart mongod_${ARBITER2_PORT}
-    sleep 5
+    sleep 10
     
     # Check if MongoDB processes are running
     echo "Verifying MongoDB processes..."
@@ -546,7 +543,7 @@ setup_secondary() {
         if ! pgrep -f "mongod.*$port" > /dev/null; then
             echo -e "${RED}❌ MongoDB process for port $port is not running${NC}"
             echo "Checking logs:"
-            sudo tail -n 20 /var/log/mongodb/mongod_${port}.log
+            sudo tail -n 50 /var/log/mongodb/mongod_${port}.log
             return 1
         fi
     done
@@ -554,90 +551,97 @@ setup_secondary() {
     
     # Check if PRIMARY can be connected
     echo "Checking connection to PRIMARY server..."
-    if ! mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db.version()" --quiet &>/dev/null; then
+    if ! mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db.version()" --quiet; then
         echo -e "${RED}❌ Cannot connect to PRIMARY server with authentication${NC}"
         return 1
     fi
     echo -e "${GREEN}✅ Successfully connected to PRIMARY server${NC}"
     
-    # Check if nodes already exist in replica set
-    echo "Checking if nodes already exist in replica set..."
+    # Check replica set status
+    echo "Checking replica set status on PRIMARY..."
     local rs_status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
     
-    # Check SECONDARY node
-    local secondary_exists=false
-    local arbiter1_exists=false
-    local arbiter2_exists=false
+    # Remove nodes from replica set if they exist
+    for node in "$SERVER_IP:$SECONDARY_PORT" "$SERVER_IP:$ARBITER1_PORT" "$SERVER_IP:$ARBITER2_PORT"; do
+        if echo "$rs_status" | grep -q "$node"; then
+            echo "Removing $node from replica set..."
+            mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.remove('$node')" --quiet
+            sleep 5
+        fi
+    done
     
-    if echo "$rs_status" | grep -q "$SERVER_IP:$SECONDARY_PORT"; then
-        echo -e "${GREEN}✅ SECONDARY node already exists in replica set${NC}"
-        secondary_exists=true
-    else
-        echo "Adding SECONDARY node to replica set..."
-        mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.add('$SERVER_IP:$SECONDARY_PORT')" --quiet
-        sleep 10
-    fi
+    # Add nodes to replica set
+    echo "Adding SECONDARY node to replica set..."
+    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.add({host: '$SERVER_IP:$SECONDARY_PORT', priority: 0})" --quiet
+    sleep 10
     
-    # Check ARBITER 1 node
-    if echo "$rs_status" | grep -q "$SERVER_IP:$ARBITER1_PORT"; then
-        echo -e "${GREEN}✅ ARBITER 1 node already exists in replica set${NC}"
-        arbiter1_exists=true
-    else
-        echo "Adding ARBITER 1 node to replica set..."
-        mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.addArb('$SERVER_IP:$ARBITER1_PORT')" --quiet
-        sleep 5
-    fi
+    echo "Adding ARBITER 1 node to replica set..."
+    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.addArb('$SERVER_IP:$ARBITER1_PORT')" --quiet
+    sleep 5
     
-    # Check ARBITER 2 node
-    if echo "$rs_status" | grep -q "$SERVER_IP:$ARBITER2_PORT"; then
-        echo -e "${GREEN}✅ ARBITER 2 node already exists in replica set${NC}"
-        arbiter2_exists=true
-    else
-        echo "Adding ARBITER 2 node to replica set..."
-        mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.addArb('$SERVER_IP:$ARBITER2_PORT')" --quiet
-        sleep 5
-    fi
+    echo "Adding ARBITER 2 node to replica set..."
+    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.addArb('$SERVER_IP:$ARBITER2_PORT')" --quiet
+    sleep 5
     
     # Wait for replication to complete
     echo "Waiting for replication to complete..."
-    sleep 20
+    sleep 30
     
-    # Verify replica set status
-    echo "Verifying replica set status..."
-    local rs_status_after=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
-    local node_status=""
+    # Add admin user to SECONDARY if it doesn't have one yet
+    echo "Adding admin user to SECONDARY for direct access..."
+    # Use primary's user to add admin to secondary
+    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
+    db = db.getSiblingDB('admin');
+    rs.secondaryOk();
+    db.getMongo().setReadPref('primary');
+    if(!db.system.users.findOne({user: '$ADMIN_USER', db: 'admin'})) {
+        db.createUser({
+            user: '$ADMIN_USER',
+            pwd: '$ADMIN_PASS',
+            roles: ['root']
+        });
+    }" --quiet
     
-    # Check if SECONDARY node is in proper state
-    if echo "$rs_status_after" | grep -A 10 "$SERVER_IP:$SECONDARY_PORT" | grep -q "state.*2"; then
-        echo -e "${GREEN}✅ SECONDARY node is properly configured (state: 2)${NC}"
-    else
-        echo -e "${YELLOW}⚠️ SECONDARY node may not be in the correct state${NC}"
-        echo "Current status:"
-        echo "$rs_status_after" | grep -A 10 "$SERVER_IP:$SECONDARY_PORT" | grep "state\|stateStr"
-    fi
+    # Show replica set status
+    echo "Current replica set status:"
+    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet
+    
+    # Show replica set config 
+    echo "Current replica set config:"
+    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.conf()" --quiet
     
     # Try to connect to SECONDARY directly
     echo "Testing connection to SECONDARY node..."
-    local max_attempts=10
+    local max_attempts=5
     local attempts=0
     
     while [ $attempts -lt $max_attempts ]; do
         attempts=$((attempts + 1))
         echo "Attempt $attempts of $max_attempts..."
         
-        if mongosh --host $SERVER_IP --port $SECONDARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db.version()" --quiet &>/dev/null; then
+        if mongosh --host $SERVER_IP --port $SECONDARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db.version()" --quiet; then
             echo -e "${GREEN}✅ Successfully connected to SECONDARY node${NC}"
             break
         else
             echo "Connection failed, waiting and trying again..."
-            sleep 5
+            sleep 10
         fi
     done
     
     if [ $attempts -eq $max_attempts ]; then
-        echo -e "${RED}❌ Failed to connect to SECONDARY node after $max_attempts attempts${NC}"
-        echo "Checking mongod logs..."
-        sudo tail -n 50 /var/log/mongodb/mongod_${SECONDARY_PORT}.log
+        echo -e "${YELLOW}⚠️ Could not connect directly to SECONDARY node after $max_attempts attempts${NC}"
+        echo "This may be because the node is still syncing with PRIMARY."
+        
+        # Try connecting in a different way
+        echo "Trying to connect through replica set..."
+        if mongosh "mongodb://$ADMIN_USER:$ADMIN_PASS@$PRIMARY_IP:27017,$SERVER_IP:27017/admin?replicaSet=rs0" --eval "db.version()" --quiet; then
+            echo -e "${GREEN}✅ Successfully connected to replica set${NC}"
+        else
+            echo -e "${YELLOW}⚠️ Could not connect to replica set${NC}"
+        fi
+        
+        echo "Wait a few minutes before trying again manually:"
+        echo "mongosh --host $SERVER_IP --port $SECONDARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
     fi
     
     echo -e "\n${GREEN}✅ SECONDARY setup completed${NC}"
@@ -663,6 +667,12 @@ setup_secondary() {
     echo ""
     echo "4. Check replica set status:"
     echo "   mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval \"rs.status()\""
+    
+    # Note about delayed connection
+    echo -e "\n${YELLOW}Note: It may take time for the SECONDARY node to fully sync with the PRIMARY.${NC}"
+    echo "If authentication fails now, please wait a few minutes and try again."
+    echo "You can also restart MongoDB on the SECONDARY node after waiting:"
+    echo "sudo systemctl restart mongod_27017"
 }
 
 # Main function
