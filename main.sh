@@ -1,10 +1,13 @@
 #!/bin/bash
 
-# Import các script khác
-source scripts/install_mongodb.sh
-source scripts/setup_replica.sh
-source scripts/check_status.sh
-source scripts/uninstall_mongodb.sh
+# Import các script khác - Make sure the paths are correct and files exist
+for script in scripts/install_mongodb.sh scripts/setup_replica_macos.sh scripts/setup_replica_linux.sh scripts/setup_replica.sh scripts/check_status.sh scripts/uninstall_mongodb.sh; do
+    if [ -f "$script" ]; then
+        source "$script"
+    else
+        echo -e "${RED}❌ Warning: Script $script not found${NC}"
+    fi
+done
 
 # Màu sắc cho output
 RED='\033[0;31m'
@@ -62,4 +65,4 @@ main() {
 # Chạy main nếu script được gọi trực tiếp
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     main
-fi 
+fi
