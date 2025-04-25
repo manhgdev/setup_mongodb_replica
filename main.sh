@@ -12,6 +12,12 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+# Export các biến màu sắc để các script khác có thể sử dụng
+export RED
+export GREEN
+export YELLOW
+export NC
+
 print_header() {
     echo -e "${YELLOW}=== MongoDB Replica Set Setup ===${NC}"
     echo "1. Cài đặt MongoDB"

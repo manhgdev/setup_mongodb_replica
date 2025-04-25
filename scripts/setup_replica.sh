@@ -196,4 +196,74 @@ main() {
 # Chỉ chạy main() nếu script được gọi trực tiếp
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     main
+fi
+
+setup_replica() {
+    echo -e "${YELLOW}=== Cấu hình MongoDB Replica Set ===${NC}"
+    
+    # Kiểm tra MongoDB đã cài đặt chưa
+    if ! command -v mongod &> /dev/null; then
+        echo -e "${RED}❌ MongoDB chưa được cài đặt${NC}"
+        read -p "Bạn có muốn cài đặt MongoDB không? (y/n): " install_choice
+        if [[ "$install_choice" == "y" ]]; then
+            install_mongodb
+            return 0
+        fi
+        return 1
+    fi
+    
+    # Kiểm tra MongoDB đang chạy
+    if ! mongosh --eval 'db.runCommand({ ping: 1 })' &> /dev/null; then
+        echo -e "${RED}❌ MongoDB chưa chạy${NC}"
+        read -p "Bạn có muốn khởi động MongoDB không? (y/n): " start_choice
+        if [[ "$start_choice" == "y" ]]; then
+            if [[ "$(uname -s)" == "Darwin" ]]; then
+                brew services start mongodb-community
+            else
+                sudo systemctl start mongod
+            fi
+            echo -e "${GREEN}✅ Đã khởi động MongoDB${NC}"
+            sleep 2
+        else
+            return 1
+        fi
+    fi
+    
+    # Hiển thị menu lựa chọn
+    echo "1. Cấu hình Server PRIMARY"
+    echo "2. Cấu hình Server SECONDARY"
+    echo "3. Quay lại"
+    read -p "Chọn một tùy chọn (1-3): " choice
+    
+    case $choice in
+        1)
+            echo "Nhập IP của server này [Enter để tự động lấy IP]: "
+            read -r server_ip
+            if [ -z "$server_ip" ]; then
+                server_ip=$(get_server_ip)
+                echo "Đã tự động lấy IP: $server_ip"
+            fi
+            setup_replica_primary "$server_ip"
+            ;;
+        2)
+            echo "Nhập IP của server này [Enter để tự động lấy IP]: "
+            read -r server_ip
+            if [ -z "$server_ip" ]; then
+                server_ip=$(get_server_ip)
+                echo "Đã tự động lấy IP: $server_ip"
+            fi
+            setup_replica_secondary "$server_ip"
+            ;;
+        3)
+            return 0
+            ;;
+        *)
+            echo -e "${RED}❌ Lựa chọn không hợp lệ${NC}"
+            ;;
+    esac
+}
+
+# Chỉ chạy setup_replica nếu script được gọi trực tiếp
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    setup_replica
 fi 
