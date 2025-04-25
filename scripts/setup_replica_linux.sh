@@ -181,7 +181,7 @@ setup_replica_primary_linux() {
     
     # Tạo user admin trước
     echo "Đang tạo user admin..."
-    local create_user_result=$(mongosh --port $PRIMARY_PORT --eval '
+    local create_user_result=$(mongosh --host $SERVER_IP --port $PRIMARY_PORT --eval '
         db = db.getSiblingDB("admin");
         db.createUser({
             user: "'$admin_username'",
@@ -210,7 +210,7 @@ setup_replica_primary_linux() {
     
     # Kiểm tra kết nối với xác thực
     echo "Đang kiểm tra kết nối với xác thực..."
-    local auth_check=$(mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'db.runCommand({ ping: 1 })' 2>&1)
+    local auth_check=$(mongosh --host $SERVER_IP --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'db.runCommand({ ping: 1 })' 2>&1)
     if [ $? -ne 0 ]; then
         echo -e "${RED}❌ Lỗi khi kiểm tra xác thực:${NC}"
         echo "$auth_check"
@@ -219,12 +219,12 @@ setup_replica_primary_linux() {
     
     # Kiểm tra trạng thái replica set với xác thực
     echo "Đang kiểm tra trạng thái replica set..."
-    local rs_status=$(mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.status()' 2>&1)
+    local rs_status=$(mongosh --host $SERVER_IP --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.status()' 2>&1)
     
     # Nếu replica set chưa được khởi tạo
     if echo "$rs_status" | grep -q "NotYetInitialized"; then
         echo "Đang khởi tạo replica set..."
-        local init_result=$(mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.initiate({
+        local init_result=$(mongosh --host $SERVER_IP --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.initiate({
             _id: "rs0",
             members: [
                 { _id: 0, host: "'$SERVER_IP:$PRIMARY_PORT'", priority: 2 },
