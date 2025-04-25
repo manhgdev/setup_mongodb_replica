@@ -5,13 +5,30 @@ setup_node_linux() {
     local DB_PATH="/var/lib/mongodb_${PORT}"
     local LOG_PATH="/var/log/mongodb"
 
+    # Stop the system MongoDB service if it exists and is running
+    if systemctl is-active --quiet mongod; then
+        echo "Stopping system MongoDB service..."
+        sudo systemctl stop mongod
+        sleep 2
+    fi
+
+    # Disable system MongoDB service to prevent it from starting automatically
+    if systemctl is-enabled --quiet mongod; then
+        echo "Disabling system MongoDB service during setup..."
+        sudo systemctl disable mongod
+    fi
+    
     # Stop any running MongoDB on this port
     pkill -f "mongod.*--port $PORT" || true
     sleep 2
 
     # Create directories
     mkdir -p $DB_PATH $LOG_PATH
-    chown -R mongodb:mongodb $DB_PATH $LOG_PATH 2>/dev/null || true
+    sudo chown -R mongodb:mongodb $DB_PATH $LOG_PATH 2>/dev/null || true
+    # Also set proper permissions if we're running as root
+    if [ $(id -u) -eq 0 ]; then
+        chown -R mongodb:mongodb $DB_PATH $LOG_PATH
+    fi
 
     # Clean up database directory for fresh start if needed
     if [ "$3" = "clean" ]; then
@@ -27,6 +44,8 @@ systemLog:
   logAppend: true
 storage:
   dbPath: $DB_PATH
+  journal:
+    enabled: true
 net:
   bindIp: localhost,127.0.0.1,$(hostname -I | awk '{print $1}')
   port: $PORT
@@ -48,9 +67,52 @@ security:
 EOL
     fi
 
+    # Check if config file requires sudo to write
+    if [ ! -w "$CONFIG_FILE" ]; then
+        echo "Using sudo to write config file..."
+        sudo bash -c "cat > $CONFIG_FILE" <<EOL
+systemLog:
+  destination: file
+  path: $LOG_PATH/mongod_${PORT}.log
+  logAppend: true
+storage:
+  dbPath: $DB_PATH
+  journal:
+    enabled: true
+net:
+  bindIp: localhost,127.0.0.1,$(hostname -I | awk '{print $1}')
+  port: $PORT
+replication:
+  replSetName: rs0
+setParameter:
+  allowMultipleArbiters: true
+processManagement:
+  fork: true
+  timeZoneInfo: /usr/share/zoneinfo
+EOL
+        if [ "$SECURITY" = "yes" ]; then
+            sudo bash -c "cat >> $CONFIG_FILE" <<EOL
+security:
+  authorization: enabled
+  keyFile: /etc/mongodb.key
+EOL
+        fi
+    fi
+
+    # Ensure ports are not in use
+    if netstat -tuln | grep -q ":$PORT "; then
+        echo "Warning: Port $PORT is already in use. Trying to close any existing connections..."
+        sudo lsof -i :$PORT | awk 'NR>1 {print $2}' | xargs -r sudo kill
+        sleep 2
+    fi
+
     # Start mongod with increased wait time
     echo "Starting MongoDB on port $PORT..."
-    mongod --config $CONFIG_FILE
+    if [ -w "$CONFIG_FILE" ]; then
+        mongod --config "$CONFIG_FILE"
+    else
+        sudo mongod --config "$CONFIG_FILE"
+    fi
     
     # Check if MongoDB started successfully with more thorough verification
     local max_attempts=10
@@ -82,7 +144,11 @@ EOL
     if [ "$started" = "false" ]; then
         echo -e "${RED}❌ Failed to start MongoDB on port $PORT${NC}"
         echo "Last 10 lines of log:"
-        tail -n 10 "$LOG_PATH/mongod_${PORT}.log"
+        if [ -r "$LOG_PATH/mongod_${PORT}.log" ]; then
+            tail -n 10 "$LOG_PATH/mongod_${PORT}.log"
+        else
+            sudo tail -n 10 "$LOG_PATH/mongod_${PORT}.log"
+        fi
         return 1
     fi
     
@@ -93,10 +159,66 @@ create_keyfile_linux() {
     local KEY_FILE="/etc/mongodb.key"
     if [ ! -f "$KEY_FILE" ]; then
         echo "Creating MongoDB keyFile..."
-        openssl rand -base64 756 > $KEY_FILE
-        chmod 600 $KEY_FILE
-        chown mongodb:mongodb $KEY_FILE 2>/dev/null || true
+        if [ $(id -u) -eq 0 ]; then
+            openssl rand -base64 756 > $KEY_FILE
+            chmod 600 $KEY_FILE
+            chown mongodb:mongodb $KEY_FILE
+        else
+            sudo bash -c "openssl rand -base64 756 > $KEY_FILE"
+            sudo chmod 600 $KEY_FILE
+            sudo chown mongodb:mongodb $KEY_FILE
+        fi
     fi
+}
+
+# Function to be called at the start of either primary or secondary setup
+prepare_system() {
+    echo "Preparing system for MongoDB replica set..."
+    
+    # Check if running as root
+    if [ $(id -u) -ne 0 ]; then
+        echo -e "${YELLOW}Warning: Not running as root. Some operations might require sudo.${NC}"
+    fi
+    
+    # Check for system MongoDB
+    if systemctl list-units --full -all | grep -Fq "mongod.service"; then
+        echo "Detected system MongoDB service."
+        if systemctl is-active --quiet mongod; then
+            echo "System MongoDB service is active. Stopping it..."
+            sudo systemctl stop mongod
+        fi
+    fi
+    
+    # Check firewall status for MongoDB ports
+    echo "Checking firewall status for MongoDB ports..."
+    if command -v ufw &> /dev/null; then
+        echo "UFW firewall detected. Ensuring MongoDB ports are open..."
+        sudo ufw status | grep -E "27017|27018|27019" || {
+            echo "Adding MongoDB ports to firewall..."
+            sudo ufw allow 27017/tcp
+            sudo ufw allow 27018/tcp
+            sudo ufw allow 27019/tcp
+        }
+    elif command -v firewall-cmd &> /dev/null; then
+        echo "FirewallD detected. Ensuring MongoDB ports are open..."
+        sudo firewall-cmd --list-ports | grep -E "27017|27018|27019" || {
+            echo "Adding MongoDB ports to firewall..."
+            sudo firewall-cmd --permanent --add-port=27017/tcp
+            sudo firewall-cmd --permanent --add-port=27018/tcp
+            sudo firewall-cmd --permanent --add-port=27019/tcp
+            sudo firewall-cmd --reload
+        }
+    fi
+    
+    # Create directories with proper permissions
+    echo "Creating MongoDB directories..."
+    for PORT in 27017 27018 27019; do
+        sudo mkdir -p "/var/lib/mongodb_${PORT}"
+        sudo mkdir -p "/var/log/mongodb"
+        sudo chown -R mongodb:mongodb "/var/lib/mongodb_${PORT}"
+        sudo chown -R mongodb:mongodb "/var/log/mongodb"
+        sudo chmod 755 "/var/lib/mongodb_${PORT}"
+    done
 }
 
 setup_replica_primary_linux() {
@@ -105,6 +227,9 @@ setup_replica_primary_linux() {
     local ARBITER1_PORT=27018
     local ARBITER2_PORT=27019
 
+    # Prepare system
+    prepare_system
+    
     # Step 1: Start all nodes WITHOUT security and clean data
     echo "Step 1: Starting MongoDB nodes without security..."
     pkill -f mongod || true
@@ -395,6 +520,19 @@ setup_replica_linux() {
     case $option in
         1)
             setup_replica_primary_linux $SERVER_IP
+            
+            # After completion, check if we need to re-enable system MongoDB
+            echo "Checking if system MongoDB service needs to be re-enabled..."
+            if [ -f "/etc/mongod.conf" ]; then
+                read -p "Do you want to re-enable the system MongoDB service? (y/n): " enable_system_mongo
+                if [[ "$enable_system_mongo" =~ ^[Yy]$ ]]; then
+                    echo "Re-enabling system MongoDB service..."
+                    sudo systemctl enable mongod
+                    echo "Note: To start the system MongoDB, run 'sudo systemctl start mongod'"
+                else
+                    echo "System MongoDB service remains disabled."
+                fi
+            fi
             ;;
         2)
             setup_replica_secondary_linux $SERVER_IP
