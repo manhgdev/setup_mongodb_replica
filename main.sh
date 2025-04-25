@@ -32,49 +32,6 @@ print_header() {
     echo "0. Thoát"
 }
 
-fix_node_menu() {
-    echo -e "${YELLOW}=== Sửa lỗi node không reachable ===${NC}"
-    
-    # Lấy IP của server hiện tại
-    local SERVER_IP=$(hostname -I | awk '{print $1}')
-    
-    read -p "Nhập IP của node (Enter để dùng IP server $SERVER_IP): " NODE_IP
-    NODE_IP=${NODE_IP:-$SERVER_IP}  # Nếu không nhập thì dùng SERVER_IP
-    
-    read -p "Nhập Port của node (Enter để dùng 27018): " NODE_PORT
-    NODE_PORT=${NODE_PORT:-27018}  # Nếu không nhập thì dùng 27018
-    
-    read -p "Nhập username admin (Enter để dùng manhg): " ADMIN_USER
-    ADMIN_USER=${ADMIN_USER:-manhg}  # Nếu không nhập thì dùng manhg
-    
-    read -s -p "Nhập password admin (Enter để dùng manhnk): " ADMIN_PASS
-    ADMIN_PASS=${ADMIN_PASS:-manhnk}  # Nếu không nhập thì dùng manhnk
-    echo
-    
-    echo -e "${YELLOW}Thông tin node:${NC}"
-    echo "IP: $NODE_IP"
-    echo "Port: $NODE_PORT"
-    echo "Username: $ADMIN_USER"
-    echo
-    
-    echo -e "${YELLOW}Chọn hành động:${NC}"
-    echo "1. Kiểm tra và sửa các vấn đề"
-    echo "2. Sửa lỗi và thêm lại vào replica set"
-    read -p "Lựa chọn (1-2): " action
-    
-    case $action in
-        1)
-            check_and_fix_unreachable "$NODE_IP" "$NODE_PORT" "$ADMIN_USER" "$ADMIN_PASS"
-            ;;
-        2)
-            fix_unreachable_node "$NODE_IP" "$NODE_PORT" "$ADMIN_USER" "$ADMIN_PASS"
-            ;;
-        *)
-            echo -e "${RED}❌ Lựa chọn không hợp lệ${NC}"
-            ;;
-    esac
-}
-
 main() {
     while true; do
         print_header
@@ -95,7 +52,7 @@ main() {
                 "./$ARBITER_SCRIPT"
                 ;;
             5)
-                fix_node_menu
+                fix_unreachable_node
                 ;;
             6)
                 uninstall_mongodb

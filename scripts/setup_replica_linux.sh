@@ -512,6 +512,94 @@ fix_unreachable_node() {
     fi
 }
 
+# Khôi phục node không reachable bằng cách xóa và thêm lại
+force_recover_node() {
+    local NODE_IP=$1
+    local NODE_PORT=$2
+    local ADMIN_USER=$3
+    local ADMIN_PASS=$4
+    
+    echo -e "${YELLOW}Đang khôi phục node $NODE_IP:$NODE_PORT...${NC}"
+    
+    # Kiểm tra trạng thái replica set
+    local status=$(mongosh --host 171.244.21.188 --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
+    
+    # Kiểm tra node có trong replica set không
+    if echo "$status" | grep -q "$NODE_IP:$NODE_PORT"; then
+        echo -e "${YELLOW}⚠️ Node $NODE_IP:$NODE_PORT đã có trong replica set, đang xóa...${NC}"
+        
+        # Xóa node khỏi replica set
+        local remove_result=$(mongosh --host 171.244.21.188 --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
+        rs.remove('$NODE_IP:$NODE_PORT')" --quiet)
+        
+        if echo "$remove_result" | grep -q "ok"; then
+            echo -e "${GREEN}✅ Đã xóa node $NODE_IP:$NODE_PORT khỏi replica set${NC}"
+        else
+            echo -e "${RED}❌ Không thể xóa node $NODE_IP:$NODE_PORT khỏi replica set${NC}"
+            echo "Lỗi: $remove_result"
+            return 1
+        fi
+        
+        # Đợi node được xóa
+        echo -e "${YELLOW}Đợi node được xóa (10 giây)...${NC}"
+        sleep 10
+    fi
+    
+    # Kiểm tra MongoDB có đang chạy không
+    echo -e "${YELLOW}Kiểm tra MongoDB có đang chạy không...${NC}"
+    ssh $NODE_IP "sudo systemctl status mongod_${NODE_PORT}" &>/dev/null
+    
+    if [ $? -ne 0 ]; then
+        echo -e "${YELLOW}⚠️ MongoDB không chạy, đang khởi động lại...${NC}"
+        ssh $NODE_IP "sudo systemctl restart mongod_${NODE_PORT}"
+        sleep 5
+    fi
+    
+    # Kiểm tra cấu hình bindIp
+    echo -e "${YELLOW}Kiểm tra cấu hình bindIp...${NC}"
+    ssh $NODE_IP "sudo sed -i 's/bindIp: .*/bindIp: 0.0.0.0/' /etc/mongod_${NODE_PORT}.conf"
+    ssh $NODE_IP "sudo systemctl restart mongod_${NODE_PORT}"
+    sleep 5
+    
+    # Kiểm tra tường lửa
+    echo -e "${YELLOW}Kiểm tra tường lửa...${NC}"
+    ssh $NODE_IP "sudo ufw allow $NODE_PORT/tcp" &>/dev/null
+    
+    # Thêm lại node vào replica set
+    echo -e "${YELLOW}Đang thêm lại node vào replica set...${NC}"
+    local add_result=$(mongosh --host 171.244.21.188 --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
+    rs.add('$NODE_IP:$NODE_PORT')" --quiet)
+    
+    if echo "$add_result" | grep -q "ok"; then
+        echo -e "${GREEN}✅ Đã thêm node $NODE_IP:$NODE_PORT vào replica set${NC}"
+    else
+        echo -e "${RED}❌ Không thể thêm node $NODE_IP:$NODE_PORT vào replica set${NC}"
+        echo "Lỗi: $add_result"
+        return 1
+    fi
+    
+    # Đợi node được thêm vào
+    echo -e "${YELLOW}Đợi node được thêm vào (30 giây)...${NC}"
+    sleep 30
+    
+    # Kiểm tra trạng thái node
+    local status=$(mongosh --host 171.244.21.188 --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
+    
+    if echo "$status" | grep -q "$NODE_IP:$NODE_PORT.*SECONDARY"; then
+        echo -e "${GREEN}✅ Node $NODE_IP:$NODE_PORT đã hoạt động bình thường${NC}"
+        return 0
+    else
+        echo -e "${RED}❌ Node $NODE_IP:$NODE_PORT vẫn không hoạt động bình thường${NC}"
+        echo "Trạng thái: $status"
+        
+        # Kiểm tra logs
+        echo -e "${YELLOW}Kiểm tra logs của node...${NC}"
+        ssh $NODE_IP "sudo tail -n 50 /var/log/mongodb/mongod_${NODE_PORT}.log"
+        
+        return 1
+    fi
+}
+
 # Setup PRIMARY server
 setup_primary() {
     local SERVER_IP=$1
