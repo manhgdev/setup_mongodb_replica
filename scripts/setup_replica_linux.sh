@@ -44,10 +44,8 @@ systemLog:
   logAppend: true
 storage:
   dbPath: $DB_PATH
-  journal:
-    enabled: true
 net:
-  bindIp: localhost,127.0.0.1,$(hostname -I | awk '{print $1}')
+  bindIp: 0.0.0.0
   port: $PORT
 replication:
   replSetName: rs0
