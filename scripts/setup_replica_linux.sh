@@ -370,19 +370,6 @@ setup_secondary() {
         return 1
     fi
     
-    echo "2. Kiểm tra port MongoDB trên PRIMARY server"
-    if nc -zv $PRIMARY_IP 27017 2>/dev/null; then
-        echo -e "${GREEN}✅ Kết nối đến port MongoDB trên PRIMARY thành công${NC}"
-    else
-        echo -e "${RED}❌ Không thể kết nối đến port MongoDB trên PRIMARY${NC}"
-        echo "Vui lòng kiểm tra:"
-        echo "  - MongoDB đang chạy trên PRIMARY: sudo systemctl status mongod_27017"
-        echo "  - Firewall đã mở port: sudo ufw status"
-        echo "  - MongoDB đã bind IP public: sudo grep bindIp /etc/mongod_27017.conf"
-        echo "  - Có thể cần phải chạy: sudo ufw allow 27017/tcp trên PRIMARY"
-        return 1
-    fi
-    
     # Dọn dẹp môi trường MongoDB trên SECONDARY
     echo "Dọn dẹp môi trường MongoDB trên SECONDARY..."
     # Dừng các service MongoDB
