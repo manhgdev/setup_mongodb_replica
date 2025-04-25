@@ -14,18 +14,6 @@ generate_setup_guide() {
     cat > "$GUIDE_FILE" << EOL
 # Hướng dẫn cài đặt MongoDB Replica Set - SECONDARY Server
 
-## Thông tin kết nối
-- IP: $SERVER_IP
-- Ports:
-  - SECONDARY: $PRIMARY_PORT
-  - ARBITER 1: $ARBITER1_PORT
-  - ARBITER 2: $ARBITER2_PORT
-- PRIMARY Server IP: $PRIMARY_SERVER_IP
-- Username: $ADMIN_USERNAME
-- Password: $ADMIN_PASSWORD
-
-## Các bước cài đặt
-
 1. Lấy KEY_FILE từ PRIMARY server:
    \`\`\`bash
    # Trên PRIMARY server

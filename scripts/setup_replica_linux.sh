@@ -49,8 +49,16 @@ setParameter:
 EOL
 
     # Dừng instance MongoDB hiện tại nếu có
+    echo "Đang dừng MongoDB trên port $PORT..."
     sudo pkill -f "mongod.*${PORT}" || true
-    sleep 2
+    sleep 5
+    
+    # Kiểm tra xem MongoDB đã dừng hoàn toàn chưa
+    if pgrep -f "mongod.*${PORT}" > /dev/null; then
+        echo "MongoDB vẫn đang chạy, đang dừng lại..."
+        sudo pkill -9 -f "mongod.*${PORT}" || true
+        sleep 2
+    fi
     
     # Khởi động node MongoDB
     echo "Đang khởi động MongoDB trên port $PORT..."
@@ -82,7 +90,7 @@ create_admin_user() {
     local PASSWORD=$3
     
     echo "Đang tạo user admin..."
-    local max_attempts=10
+    local max_attempts=3
     local attempt=1
     while [ $attempt -le $max_attempts ]; do
         if mongosh --port $PORT --eval '
