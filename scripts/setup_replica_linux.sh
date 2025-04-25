@@ -26,10 +26,17 @@ replication:
   replSetName: rs0
 setParameter:
   allowMultipleArbiters: true
+processManagement:
+  fork: true
 EOL
 
+    # Dừng instance MongoDB hiện tại nếu có
+    sudo pkill -f "mongod.*${PORT}" || true
+    sleep 2
+    
     # Khởi động node MongoDB
-    sudo mongod --config "$CONFIG_FILE" --fork
+    echo "Đang khởi động MongoDB trên port $PORT..."
+    sudo mongod --config "$CONFIG_FILE"
     
     # Kiểm tra kết nối
     local max_attempts=30
