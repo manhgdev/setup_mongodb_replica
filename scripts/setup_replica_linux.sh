@@ -4,6 +4,7 @@ setup_node_linux() {
     local CONFIG_FILE="/etc/mongod_${PORT}.conf"
     local DB_PATH="/var/lib/mongodb_${PORT}"
     local LOG_PATH="/var/log/mongodb"
+    local SOCKET_FILE="/tmp/mongodb-${PORT}.sock"
 
     # Stop the system MongoDB service if it exists and is running
     if systemctl is-active --quiet mongod; then
@@ -21,23 +22,25 @@ setup_node_linux() {
     # Stop any running MongoDB on this port
     pkill -f "mongod.*--port $PORT" || true
     sleep 2
+    
+    # Check and remove socket file if it exists
+    if [ -e "$SOCKET_FILE" ]; then
+        echo "Removing old socket file $SOCKET_FILE"
+        sudo rm -f "$SOCKET_FILE"
+    fi
 
     # Create directories
-    mkdir -p $DB_PATH $LOG_PATH
-    sudo chown -R mongodb:mongodb $DB_PATH $LOG_PATH 2>/dev/null || true
-    # Also set proper permissions if we're running as root
-    if [ $(id -u) -eq 0 ]; then
-        chown -R mongodb:mongodb $DB_PATH $LOG_PATH
-    fi
+    sudo mkdir -p $DB_PATH $LOG_PATH
+    sudo chown -R mongodb:mongodb $DB_PATH $LOG_PATH
 
     # Clean up database directory for fresh start if needed
     if [ "$3" = "clean" ]; then
         echo "Cleaning up MongoDB data directory for port $PORT..."
-        rm -rf $DB_PATH/*
+        sudo rm -rf $DB_PATH/*
     fi
 
     # Create config file with enhanced settings
-    cat > $CONFIG_FILE <<EOL
+    sudo bash -c "cat > $CONFIG_FILE" <<EOL
 systemLog:
   destination: file
   path: $LOG_PATH/mongod_${PORT}.log
@@ -47,6 +50,10 @@ storage:
 net:
   bindIp: 0.0.0.0
   port: $PORT
+  unixDomainSocket:
+    enabled: true
+    pathPrefix: /tmp
+    filePermissions: 0700
 replication:
   replSetName: rs0
 setParameter:
@@ -58,57 +65,26 @@ EOL
 
     # Add security if enabled
     if [ "$SECURITY" = "yes" ]; then
-        cat >> $CONFIG_FILE <<EOL
+        sudo bash -c "cat >> $CONFIG_FILE" <<EOL
 security:
   authorization: enabled
   keyFile: /etc/mongodb.key
 EOL
-    fi
-
-    # Check if config file requires sudo to write
-    if [ ! -w "$CONFIG_FILE" ]; then
-        echo "Using sudo to write config file..."
-        sudo bash -c "cat > $CONFIG_FILE" <<EOL
-systemLog:
-  destination: file
-  path: $LOG_PATH/mongod_${PORT}.log
-  logAppend: true
-storage:
-  dbPath: $DB_PATH
-net:
-  bindIp: 0.0.0.0
-  port: $PORT
-replication:
-  replSetName: rs0
-setParameter:
-  allowMultipleArbiters: true
-processManagement:
-  fork: true
-  timeZoneInfo: /usr/share/zoneinfo
-EOL
-        if [ "$SECURITY" = "yes" ]; then
-            sudo bash -c "cat >> $CONFIG_FILE" <<EOL
-security:
-  authorization: enabled
-  keyFile: /etc/mongodb.key
-EOL
-        fi
     fi
 
     # Ensure ports are not in use
     if netstat -tuln | grep -q ":$PORT "; then
         echo "Warning: Port $PORT is already in use. Trying to close any existing connections..."
-        sudo lsof -i :$PORT | awk 'NR>1 {print $2}' | xargs -r sudo kill
+        sudo lsof -i :$PORT | awk 'NR>1 {print $2}' | xargs -r sudo kill -9
         sleep 2
     fi
+    
+    # Fix file permissions in /tmp directory
+    sudo chmod 1777 /tmp
 
-    # Start mongod with increased wait time
+    # Start mongod with sudo for proper permissions
     echo "Starting MongoDB on port $PORT..."
-    if [ -w "$CONFIG_FILE" ]; then
-        mongod --config "$CONFIG_FILE"
-    else
-        sudo mongod --config "$CONFIG_FILE"
-    fi
+    sudo mongod --config "$CONFIG_FILE"
     
     # Check if MongoDB started successfully with more thorough verification
     local max_attempts=10
@@ -140,11 +116,18 @@ EOL
     if [ "$started" = "false" ]; then
         echo -e "${RED}❌ Failed to start MongoDB on port $PORT${NC}"
         echo "Last 10 lines of log:"
-        if [ -r "$LOG_PATH/mongod_${PORT}.log" ]; then
-            tail -n 10 "$LOG_PATH/mongod_${PORT}.log"
-        else
-            sudo tail -n 10 "$LOG_PATH/mongod_${PORT}.log"
-        fi
+        sudo tail -n 20 "$LOG_PATH/mongod_${PORT}.log"
+        
+        # Additional debugging information
+        echo "Checking socket file:"
+        ls -la $SOCKET_FILE 2>/dev/null || echo "Socket file does not exist."
+        
+        echo "Checking port status:"
+        netstat -tuln | grep $PORT || echo "Port $PORT is not in use."
+        
+        echo "Checking MongoDB processes:"
+        ps aux | grep mongod | grep -v grep
+        
         return 1
     fi
     
@@ -173,7 +156,7 @@ prepare_system() {
     
     # Check if running as root
     if [ $(id -u) -ne 0 ]; then
-        echo -e "${YELLOW}Warning: Not running as root. Some operations might require sudo.${NC}"
+        echo -e "${YELLOW}Warning: Not running as root. Using sudo for required operations.${NC}"
     fi
     
     # Check for system MongoDB
@@ -185,26 +168,17 @@ prepare_system() {
         fi
     fi
     
-    # Check firewall status for MongoDB ports
-    echo "Checking firewall status for MongoDB ports..."
-    if command -v ufw &> /dev/null; then
-        echo "UFW firewall detected. Ensuring MongoDB ports are open..."
-        sudo ufw status | grep -E "27017|27018|27019" || {
-            echo "Adding MongoDB ports to firewall..."
-            sudo ufw allow 27017/tcp
-            sudo ufw allow 27018/tcp
-            sudo ufw allow 27019/tcp
-        }
-    elif command -v firewall-cmd &> /dev/null; then
-        echo "FirewallD detected. Ensuring MongoDB ports are open..."
-        sudo firewall-cmd --list-ports | grep -E "27017|27018|27019" || {
-            echo "Adding MongoDB ports to firewall..."
-            sudo firewall-cmd --permanent --add-port=27017/tcp
-            sudo firewall-cmd --permanent --add-port=27018/tcp
-            sudo firewall-cmd --permanent --add-port=27019/tcp
-            sudo firewall-cmd --reload
-        }
-    fi
+    # Remove any existing socket files
+    for PORT in 27017 27018 27019; do
+        if [ -e "/tmp/mongodb-${PORT}.sock" ]; then
+            echo "Removing existing socket file for port $PORT"
+            sudo rm -f "/tmp/mongodb-${PORT}.sock"
+        fi
+    done
+    
+    # Ensure /tmp has correct permissions
+    echo "Setting correct permissions on /tmp directory"
+    sudo chmod 1777 /tmp
     
     # Create directories with proper permissions
     echo "Creating MongoDB directories..."
@@ -215,6 +189,12 @@ prepare_system() {
         sudo chown -R mongodb:mongodb "/var/log/mongodb"
         sudo chmod 755 "/var/lib/mongodb_${PORT}"
     done
+    
+    # Check if mongodb user exists
+    if ! id -u mongodb >/dev/null 2>&1; then
+        echo -e "${YELLOW}Warning: mongodb user does not exist. Creating it...${NC}"
+        sudo useradd -r -s /bin/false mongodb
+    fi
 }
 
 setup_replica_primary_linux() {
