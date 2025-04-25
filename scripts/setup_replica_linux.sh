@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Import các hàm từ file khác
+source "$(dirname "$0")/generate_guide.sh"
+
 setup_node_linux() {
     local PORT=$1
     local NODE_TYPE=$2
@@ -22,6 +25,8 @@ storage:
 net:
   bindIp: 0.0.0.0
   port: ${PORT}
+security:
+  authorization: enabled
 replication:
   replSetName: rs0
 setParameter:
@@ -55,11 +60,39 @@ EOL
     return 1
 }
 
+create_admin_user() {
+    local PORT=$1
+    local USERNAME=$2
+    local PASSWORD=$3
+    
+    echo "Đang tạo user admin..."
+    mongosh --port $PORT --eval '
+        db = db.getSiblingDB("admin");
+        db.createUser({
+            user: "'$USERNAME'",
+            pwd: "'$PASSWORD'",
+            roles: [
+                { role: "root", db: "admin" },
+                { role: "clusterAdmin", db: "admin" }
+            ]
+        });
+    '
+}
+
 setup_replica_primary_linux() {
     local PRIMARY_PORT=27017
     local ARBITER1_PORT=27018
     local ARBITER2_PORT=27019
     local SERVER_IP=$1
+    
+    # Nhập thông tin user admin
+    echo "Nhập username admin (mặc định: manhg): "
+    read -r admin_username
+    admin_username=${admin_username:-manhg}
+    
+    echo "Nhập password admin (mặc định: manhnk): "
+    read -r admin_password
+    admin_password=${admin_password:-manhnk}
     
     # Dừng các instance MongoDB hiện tại
     sudo systemctl stop mongod || true
@@ -86,9 +119,12 @@ setup_replica_primary_linux() {
     
     sleep 5
     
+    # Tạo user admin trên PRIMARY
+    create_admin_user $PRIMARY_PORT $admin_username $admin_password
+    
     # Khởi tạo replica set
     echo "Đang khởi tạo replica set..."
-    mongosh --port $PRIMARY_PORT --eval 'rs.initiate({
+    mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.initiate({
         _id: "rs0",
         members: [
             { _id: 0, host: "'$SERVER_IP:$PRIMARY_PORT'", priority: 2 },
@@ -98,11 +134,16 @@ setup_replica_primary_linux() {
     })'
     
     # Kiểm tra trạng thái
-    if check_replica_status $PRIMARY_PORT; then
+    if check_replica_status $PRIMARY_PORT $admin_username $admin_password; then
         echo -e "${GREEN}✅ Đã cấu hình MongoDB Replica Set PRIMARY thành công${NC}"
         echo "Thông tin kết nối:"
         echo "IP: $SERVER_IP"
         echo "Ports: $PRIMARY_PORT (PRIMARY), $ARBITER1_PORT (ARBITER), $ARBITER2_PORT (ARBITER)"
+        echo "Username: $admin_username"
+        echo "Password: $admin_password"
+        
+        # Tạo file hướng dẫn
+        generate_setup_guide $SERVER_IP $PRIMARY_PORT $ARBITER1_PORT $ARBITER2_PORT $admin_username $admin_password
     else
         echo -e "${RED}❌ Có lỗi xảy ra khi cấu hình PRIMARY${NC}"
     fi
@@ -120,6 +161,15 @@ setup_replica_secondary_linux() {
         echo -e "${RED}❌ IP của PRIMARY server là bắt buộc${NC}"
         return 1
     fi
+    
+    # Nhập thông tin user admin
+    echo "Nhập username admin (mặc định: manhg): "
+    read -r admin_username
+    admin_username=${admin_username:-manhg}
+    
+    echo "Nhập password admin (mặc định: manhnk): "
+    read -r admin_password
+    admin_password=${admin_password:-manhnk}
     
     # Dừng các instance MongoDB hiện tại
     sudo systemctl stop mongod || true
@@ -153,7 +203,7 @@ setup_replica_secondary_linux() {
     local max_attempts=30
     local attempt=1
     while [ $attempt -le $max_attempts ]; do
-        if mongosh --host $primary_server_ip --port $PRIMARY_PORT --eval 'rs.status()' &> /dev/null; then
+        if mongosh --host $primary_server_ip --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.status()' &> /dev/null; then
             echo "✅ PRIMARY server đã sẵn sàng"
             break
         fi
@@ -169,12 +219,12 @@ setup_replica_secondary_linux() {
     
     # Kiểm tra và thêm các node vào replica set
     echo "Đang kiểm tra và thêm các node vào replica set..."
-    local rs_status=$(mongosh --host $primary_server_ip --port $PRIMARY_PORT --eval 'rs.status()' --quiet)
+    local rs_status=$(mongosh --host $primary_server_ip --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.status()' --quiet)
     
     # Thêm node SECONDARY nếu chưa tồn tại
     if ! echo "$rs_status" | grep -q "$SERVER_IP:$PRIMARY_PORT"; then
         echo "Đang thêm node SECONDARY vào replica set..."
-        mongosh --host $primary_server_ip --port $PRIMARY_PORT --eval 'rs.add("'$SERVER_IP:$PRIMARY_PORT'")'
+        mongosh --host $primary_server_ip --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.add("'$SERVER_IP:$PRIMARY_PORT'")'
         sleep 2
     else
         echo "✅ Node SECONDARY đã tồn tại trong replica set"
@@ -183,7 +233,7 @@ setup_replica_secondary_linux() {
     # Thêm node ARBITER 1 nếu chưa tồn tại
     if ! echo "$rs_status" | grep -q "$SERVER_IP:$ARBITER1_PORT"; then
         echo "Đang thêm node ARBITER 1 vào replica set..."
-        mongosh --host $primary_server_ip --port $PRIMARY_PORT --eval 'rs.addArb("'$SERVER_IP:$ARBITER1_PORT'")'
+        mongosh --host $primary_server_ip --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.addArb("'$SERVER_IP:$ARBITER1_PORT'")'
         sleep 2
     else
         echo "✅ Node ARBITER 1 đã tồn tại trong replica set"
@@ -192,19 +242,21 @@ setup_replica_secondary_linux() {
     # Thêm node ARBITER 2 nếu chưa tồn tại
     if ! echo "$rs_status" | grep -q "$SERVER_IP:$ARBITER2_PORT"; then
         echo "Đang thêm node ARBITER 2 vào replica set..."
-        mongosh --host $primary_server_ip --port $PRIMARY_PORT --eval 'rs.addArb("'$SERVER_IP:$ARBITER2_PORT'")'
+        mongosh --host $primary_server_ip --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.addArb("'$SERVER_IP:$ARBITER2_PORT'")'
         sleep 2
     else
         echo "✅ Node ARBITER 2 đã tồn tại trong replica set"
     fi
     
     # Kiểm tra trạng thái
-    if check_replica_status $PRIMARY_PORT; then
+    if check_replica_status $PRIMARY_PORT $admin_username $admin_password; then
         echo -e "${GREEN}✅ Đã cấu hình MongoDB Replica Set SECONDARY thành công${NC}"
         echo "Thông tin kết nối:"
         echo "IP: $SERVER_IP"
         echo "Ports: $PRIMARY_PORT (SECONDARY), $ARBITER1_PORT (ARBITER), $ARBITER2_PORT (ARBITER)"
         echo "Đã kết nối với PRIMARY server: $primary_server_ip"
+        echo "Username: $admin_username"
+        echo "Password: $admin_password"
     else
         echo -e "${RED}❌ Có lỗi xảy ra khi cấu hình SECONDARY${NC}"
     fi
