@@ -235,7 +235,9 @@ force_reconfigure_node() {
     
     # Tạo file tạm để lưu cấu hình
     local temp_config="/tmp/mongodb_reconfig_$$.js"
-    echo "config = { _id: 'rs0', members: [" > $temp_config
+    echo "config = {" > $temp_config
+    echo "  _id: 'rs0'," >> $temp_config
+    echo "  members: [" >> $temp_config
     
     # Thêm các node vào cấu hình
     local first=true
@@ -243,18 +245,18 @@ force_reconfigure_node() {
         if [ "$first" = true ]; then
             first=false
         else
-            echo "," >> $temp_config
+            echo "    ," >> $temp_config
         fi
         
         # Kiểm tra node có phải là node cần khôi phục không
         if [ "$member" = "$NODE_IP:$NODE_PORT" ]; then
             # Đặt priority cao hơn để node này trở thành PRIMARY
             local member_id=$(echo "$status" | grep -A 10 "$member" | grep "_id" | awk '{print $2}' | tr -d ',')
-            echo "  { _id: $member_id, host: '$member', priority: 10 }" >> $temp_config
+            echo "    { _id: $member_id, host: '$member', priority: 10 }" >> $temp_config
         else
             # Các node khác giữ nguyên priority
             local member_id=$(echo "$status" | grep -A 10 "$member" | grep "_id" | awk '{print $2}' | tr -d ',')
-            echo "  { _id: $member_id, host: '$member' }" >> $temp_config
+            echo "    { _id: $member_id, host: '$member' }" >> $temp_config
         fi
     done
     
@@ -263,17 +265,18 @@ force_reconfigure_node() {
         if [ "$first" = true ]; then
             first=false
         else
-            echo "," >> $temp_config
+            echo "    ," >> $temp_config
         fi
         
         # Tìm ID cao nhất và tăng thêm 1
         local max_id=$(echo "$status" | grep "_id" | awk '{print $2}' | sort -n | tail -1)
         local new_id=$((max_id + 1))
         
-        echo "  { _id: $new_id, host: '$NODE_IP:$NODE_PORT', priority: 10 }" >> $temp_config
+        echo "    { _id: $new_id, host: '$NODE_IP:$NODE_PORT', priority: 10 }" >> $temp_config
     fi
     
-    echo "] }" >> $temp_config
+    echo "  ]" >> $temp_config
+    echo "}" >> $temp_config
     
     # In ra cấu hình mới
     echo -e "${YELLOW}Cấu hình mới:${NC}"
