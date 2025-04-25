@@ -439,18 +439,9 @@ setup_secondary() {
     create_dirs $SECONDARY_PORT
     create_dirs $ARBITER_PORT
     
-    # Get admin credentials from PRIMARY
-    echo "Getting admin credentials from PRIMARY..."
-    read -p "Enter admin username from PRIMARY [manhg]: " ADMIN_USER
-    ADMIN_USER=${ADMIN_USER:-manhg}
-    
-    read -sp "Enter admin password from PRIMARY [manhnk]: " ADMIN_PASS
-    ADMIN_PASS=${ADMIN_PASS:-manhnk}
-    echo
-    
     # Get keyfile from PRIMARY
     echo "Getting keyfile from PRIMARY server..."
-    scp $ADMIN_USER@$PRIMARY_IP:/etc/mongodb.keyfile /etc/mongodb.keyfile
+    scp root@$PRIMARY_IP:/etc/mongodb.keyfile /etc/mongodb.keyfile
     if [ $? -ne 0 ]; then
         echo -e "${RED}❌ Failed to get keyfile from PRIMARY server${NC}"
         return 1
@@ -501,6 +492,15 @@ setup_secondary() {
     sudo systemctl restart mongod_${SECONDARY_PORT}
     sudo systemctl restart mongod_${ARBITER_PORT}
     sleep 2
+    
+    # Get admin credentials from PRIMARY
+    echo "Getting admin credentials from PRIMARY..."
+    read -p "Enter admin username from PRIMARY [manhg]: " ADMIN_USER
+    ADMIN_USER=${ADMIN_USER:-manhg}
+    
+    read -sp "Enter admin password from PRIMARY [manhnk]: " ADMIN_PASS
+    ADMIN_PASS=${ADMIN_PASS:-manhnk}
+    echo
     
     # Check if SECONDARY is already in replica set
     echo "Checking if SECONDARY is already in replica set..."
