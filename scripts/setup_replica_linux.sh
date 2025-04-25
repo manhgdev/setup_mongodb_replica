@@ -75,8 +75,6 @@ systemLog:
 # Where and how to store data.
 storage:
   dbPath: /var/lib/mongodb
-  journal:
-    enabled: true
 
 # how the process runs
 processManagement:
@@ -269,10 +267,16 @@ create_systemd_service() {
     
     echo -e "${YELLOW}Tạo dịch vụ systemd...${NC}"
     
-    # Vô hiệu hóa và mask dịch vụ MongoDB mặc định
+    # Dừng dịch vụ MongoDB mặc định
     sudo systemctl stop mongod &>/dev/null || true
     sudo systemctl disable mongod &>/dev/null || true
-    sudo systemctl mask mongod &>/dev/null || true
+    
+    # Unmask dịch vụ mongod nếu đang bị masked
+    if sudo systemctl is-enabled mongod 2>&1 | grep -q "masked"; then
+        echo -e "${YELLOW}Dịch vụ mongod đang bị masked, đang unmask...${NC}"
+        sudo systemctl unmask mongod &>/dev/null
+        sudo systemctl daemon-reload
+    fi
     
     # Xóa file dịch vụ mặc định nếu có xung đột
     if [ -f "/etc/systemd/system/mongod.service" ]; then
@@ -298,8 +302,6 @@ ExecStart=/usr/bin/mongod --config ${CONFIG_FILE}
 ExecStop=/usr/bin/mongod --config ${CONFIG_FILE} --shutdown
 Restart=on-failure
 RestartSec=5
-StandardOutput=journal
-StandardError=journal
 SyslogIdentifier=mongodb-${PORT}
 
 [Install]
@@ -307,7 +309,14 @@ WantedBy=multi-user.target
 EOL
 
     sudo systemctl daemon-reload
-    sudo systemctl unmask $SERVICE_NAME &>/dev/null || true
+    
+    # Unmask dịch vụ mới nếu đang bị masked
+    if sudo systemctl is-enabled $SERVICE_NAME 2>&1 | grep -q "masked"; then
+        echo -e "${YELLOW}Dịch vụ ${SERVICE_NAME} đang bị masked, đang unmask...${NC}"
+        sudo systemctl unmask $SERVICE_NAME &>/dev/null
+        sudo systemctl daemon-reload
+    fi
+    
     sudo systemctl enable $SERVICE_NAME
     
     echo -e "${GREEN}✅ Dịch vụ ${SERVICE_NAME} đã được tạo${NC}"
@@ -333,9 +342,10 @@ start_mongodb() {
     fi
     
     # Unmask dịch vụ nếu đang bị masked
-    if systemctl is-masked mongod; then
+    if systemctl is-enabled mongod 2>&1 | grep -q "masked"; then
         echo -e "${YELLOW}Dịch vụ MongoDB đang bị masked, đang unmask...${NC}"
         sudo systemctl unmask mongod
+        sudo systemctl daemon-reload
     fi
     
     # Khởi động MongoDB
@@ -985,147 +995,92 @@ setup_secondary() {
 
 # Check and restart MongoDB if needed
 check_and_restart_mongodb() {
-    local SECURITY_ENABLED=$1
+    local with_security=${1:-false}
     
     echo -e "${YELLOW}Kiểm tra và khởi động lại MongoDB...${NC}"
-    
-    # Kiểm tra xem dịch vụ có bị masked không
     echo -e "${YELLOW}Kiểm tra trạng thái dịch vụ MongoDB...${NC}"
-    if sudo systemctl is-masked mongod; then
-        echo -e "${RED}⚠️ Dịch vụ MongoDB đang bị masked, đang unmask...${NC}"
-        sudo systemctl unmask mongod
-        sudo systemctl daemon-reload
-        echo -e "${GREEN}✅ Đã unmask dịch vụ MongoDB${NC}"
-    fi
     
-    # Kiểm tra trạng thái MongoDB
-    if sudo systemctl is-active --quiet mongod; then
-        echo -e "${GREEN}✅ MongoDB đang chạy${NC}"
-        return 0
-    else
-        echo -e "${YELLOW}MongoDB không chạy hoặc đang gặp sự cố${NC}"
-    fi
-    
-    # Kiểm tra và tạo thư mục log nếu không tồn tại
-    echo -e "${YELLOW}Kiểm tra thư mục log...${NC}"
-    if [ ! -d "/var/log/mongodb" ]; then
-        echo -e "${RED}⚠️ Thư mục log không tồn tại, đang tạo...${NC}"
-        sudo mkdir -p /var/log/mongodb
-        sudo chown -R mongodb:mongodb /var/log/mongodb
-        sudo chmod 755 /var/log/mongodb
-        echo -e "${GREEN}✅ Đã tạo thư mục log${NC}"
-    fi
-    
-    # Tạo file log nếu không tồn tại
-    if [ ! -f "/var/log/mongodb/mongod.log" ]; then
-        echo -e "${RED}⚠️ File log không tồn tại, đang tạo...${NC}"
-        sudo touch /var/log/mongodb/mongod.log
-        sudo chown mongodb:mongodb /var/log/mongodb/mongod.log
-        sudo chmod 644 /var/log/mongodb/mongod.log
-        echo -e "${GREEN}✅ Đã tạo file log${NC}"
-    fi
-    
-    # Kiểm tra quyền của file log
-    echo -e "${YELLOW}Kiểm tra quyền của file log...${NC}"
-    if ! sudo test -r /var/log/mongodb/mongod.log; then
-        echo -e "${RED}⚠️ File log không thể đọc được, đang sửa quyền...${NC}"
-        sudo chmod 644 /var/log/mongodb/mongod.log
-        echo -e "${GREEN}✅ Đã sửa quyền file log${NC}"
-    fi
-    
-    # Kiểm tra log
-    echo -e "${YELLOW}Kiểm tra log MongoDB...${NC}"
-    sudo tail -n 20 /var/log/mongodb/mongod.log 2>/dev/null || echo -e "${RED}❌ Không thể đọc file log sau khi sửa quyền${NC}"
-    
-    # Kiểm tra và sửa quyền thư mục dữ liệu
-    echo -e "${YELLOW}Kiểm tra thư mục dữ liệu MongoDB...${NC}"
-    if [ -d "/var/lib/mongodb" ]; then
-        echo -e "${YELLOW}Đang sửa quyền thư mục dữ liệu...${NC}"
-        sudo ls -la /var/lib/mongodb/ || echo -e "${RED}❌ Không thể liệt kê thư mục dữ liệu${NC}"
-        sudo chown -R mongodb:mongodb /var/lib/mongodb/
-        sudo chmod -R 755 /var/lib/mongodb/
-        echo -e "${GREEN}✅ Đã sửa quyền thư mục dữ liệu${NC}"
-    else
-        echo -e "${RED}❌ Thư mục dữ liệu không tồn tại!${NC}"
-        echo -e "${YELLOW}Đang tạo thư mục dữ liệu...${NC}"
-        sudo mkdir -p /var/lib/mongodb
-        sudo chown -R mongodb:mongodb /var/lib/mongodb
-        sudo chmod -R 755 /var/lib/mongodb
-        echo -e "${GREEN}✅ Đã tạo thư mục dữ liệu${NC}"
-    fi
-    
-    # Khởi động MongoDB
-    echo -e "${YELLOW}Đang khởi động lại MongoDB...${NC}"
-    sudo systemctl daemon-reload
-    sudo systemctl restart mongod
-    sleep 5
-    
-    # Kiểm tra lại trạng thái
-    if sudo systemctl is-active --quiet mongod; then
-        echo -e "${GREEN}✅ MongoDB đã khởi động lại thành công${NC}"
-        return 0
-    else
-        echo -e "${RED}❌ MongoDB vẫn không thể khởi động${NC}"
-        
-        # Hiển thị log gần nhất
-        echo -e "${YELLOW}Log gần nhất:${NC}"
-        sudo tail -n 30 /var/log/mongodb/mongod.log 2>/dev/null || echo -e "${RED}❌ Không thể đọc file log${NC}"
-        
-        # Hiển thị trạng thái dịch vụ
-        echo -e "${YELLOW}Trạng thái dịch vụ:${NC}"
-        sudo systemctl status mongod || echo -e "${RED}❌ Không thể lấy trạng thái dịch vụ${NC}"
-        
-        # Thử tắt bảo mật nếu được bật
-        if [[ "$SECURITY_ENABLED" == "true" ]]; then
-            echo -e "${YELLOW}⚠️ Thử khởi động MongoDB không có bảo mật...${NC}"
-            if [ -f "/etc/mongod.conf" ]; then
-                sudo cp /etc/mongod.conf /etc/mongod.conf.bak
-                sudo grep -q "security:" /etc/mongod.conf
-                if [ $? -eq 0 ]; then
-                    echo -e "${YELLOW}Tạm thời tắt cấu hình bảo mật...${NC}"
-                    sudo sed -i '/security:/,+3d' /etc/mongod.conf
-                    sudo systemctl restart mongod
-                    sleep 5
-                    
-                    if sudo systemctl is-active --quiet mongod; then
-                        echo -e "${GREEN}✅ MongoDB đã khởi động thành công khi tắt bảo mật${NC}"
-                        echo -e "${YELLOW}⚠️ Vấn đề có thể liên quan đến keyfile hoặc bảo mật${NC}"
-                        
-                        # Kiểm tra keyfile
-                        if [ -f "/etc/mongodb.keyfile" ]; then
-                            echo -e "${YELLOW}Kiểm tra quyền của keyfile...${NC}"
-                            sudo ls -la /etc/mongodb.keyfile
-                            echo -e "${YELLOW}Sửa quyền keyfile...${NC}"
-                            sudo chown mongodb:mongodb /etc/mongodb.keyfile
-                            sudo chmod 400 /etc/mongodb.keyfile
-                            echo -e "${GREEN}✅ Đã sửa quyền keyfile${NC}"
-                        else
-                            echo -e "${RED}❌ Không tìm thấy keyfile tại /etc/mongodb.keyfile${NC}"
-                        fi
-                        
-                        # Khôi phục cấu hình
-                        echo -e "${YELLOW}Khôi phục cấu hình bảo mật...${NC}"
-                        sudo cp /etc/mongod.conf.bak /etc/mongod.conf
-                        sudo systemctl restart mongod
-                        sleep 5
-                        
-                        if sudo systemctl is-active --quiet mongod; then
-                            echo -e "${GREEN}✅ MongoDB đã khởi động lại thành công với bảo mật${NC}"
-                            return 0
-                        else
-                            echo -e "${RED}❌ MongoDB vẫn không thể khởi động với bảo mật${NC}"
-                        fi
-                    else
-                        # Khôi phục cấu hình
-                        sudo cp /etc/mongod.conf.bak /etc/mongod.conf
-                        echo -e "${RED}❌ MongoDB vẫn không thể khởi động sau khi tắt bảo mật${NC}"
-                    fi
-                fi
-            fi
-        fi
-        
+    # Kiểm tra nếu MongoDB được cài đặt
+    if ! command -v mongod &> /dev/null; then
+        echo -e "${RED}❌ MongoDB chưa được cài đặt!${NC}"
         return 1
     fi
+    
+    # Kiểm tra xem dịch vụ có bị masked không
+    if sudo systemctl is-enabled mongod 2>&1 | grep -q "masked"; then
+        echo -e "${RED}Dịch vụ mongod bị masked. Đang unmask...${NC}"
+        sudo systemctl unmask mongod
+    fi
+    
+    # Kiểm tra xem dịch vụ có đang chạy hay không
+    if ! sudo systemctl is-active --quiet mongod; then
+        echo -e "${YELLOW}MongoDB không chạy hoặc đang gặp sự cố${NC}"
+        
+        # Kiểm tra thư mục log
+        echo -e "${YELLOW}Kiểm tra thư mục log...${NC}"
+        if [ ! -d "/var/log/mongodb" ]; then
+            echo -e "${YELLOW}Tạo thư mục log...${NC}"
+            sudo mkdir -p /var/log/mongodb
+            sudo chown -R mongodb:mongodb /var/log/mongodb
+        fi
+        
+        # Kiểm tra quyền của file log
+        echo -e "${YELLOW}Kiểm tra quyền của file log...${NC}"
+        if [ ! -f "/var/log/mongodb/mongod.log" ]; then
+            echo -e "${YELLOW}Tạo file log...${NC}"
+            sudo touch /var/log/mongodb/mongod.log
+            sudo chown mongodb:mongodb /var/log/mongodb/mongod.log
+        fi
+        
+        # Kiểm tra log
+        echo -e "${YELLOW}Kiểm tra log MongoDB...${NC}"
+        sudo tail -n 30 /var/log/mongodb/mongod.log 2>/dev/null || echo -e "${YELLOW}Không có file log hoặc file log trống${NC}"
+        
+        # Kiểm tra thư mục dữ liệu
+        echo -e "${YELLOW}Kiểm tra thư mục dữ liệu MongoDB...${NC}"
+        if [ -d "/var/lib/mongodb" ]; then
+            echo -e "${YELLOW}Đang sửa quyền thư mục dữ liệu...${NC}"
+            sudo chown -R mongodb:mongodb /var/lib/mongodb
+            sudo ls -la /var/lib/mongodb | head -n 20
+            echo -e "${GREEN}✅ Đã sửa quyền thư mục dữ liệu${NC}"
+        else
+            echo -e "${YELLOW}Tạo thư mục dữ liệu...${NC}"
+            sudo mkdir -p /var/lib/mongodb
+            sudo chown -R mongodb:mongodb /var/lib/mongodb
+        fi
+        
+        # Khởi động lại MongoDB
+        echo -e "${YELLOW}Đang khởi động lại MongoDB...${NC}"
+        sudo systemctl daemon-reload
+        sudo systemctl restart mongod
+        sleep 5
+        
+        # Kiểm tra lại trạng thái sau khi khởi động
+        if sudo systemctl is-active --quiet mongod; then
+            echo -e "${GREEN}✅ MongoDB đã khởi động lại thành công${NC}"
+        else
+            echo -e "${RED}❌ MongoDB vẫn không thể khởi động${NC}"
+            echo -e "${YELLOW}Log gần nhất:${NC}"
+            sudo tail -n 30 /var/log/mongodb/mongod.log
+            echo -e "${YELLOW}Trạng thái dịch vụ:${NC}"
+            sudo systemctl status mongod --no-pager -l || echo -e "${RED}❌ Không thể lấy trạng thái dịch vụ${NC}"
+            
+            # Thử khởi động lại với daemon-reload
+            echo -e "${YELLOW}Thử reload daemon và khởi động lại...${NC}"
+            sudo systemctl daemon-reload
+            sudo systemctl restart mongod
+            sleep 5
+            
+            if ! sudo systemctl is-active --quiet mongod; then
+                echo -e "${RED}❌ MongoDB vẫn không thể khởi động. Vui lòng chạy tùy chọn 'Troubleshoot' từ menu chính${NC}"
+                return 1
+            fi
+        fi
+    else
+        echo -e "${GREEN}✅ MongoDB đang chạy${NC}"
+    fi
+    
+    return 0
 }
 
 # Check if node is in replica set
@@ -1281,6 +1236,109 @@ fix_keyfile_and_restart() {
     fi
 }
 
+# Unmask MongoDB service
+unmask_mongodb() {
+    echo -e "${YELLOW}=== Unmask dịch vụ MongoDB ===${NC}"
+    
+    # Kiểm tra trạng thái dịch vụ
+    echo -e "${YELLOW}Kiểm tra trạng thái MongoDB...${NC}"
+    if systemctl is-enabled mongod 2>&1 | grep -q "masked"; then
+        echo -e "${RED}Dịch vụ MongoDB đang bị masked${NC}"
+        echo -e "${YELLOW}Đang unmask dịch vụ...${NC}"
+        sudo systemctl unmask mongod
+        sudo systemctl daemon-reload
+        echo -e "${GREEN}✅ Đã unmask dịch vụ MongoDB${NC}"
+    else
+        echo -e "${GREEN}✅ Dịch vụ MongoDB không bị masked${NC}"
+    fi
+    
+    # Kiểm tra và khởi động dịch vụ nếu chưa chạy
+    if ! systemctl is-active --quiet mongod; then
+        echo -e "${YELLOW}Khởi động dịch vụ MongoDB...${NC}"
+        sudo systemctl start mongod
+        sleep 5
+        
+        if systemctl is-active --quiet mongod; then
+            echo -e "${GREEN}✅ Đã khởi động MongoDB thành công${NC}"
+        else
+            echo -e "${RED}❌ Không thể khởi động MongoDB${NC}"
+            echo -e "${YELLOW}Trạng thái dịch vụ:${NC}"
+            sudo systemctl status mongod --no-pager
+        fi
+    else
+        echo -e "${GREEN}✅ MongoDB đang chạy${NC}"
+    fi
+}
+
+# Unmask và fix MongoDB từ đầu
+unmask_and_fix_mongodb() {
+    echo -e "${YELLOW}=== Unmask và fix MongoDB từ đầu ===${NC}"
+    
+    # Dừng tất cả dịch vụ MongoDB
+    echo -e "${YELLOW}1. Dừng tất cả dịch vụ MongoDB...${NC}"
+    sudo systemctl stop mongod mongod_27017 &>/dev/null || true
+    
+    # Kill các process MongoDB
+    echo -e "${YELLOW}2. Kill tất cả process MongoDB...${NC}"
+    sudo pkill -f mongod || true
+    sleep 2
+    
+    # Unmask tất cả dịch vụ MongoDB
+    echo -e "${YELLOW}3. Unmask tất cả dịch vụ MongoDB...${NC}"
+    sudo systemctl unmask mongod mongod_27017 &>/dev/null || true
+    
+    # Xóa tất cả file service cũ
+    echo -e "${YELLOW}4. Xóa tất cả file service cũ...${NC}"
+    sudo rm -f /etc/systemd/system/mongod.service /etc/systemd/system/mongod_27017.service /lib/systemd/system/mongod.service &>/dev/null || true
+    
+    # Reload daemon
+    echo -e "${YELLOW}5. Reload daemon...${NC}"
+    sudo systemctl daemon-reload
+    
+    # Tạo file cấu hình mới
+    echo -e "${YELLOW}6. Tạo file cấu hình mới...${NC}"
+    create_config false
+    
+    # Tạo service mới
+    echo -e "${YELLOW}7. Tạo service mới...${NC}"
+    sudo tee /etc/systemd/system/mongod.service > /dev/null <<EOL
+[Unit]
+Description=MongoDB Database Server
+After=network.target
+Documentation=https://docs.mongodb.org/manual
+
+[Service]
+User=mongodb
+Group=mongodb
+Type=simple
+ExecStart=/usr/bin/mongod --config /etc/mongod.conf
+ExecStop=/usr/bin/mongod --config /etc/mongod.conf --shutdown
+
+[Install]
+WantedBy=multi-user.target
+EOL
+
+    # Reload daemon
+    echo -e "${YELLOW}8. Reload daemon lần nữa...${NC}"
+    sudo systemctl daemon-reload
+    
+    # Enable và khởi động service
+    echo -e "${YELLOW}9. Enable và khởi động service...${NC}"
+    sudo systemctl enable mongod
+    sudo systemctl start mongod
+    sleep 5
+    
+    # Kiểm tra trạng thái
+    echo -e "${YELLOW}10. Kiểm tra trạng thái dịch vụ...${NC}"
+    if sudo systemctl is-active --quiet mongod; then
+        echo -e "${GREEN}✅ MongoDB đã khởi động thành công${NC}"
+        sudo systemctl status mongod --no-pager
+    else
+        echo -e "${RED}❌ MongoDB vẫn không thể khởi động${NC}"
+        sudo systemctl status mongod --no-pager
+    fi
+}
+
 # Display troubleshooting menu
 troubleshoot_mongodb() {
     local option
@@ -1292,9 +1350,11 @@ troubleshoot_mongodb() {
         echo "3. Khởi động lại MongoDB (có bảo mật)"
         echo "4. Sửa quyền keyfile và khởi động lại"
         echo "5. Xem log MongoDB"
+        echo "6. Unmask dịch vụ MongoDB"
+        echo "7. Fix triệt để (unmask và cài lại service)"
         echo "0. Quay lại menu chính"
         
-        read -p "Chọn tùy chọn (0-5): " option
+        read -p "Chọn tùy chọn (0-7): " option
         
         case $option in
             1)
@@ -1315,6 +1375,12 @@ troubleshoot_mongodb() {
             5)
                 echo -e "${YELLOW}Xem log MongoDB:${NC}"
                 sudo tail -n 50 /var/log/mongodb/mongod.log || echo -e "${RED}❌ Không thể đọc file log${NC}"
+                ;;
+            6)
+                unmask_mongodb
+                ;;
+            7)
+                unmask_and_fix_mongodb
                 ;;
             0)
                 break
