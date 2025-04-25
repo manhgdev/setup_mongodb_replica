@@ -19,7 +19,18 @@ BASE_PORT=27017
 # Lấy IP của server hiện tại
 THIS_SERVER_IP=$(hostname -I | awk '{print $1}')
 
-echo -e "${BLUE}=== THIẾT LẬP MONGODB REPLICA SET (1 PRIMARY/SECONDARY + 2 ARBITER) ===${NC}"
+echo -e "${BLUE}=== THIẾT LẬP MONGODB REPLICA SET (NHIỀU SERVER) ===${NC}"
+
+# Hỏi thông tin server
+read -p "Server này là PRIMARY? (y/n): " IS_PRIMARY
+read -p "Số lượng server khác (không tính server này): " OTHER_SERVER_COUNT
+
+# Lưu danh sách IP của các server khác
+OTHER_SERVER_IPS=()
+for ((i=1; i<=$OTHER_SERVER_COUNT; i++)); do
+    read -p "Địa chỉ IP của server $i: " IP
+    OTHER_SERVER_IPS+=($IP)
+done
 
 # 1. Kiểm tra và tạo keyfile
 echo -e "${YELLOW}Kiểm tra keyfile...${NC}"
@@ -156,40 +167,71 @@ done
 echo -e "${YELLOW}Đợi các node khởi động (5 giây)...${NC}"
 sleep 5
 
-# 5. Khởi tạo replica set
-echo -e "${YELLOW}Khởi tạo replica set...${NC}"
-mongosh "mongodb://localhost:$BASE_PORT" --eval "
-rs.initiate({
-    _id: '$REPLICA_SET',
-    members: [
+# 5. Nếu là PRIMARY, khởi tạo replica set
+if [[ "$IS_PRIMARY" == "y" ]]; then
+    echo -e "${YELLOW}Khởi tạo replica set...${NC}"
+    
+    # Tạo chuỗi members cho replica set
+    MEMBERS_JSON="[
         { _id: 0, host: '$THIS_SERVER_IP:$BASE_PORT', priority: 2 },
         { _id: 1, host: '$THIS_SERVER_IP:$((BASE_PORT + 1))', arbiterOnly: true },
-        { _id: 2, host: '$THIS_SERVER_IP:$((BASE_PORT + 2))', arbiterOnly: true }
-    ]
-})"
+        { _id: 2, host: '$THIS_SERVER_IP:$((BASE_PORT + 2))', arbiterOnly: true }"
+    
+    # Thêm các server khác vào members
+    MEMBER_ID=3
+    for IP in "${OTHER_SERVER_IPS[@]}"; do
+        MEMBERS_JSON+=",
+        { _id: $MEMBER_ID, host: '$IP:$BASE_PORT', priority: 1 },
+        { _id: $((MEMBER_ID + 1)), host: '$IP:$((BASE_PORT + 1))', arbiterOnly: true },
+        { _id: $((MEMBER_ID + 2)), host: '$IP:$((BASE_PORT + 2))', arbiterOnly: true }"
+        MEMBER_ID=$((MEMBER_ID + 3))
+    done
+    
+    MEMBERS_JSON+="]"
+    
+    # Khởi tạo replica set
+    mongosh "mongodb://localhost:$BASE_PORT" --eval "
+    rs.initiate({
+        _id: '$REPLICA_SET',
+        members: $MEMBERS_JSON
+    })"
 
-# 6. Đợi PRIMARY được bầu
-echo -e "${YELLOW}Đợi PRIMARY được bầu (5 giây)...${NC}"
-sleep 5
+    # Đợi PRIMARY được bầu
+    echo -e "${YELLOW}Đợi PRIMARY được bầu (5 giây)...${NC}"
+    sleep 5
 
-# 7. Tạo user admin
-echo -e "${YELLOW}Tạo user admin...${NC}"
-mongosh "mongodb://localhost:$BASE_PORT" --eval "
-db.getSiblingDB('admin').createUser({
-    user: '$USERNAME',
-    pwd: '$PASSWORD',
-    roles: ['root']
-})"
+    # Tạo user admin
+    echo -e "${YELLOW}Tạo user admin...${NC}"
+    mongosh "mongodb://localhost:$BASE_PORT" --eval "
+    db.getSiblingDB('admin').createUser({
+        user: '$USERNAME',
+        pwd: '$PASSWORD',
+        roles: ['root']
+    })"
+else
+    # Nếu là SECONDARY, đợi PRIMARY khởi tạo xong
+    echo -e "${YELLOW}Đợi PRIMARY khởi tạo replica set (10 giây)...${NC}"
+    sleep 10
+fi
 
-# 8. Kiểm tra trạng thái cuối cùng
+# 6. Kiểm tra trạng thái cuối cùng
 echo -e "${YELLOW}Kiểm tra trạng thái replica set...${NC}"
 mongosh "mongodb://$USERNAME:$PASSWORD@localhost:$BASE_PORT/admin" --eval "rs.status()" --quiet | grep -E "name|stateStr"
 
 echo -e "${GREEN}=== HOÀN THÀNH THIẾT LẬP ===${NC}"
 echo -e "Các node đã được thiết lập:"
+echo -e "Server hiện tại ($THIS_SERVER_IP):"
 echo -e "- PRIMARY/SECONDARY: $THIS_SERVER_IP:$BASE_PORT"
 echo -e "- ARBITER 1: $THIS_SERVER_IP:$((BASE_PORT + 1))"
 echo -e "- ARBITER 2: $THIS_SERVER_IP:$((BASE_PORT + 2))"
+
+for IP in "${OTHER_SERVER_IPS[@]}"; do
+    echo -e "Server khác ($IP):"
+    echo -e "- PRIMARY/SECONDARY: $IP:$BASE_PORT"
+    echo -e "- ARBITER 1: $IP:$((BASE_PORT + 1))"
+    echo -e "- ARBITER 2: $IP:$((BASE_PORT + 2))"
+done
+
 echo -e "Lệnh kiểm tra trạng thái:"
 echo -e "  mongosh \"mongodb://$USERNAME:$PASSWORD@localhost:$BASE_PORT/admin\" --eval \"rs.status()\""
 
