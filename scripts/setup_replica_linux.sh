@@ -40,14 +40,16 @@ create_dirs() {
     
     # Dừng dịch vụ trước khi tạo lại thư mục
     sudo systemctl stop mongod_${PORT} &>/dev/null || true
+    sudo systemctl stop mongod &>/dev/null || true
     sleep 2
+    
+    # Xóa hoàn toàn thư mục dữ liệu cũ để tránh lỗi repl
+    echo -e "${YELLOW}Xóa dữ liệu MongoDB cũ...${NC}"
+    sudo rm -rf $DB_PATH/*
+    sudo rm -f $LOG_PATH/mongod_${PORT}.log
     
     # Tạo thư mục với quyền hạn chặt chẽ
     sudo mkdir -p $DB_PATH $LOG_PATH
-    
-    # Xóa lock file và log cũ nếu cần
-    sudo rm -rf $DB_PATH/mongod.lock 2>/dev/null || true
-    sudo rm -f $LOG_PATH/mongod_${PORT}.log 2>/dev/null || true
     
     # Cấp quyền đúng
     sudo chown -R mongodb:mongodb $DB_PATH $LOG_PATH
@@ -85,6 +87,7 @@ systemLog:
   destination: file
   logAppend: true
   path: /var/log/mongodb/mongod_${PORT}.log
+  verbosity: 1
 
 # network interfaces
 net:
@@ -108,12 +111,17 @@ security:
 EOF
     fi
 
-    # Phần replication luôn được thêm
-    sudo cat >> $CONFIG_FILE << EOF
+    # Phần replication luôn được thêm NHƯNG không thêm replSetName khi cài đặt lần đầu
+    if [ "$2" = "no_repl" ]; then
+        # Không thêm phần replication
+        echo "Bỏ qua cấu hình replication cho lần cài đặt đầu tiên"
+    else
+        sudo cat >> $CONFIG_FILE << EOF
 # replication
 replication:
   replSetName: rs0
 EOF
+    fi
     
     # Set permissions
     sudo chown mongodb:mongodb $CONFIG_FILE
@@ -384,8 +392,8 @@ setup_primary() {
     # Cấu hình tường lửa
     configure_firewall
     
-    # Tạo cấu hình không có bảo mật
-    create_config false
+    # Tạo cấu hình không có bảo mật và không có replSetName ban đầu
+    create_config false "no_repl"
     
     # Tạo và khởi động dịch vụ
     create_systemd_service false
@@ -403,35 +411,109 @@ setup_primary() {
         fi
     fi
     
+    # Dừng MongoDB
+    echo -e "${YELLOW}Dừng MongoDB để thêm cấu hình replica set...${NC}"
+    stop_mongodb
+    
+    # Tạo cấu hình với replication
+    create_config false
+    
+    # Khởi động lại với cấu hình replica set
+    if ! start_mongodb; then
+        return 1
+    fi
+    
+    # Kiểm tra lại kết nối
+    if ! verify_mongodb_connection false "" "" $CONNECT_HOST; then
+        if ! verify_mongodb_connection false "" "" "localhost"; then
+            return 1
+        else
+            CONNECT_HOST="localhost"
+        fi
+    fi
+    
     # Khởi tạo replica set - sử dụng host đã kết nối thành công
     echo -e "${YELLOW}Khởi tạo Replica Set...${NC}"
     echo -e "${GREEN}Cấu hình node $SERVER_IP:$PRIMARY_PORT${NC}"
     
+    # Thử vài cách khởi tạo khác nhau
+    local success=false
+    
+    # Cách 1: Khởi tạo với cấu hình đầy đủ
+    echo "Phương pháp 1: Khởi tạo với cấu hình đầy đủ"
     local init_result=$(mongosh --host $CONNECT_HOST --port $PRIMARY_PORT --eval "
     rs.initiate({
         _id: 'rs0',
         members: [
             { _id: 0, host: '$SERVER_IP:$PRIMARY_PORT', priority: 10 }
         ]
-    })")
+    })" --quiet)
     
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}❌ Không thể khởi tạo Replica Set${NC}"
+    if echo "$init_result" | grep -q "ok" && ! echo "$init_result" | grep -q "NotYetInitialized"; then
+        echo -e "${GREEN}✅ Khởi tạo replica set thành công (phương pháp 1)${NC}"
+        success=true
+    else
+        echo -e "${YELLOW}⚠️ Phương pháp 1 thất bại, đang thử phương pháp 2...${NC}"
         echo "Lỗi: $init_result"
-        echo "Thử khởi tạo đơn giản hơn..."
         
-        # Thử khởi tạo đơn giản
-        local init_result2=$(mongosh --host $CONNECT_HOST --port $PRIMARY_PORT --eval "rs.initiate()")
-        if [ $? -ne 0 ]; then
+        # Cách 2: Khởi tạo đơn giản
+        echo "Phương pháp 2: Khởi tạo đơn giản"
+        local init_result2=$(mongosh --host $CONNECT_HOST --port $PRIMARY_PORT --eval "rs.initiate()" --quiet)
+        
+        if echo "$init_result2" | grep -q "ok" && ! echo "$init_result2" | grep -q "NotYetInitialized"; then
+            echo -e "${GREEN}✅ Khởi tạo replica set thành công (phương pháp 2)${NC}"
+            success=true
+            
+            # Chờ một chút cho MongoDB ổn định
+            sleep 5
+            
+            # Thêm host với IP
+            echo "Thêm server với địa chỉ IP..."
+            mongosh --host $CONNECT_HOST --port $PRIMARY_PORT --eval "
+            rs.add('$SERVER_IP:$PRIMARY_PORT')" --quiet
+        else
+            echo -e "${YELLOW}⚠️ Phương pháp 2 thất bại, đang thử phương pháp 3...${NC}"
             echo "Lỗi: $init_result2"
-            return 1
+            
+            # Cách 3: Dùng mongo local và thay host
+            echo "Phương pháp 3: Khởi tạo với localhost và cập nhật cấu hình"
+            local init_result3=$(mongosh --host localhost --port $PRIMARY_PORT --eval "
+            rs.initiate({
+                _id: 'rs0',
+                members: [
+                    { _id: 0, host: 'localhost:$PRIMARY_PORT', priority: 10 }
+                ]
+            })" --quiet)
+            
+            if echo "$init_result3" | grep -q "ok" && ! echo "$init_result3" | grep -q "NotYetInitialized"; then
+                echo -e "${GREEN}✅ Khởi tạo replica set với localhost thành công${NC}"
+                
+                # Chờ MongoDB ổn định
+                sleep 10
+                
+                # Cập nhật cấu hình với IP thực
+                echo "Cập nhật cấu hình với IP thực tế..."
+                local update_result=$(mongosh --host localhost --port $PRIMARY_PORT --eval "
+                var config = rs.conf();
+                config.members[0].host = '$SERVER_IP:$PRIMARY_PORT';
+                rs.reconfig(config);" --quiet)
+                
+                if echo "$update_result" | grep -q "ok"; then
+                    echo -e "${GREEN}✅ Cập nhật cấu hình replica set thành công${NC}"
+                    success=true
+                else
+                    echo -e "${RED}❌ Không thể cập nhật cấu hình replica set${NC}"
+                    echo "Lỗi: $update_result"
+                fi
+            else
+                echo -e "${RED}❌ Tất cả các phương pháp khởi tạo đều thất bại${NC}"
+                echo "Lỗi cuối cùng: $init_result3"
+            fi
         fi
-        
-        # Thêm member sau khi khởi tạo đơn giản
-        sleep 5
-        local add_result=$(mongosh --host $CONNECT_HOST --port $PRIMARY_PORT --eval "
-        rs.add('$SERVER_IP:$PRIMARY_PORT')")
-        echo "$add_result"
+    fi
+    
+    if [ "$success" = "false" ]; then
+        return 1
     fi
     
     echo -e "${YELLOW}Đợi MongoDB khởi tạo và bầu chọn PRIMARY...${NC}"
