@@ -27,8 +27,8 @@ print_header() {
     echo "2. Kiểm tra trạng thái"
     echo "3. Cấu hình Replica Set"
     echo "4. Thêm Arbiter"
-    echo "5. Xóa MongoDB"
-    echo "6. Sửa lỗi node không reachable"
+    echo "5. Sửa lỗi node không reachable"
+    echo "6. Xóa MongoDB"
     echo "0. Thoát"
 }
 
@@ -95,10 +95,10 @@ main() {
                 "./$ARBITER_SCRIPT"
                 ;;
             5)
-                uninstall_mongodb
+                fix_node_menu
                 ;;
             6)
-                fix_node_menu
+                uninstall_mongodb
                 ;;
             0)
                 echo -e "${GREEN}Tạm biệt!${NC}"
