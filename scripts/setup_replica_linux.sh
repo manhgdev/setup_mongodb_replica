@@ -7,13 +7,31 @@ NC='\033[0m'
 
 # Stop MongoDB
 stop_mongodb() {
+    echo "Stopping all MongoDB processes..."
+    # Kill all mongod processes
     pkill -f mongod || true
     sleep 2
+    
     # Kill any processes using MongoDB ports
     for port in 27017 27018 27019; do
+        echo "Killing processes on port $port..."
         lsof -ti:$port | xargs kill -9 2>/dev/null || true
+        # Double check and kill again
+        fuser -k $port/tcp 2>/dev/null || true
     done
-    sleep 2
+    
+    # Wait for ports to be free
+    sleep 3
+    
+    # Verify ports are free
+    for port in 27017 27018 27019; do
+        if lsof -i:$port &>/dev/null; then
+            echo -e "${RED}❌ Port $port is still in use${NC}"
+            return 1
+        fi
+    done
+    
+    echo -e "${GREEN}✅ All MongoDB processes stopped successfully${NC}"
 }
 
 # Create directories
@@ -45,8 +63,6 @@ storage:
 net:
   bindIp: 0.0.0.0
   port: $PORT
-  unixDomainSocket:
-    enabled: false
 replication:
   replSetName: rs0
 setParameter:
