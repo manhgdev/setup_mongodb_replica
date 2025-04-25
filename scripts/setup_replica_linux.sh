@@ -75,18 +75,12 @@ replication:
   replSetName: rs0
 setParameter:
   allowMultipleArbiters: true
-processManagement:
-  fork: true
 EOL
 
     # Start MongoDB
     echo "Starting MongoDB on port $PORT..."
-    if ! mongod --config "$CONFIG_FILE" --fork; then
-        echo -e "${RED}❌ Failed to start MongoDB on port $PORT${NC}"
-        echo "Last 50 lines of log file:"
-        tail -n 50 "$LOG_PATH/mongod_${PORT}.log"
-        return 1
-    fi
+    mongod --config "$CONFIG_FILE" > "$LOG_PATH/mongod_${PORT}.log" 2>&1 &
+    local mongod_pid=$!
     
     # Wait for MongoDB to start
     local attempt=1
