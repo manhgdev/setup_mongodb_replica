@@ -35,6 +35,20 @@ echo "3. Gỡ bỏ arbiter khỏi replica set"
 read -p "Chọn chức năng [1]: " FUNCTION_CHOICE
 FUNCTION_CHOICE=${FUNCTION_CHOICE:-1}
 
+# Nếu chọn chức năng 1, hỏi số lượng arbiter muốn thêm
+if [[ "$FUNCTION_CHOICE" == "1" ]]; then
+    echo -e "${YELLOW}=== SỐ LƯỢNG ARBITER ===${NC}"
+    echo "1. Thêm 1 arbiter (port 27018)"
+    echo "2. Thêm 2 arbiter (port 27018, 27019)"
+    read -p "Chọn số lượng arbiter [1]: " ARBITER_COUNT
+    ARBITER_COUNT=${ARBITER_COUNT:-1}
+    
+    if ! [[ "$ARBITER_COUNT" =~ ^[1-2]$ ]]; then
+        echo -e "${RED}Số lượng arbiter phải là 1 hoặc 2.${NC}"
+        exit 1
+    fi
+fi
+
 # Tham số mặc định
 MONGODB_PORT="27017"
 ARBITER_PORT="27018"
@@ -302,15 +316,6 @@ case $FUNCTION_CHOICE in
     # Thêm arbiter mới
     echo -e "${YELLOW}=== THÊM ARBITER MỚI ===${NC}"
     
-    # Hỏi số lượng arbiter muốn thêm
-    read -p "Số lượng arbiter muốn thêm [1]: " ARBITER_COUNT
-    ARBITER_COUNT=${ARBITER_COUNT:-1}
-    
-    if ! [[ "$ARBITER_COUNT" =~ ^[1-9][0-9]*$ ]]; then
-        echo -e "${RED}Số lượng arbiter phải là số nguyên dương.${NC}"
-        exit 1
-    fi
-    
     # Thiết lập write concern mặc định
     echo -e "${YELLOW}Thiết lập write concern mặc định...${NC}"
     SET_DEFAULT_WRITE_CONCERN=$(mongosh --host "$PRIMARY_HOST" -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
@@ -335,31 +340,78 @@ case $FUNCTION_CHOICE in
     for ((i=1; i<=ARBITER_COUNT; i++)); do
         echo -e "${YELLOW}Thêm arbiter thứ $i...${NC}"
         
-        # Kiểm tra port
+        # Port cho arbiter
         CURRENT_PORT=$((ARBITER_PORT + i - 1))
-        while lsof -i :$CURRENT_PORT | grep LISTEN; do
-            echo -e "${RED}Port $CURRENT_PORT đang được sử dụng. Tìm port khác...${NC}"
-            CURRENT_PORT=$((CURRENT_PORT + 1))
-        done
         
-        # Cập nhật port trong file cấu hình
-        sed -i "s/port: $ARBITER_PORT/port: $CURRENT_PORT/g" /etc/mongod-arbiter.conf
+        # Kiểm tra port
+        if lsof -i :$CURRENT_PORT | grep LISTEN; then
+            echo -e "${RED}Port $CURRENT_PORT đang được sử dụng.${NC}"
+            echo -e "${YELLOW}Vui lòng dừng process đang sử dụng port này hoặc chọn chức năng khác.${NC}"
+            exit 1
+        fi
+        
+        # Tạo thư mục data riêng cho mỗi arbiter
+        ARBITER_DATA_DIR="/var/lib/mongodb-arbiter-$i"
+        echo -e "${YELLOW}Tạo thư mục data cho arbiter $i...${NC}"
+        mkdir -p "$ARBITER_DATA_DIR"
+        chown -R mongodb:mongodb "$ARBITER_DATA_DIR" 2>/dev/null || chown -R mongod:mongod "$ARBITER_DATA_DIR" 2>/dev/null
+        chmod 755 "$ARBITER_DATA_DIR"
+        
+        # Tạo file cấu hình riêng cho mỗi arbiter
+        echo -e "${YELLOW}Tạo file cấu hình cho arbiter $i...${NC}"
+        cat > /etc/mongod-arbiter-$i.conf << EOF
+# Cấu hình MongoDB Arbiter $i
+storage:
+  dbPath: $ARBITER_DATA_DIR
+
+systemLog:
+  destination: file
+  path: /var/log/mongodb/mongod-arbiter-$i.log
+  logAppend: true
+
+net:
+  port: $CURRENT_PORT
+  bindIp: 0.0.0.0
+
+replication:
+  replSetName: $REPLICA_SET_NAME
+
+security:
+  keyFile: $MONGODB_KEYFILE
+EOF
+        
+        # Tạo service riêng cho mỗi arbiter
+        echo -e "${YELLOW}Tạo service cho arbiter $i...${NC}"
+        cat > /etc/systemd/system/mongod-arbiter-$i.service << EOF
+[Unit]
+Description=MongoDB Arbiter $i
+After=network.target
+
+[Service]
+User=$MONGO_USER
+Group=$MONGO_USER
+ExecStart=$MONGOD_PATH --config /etc/mongod-arbiter-$i.conf
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
         
         # Khởi động arbiter
-        echo -e "${YELLOW}Khởi động arbiter trên port $CURRENT_PORT...${NC}"
+        echo -e "${YELLOW}Khởi động arbiter $i trên port $CURRENT_PORT...${NC}"
         systemctl daemon-reload
-        systemctl stop mongod-arbiter 2>/dev/null
-        systemctl start mongod-arbiter
+        systemctl stop mongod-arbiter-$i 2>/dev/null
+        systemctl start mongod-arbiter-$i
         
         echo -e "${YELLOW}Đợi khởi động (5 giây)...${NC}"
         sleep 5
         
-        if systemctl is-active --quiet mongod-arbiter; then
-            echo -e "${GREEN}✓ Arbiter đã khởi động thành công!${NC}"
-            systemctl enable mongod-arbiter
+        if systemctl is-active --quiet mongod-arbiter-$i; then
+            echo -e "${GREEN}✓ Arbiter $i đã khởi động thành công!${NC}"
+            systemctl enable mongod-arbiter-$i
             
             # Thêm vào replica set
-            echo -e "${YELLOW}Thêm arbiter vào replica set...${NC}"
+            echo -e "${YELLOW}Thêm arbiter $i vào replica set...${NC}"
             ADD_ARBITER_RESULT=$(mongosh --host "$PRIMARY_HOST" -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
             try {
               result = rs.addArb('$SERVER_IP:$CURRENT_PORT');
@@ -376,35 +428,16 @@ case $FUNCTION_CHOICE in
             echo "$ADD_ARBITER_RESULT"
             
             if [[ "$ADD_ARBITER_RESULT" == *"SUCCESS"* ]]; then
-                echo -e "${GREEN}✓ Arbiter đã được thêm vào replica set!${NC}"
+                echo -e "${GREEN}✓ Arbiter $i đã được thêm vào replica set!${NC}"
             elif [[ "$ADD_ARBITER_RESULT" == *"already exists"* ]]; then
-                echo -e "${YELLOW}⚠️ Arbiter đã tồn tại trong replica set.${NC}"
+                echo -e "${YELLOW}⚠️ Arbiter $i đã tồn tại trong replica set.${NC}"
             else
-                echo -e "${RED}⚠️ Có vấn đề khi thêm arbiter.${NC}"
+                echo -e "${RED}⚠️ Có vấn đề khi thêm arbiter $i.${NC}"
             fi
         else
-            echo -e "${RED}Arbiter không thể khởi động.${NC}"
+            echo -e "${RED}Arbiter $i không thể khởi động.${NC}"
             echo -e "${YELLOW}Kiểm tra log:${NC}"
-            journalctl -u mongod-arbiter -n 20 --no-pager
-        fi
-        
-        # Tạo service mới cho arbiter tiếp theo
-        if [ $i -lt $ARBITER_COUNT ]; then
-            echo -e "${YELLOW}Tạo service cho arbiter tiếp theo...${NC}"
-            cat > /etc/systemd/system/mongod-arbiter-$i.service << EOF
-[Unit]
-Description=MongoDB Arbiter $i
-After=network.target
-
-[Service]
-User=$MONGO_USER
-Group=$MONGO_USER
-ExecStart=$MONGOD_PATH --config /etc/mongod-arbiter.conf
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-EOF
+            journalctl -u mongod-arbiter-$i -n 20 --no-pager
         fi
     done
     ;;
