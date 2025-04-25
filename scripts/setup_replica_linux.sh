@@ -481,6 +481,36 @@ setup_primary() {
     local PRIMARY_PORT=27017
 
     echo -e "${GREEN}=== THIẾT LẬP MONGODB PRIMARY NODE ===${NC}"
+    
+    # Thu thập tất cả thông tin cần thiết từ đầu
+    if [ -z "$SERVER_IP" ]; then
+        SERVER_IP=$(hostname -I | awk '{print $1}')
+        echo "Detected server IP: $SERVER_IP"
+        read -p "Sử dụng IP này? Nhập IP khác hoặc Enter để xác nhận: " INPUT_IP
+        if [ ! -z "$INPUT_IP" ]; then
+            SERVER_IP=$INPUT_IP
+        fi
+    fi
+    
+    # Thông tin đăng nhập cho admin
+    echo "Nhập thông tin đăng nhập admin cho PRIMARY:"
+    read -p "Tên người dùng [$ADMIN_USER]: " PRIMARY_USER
+    PRIMARY_USER=${PRIMARY_USER:-$ADMIN_USER}
+    read -sp "Mật khẩu [$ADMIN_PASS]: " PRIMARY_PASS
+    PRIMARY_PASS=${PRIMARY_PASS:-$ADMIN_PASS}
+    echo ""
+    
+    # Xác nhận thông tin
+    echo -e "${YELLOW}=== THÔNG TIN ĐÃ NHẬP ===${NC}"
+    echo "Server IP: $SERVER_IP"
+    echo "Admin User: $PRIMARY_USER"
+    echo -e "${YELLOW}=========================${NC}"
+    read -p "Xác nhận thông tin trên? (y/n): " CONFIRM
+    if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
+        echo -e "${RED}Hủy thiết lập.${NC}"
+        return 1
+    fi
+
     echo -e "${YELLOW}Khởi tạo MongoDB PRIMARY trên port $PRIMARY_PORT...${NC}"
 
     # Dừng và xóa dữ liệu cũ
@@ -662,7 +692,7 @@ setup_primary() {
         mongosh --host $CONNECT_HOST --port $PRIMARY_PORT --eval "rs.conf()" --quiet
         
         # Tạo người dùng admin
-        create_admin_user $ADMIN_USER $ADMIN_PASS || return 1
+        create_admin_user $PRIMARY_USER $PRIMARY_PASS || return 1
         
         # Tạo keyfile
         create_keyfile "/etc/mongodb.keyfile" $SERVER_IP
@@ -676,13 +706,13 @@ setup_primary() {
         
         # Xác minh kết nối với xác thực
         echo -e "${YELLOW}Xác minh kết nối với xác thực...${NC}"
-        if verify_mongodb_connection true $ADMIN_USER $ADMIN_PASS $CONNECT_HOST; then
+        if verify_mongodb_connection true $PRIMARY_USER $PRIMARY_PASS $CONNECT_HOST; then
             echo -e "\n${GREEN}=== THIẾT LẬP MONGODB PRIMARY HOÀN TẤT ===${NC}"
             echo -e "${GREEN}Lệnh kết nối:${NC}"
-            echo "mongosh --host $SERVER_IP --port $PRIMARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
+            echo "mongosh --host $SERVER_IP --port $PRIMARY_PORT -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin"
             echo ""
             echo -e "${YELLOW}Lưu ý:${NC} Nếu không thể kết nối qua IP, sử dụng lệnh:"
-            echo "mongosh --host localhost --port $PRIMARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
+            echo "mongosh --host localhost --port $PRIMARY_PORT -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin"
         else
             return 1
         fi
@@ -700,11 +730,46 @@ setup_secondary() {
     local PRIMARY_IP=$2
     local SECONDARY_PORT=27017
 
+    echo -e "${GREEN}=== THIẾT LẬP MONGODB SECONDARY NODE ===${NC}"
+
+    # Thu thập tất cả thông tin cần thiết từ đầu
     if [ -z "$PRIMARY_IP" ]; then
         read -p "Nhập địa chỉ IP của PRIMARY: " PRIMARY_IP
+        if [ -z "$PRIMARY_IP" ]; then
+            echo -e "${RED}❌ Không có PRIMARY IP, không thể tiếp tục.${NC}"
+            return 1
+        fi
+    fi
+    
+    # Thông tin đăng nhập cho PRIMARY
+    echo "Nhập thông tin đăng nhập PRIMARY:"
+    read -p "Tên người dùng [$ADMIN_USER]: " PRIMARY_USER
+    PRIMARY_USER=${PRIMARY_USER:-$ADMIN_USER}
+    read -sp "Mật khẩu [$ADMIN_PASS]: " PRIMARY_PASS
+    PRIMARY_PASS=${PRIMARY_PASS:-$ADMIN_PASS}
+    echo ""
+    
+    # Thông tin đăng nhập cho SECONDARY
+    echo "Nhập thông tin đăng nhập admin cho SECONDARY:"
+    read -p "Tên người dùng [$ADMIN_USER]: " SEC_USER
+    SEC_USER=${SEC_USER:-$ADMIN_USER}
+    read -sp "Mật khẩu [$ADMIN_PASS]: " SEC_PASS
+    SEC_PASS=${SEC_PASS:-$ADMIN_PASS}
+    echo ""
+    
+    # Xác nhận thông tin
+    echo -e "${YELLOW}=== THÔNG TIN ĐÃ NHẬP ===${NC}"
+    echo "Server IP: $SERVER_IP"
+    echo "PRIMARY IP: $PRIMARY_IP"
+    echo "PRIMARY User: $PRIMARY_USER"
+    echo "SECONDARY User: $SEC_USER"
+    echo -e "${YELLOW}=========================${NC}"
+    read -p "Xác nhận thông tin trên? (y/n): " CONFIRM
+    if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
+        echo -e "${RED}Hủy thiết lập.${NC}"
+        return 1
     fi
 
-    echo -e "${GREEN}=== THIẾT LẬP MONGODB SECONDARY NODE ===${NC}"
     echo -e "${YELLOW}Khởi tạo MongoDB SECONDARY trên port $SECONDARY_PORT...${NC}"
 
     # Dừng và xóa dữ liệu cũ
@@ -747,13 +812,6 @@ setup_secondary() {
     
     # BƯỚC 2: Tạo user admin
     echo -e "${YELLOW}BƯỚC 2: Tạo user admin trên node SECONDARY...${NC}"
-    echo "Nhập thông tin đăng nhập admin cho SECONDARY:"
-    read -p "Tên người dùng [$ADMIN_USER]: " SEC_USER
-    SEC_USER=${SEC_USER:-$ADMIN_USER}
-    read -sp "Mật khẩu [$ADMIN_PASS]: " SEC_PASS
-    SEC_PASS=${SEC_PASS:-$ADMIN_PASS}
-    echo ""
-    
     if ! create_admin_user $SEC_USER $SEC_PASS; then
         echo -e "${RED}❌ Không thể tạo user admin trên SECONDARY${NC}"
         echo -e "${YELLOW}Đang thử lại sau khi khởi động lại MongoDB...${NC}"
@@ -798,13 +856,6 @@ setup_secondary() {
     # BƯỚC 4: Kết nối tới PRIMARY và thêm node này
     echo -e "${YELLOW}BƯỚC 4: Thêm node vào Replica Set...${NC}"
     echo -e "${GREEN}Kết nối tới PRIMARY $PRIMARY_IP và thêm node $SERVER_IP:$SECONDARY_PORT${NC}"
-    
-    echo "Nhập thông tin đăng nhập PRIMARY:"
-    read -p "Tên người dùng [$ADMIN_USER]: " PRIMARY_USER
-    PRIMARY_USER=${PRIMARY_USER:-$ADMIN_USER}
-    read -sp "Mật khẩu [$ADMIN_PASS]: " PRIMARY_PASS
-    PRIMARY_PASS=${PRIMARY_PASS:-$ADMIN_PASS}
-    echo ""
     
     # Kiểm tra xem node đã tồn tại trong replica set chưa
     if check_node_in_replicaset $PRIMARY_IP $SERVER_IP $SECONDARY_PORT $PRIMARY_USER $PRIMARY_PASS; then
@@ -1238,25 +1289,30 @@ check_node_in_replicaset() {
 
 # Main function
 setup_replica_linux() {
-    echo "MongoDB Replica Set Setup for Linux"
-    echo "===================================="
-    echo "1. Setup PRIMARY server"
-    echo "2. Setup SECONDARY server"
-    echo "3. Khắc phục sự cố (Troubleshoot)"
-    echo "4. Return to main menu"
-    read -p "Select option (1-4): " option
+    clear
+    echo -e "${YELLOW}===========================================${NC}"
+    echo -e "${GREEN}MONGODB REPLICA SET SETUP FOR LINUX${NC}"
+    echo -e "${YELLOW}===========================================${NC}"
+    echo -e "${YELLOW}1.${NC} Setup PRIMARY server"
+    echo -e "${YELLOW}2.${NC} Setup SECONDARY server"
+    echo -e "${YELLOW}3.${NC} Khắc phục sự cố (Troubleshoot)"
+    echo -e "${YELLOW}4.${NC} Quay lại menu chính"
+    echo -e "${YELLOW}===========================================${NC}"
+    read -p "Chọn tùy chọn (1-4): " option
 
     SERVER_IP=$(hostname -I | awk '{print $1}')
-    echo "Using server IP: $SERVER_IP"
+    echo -e "IP máy chủ này: ${GREEN}$SERVER_IP${NC}"
 
     case $option in
         1) setup_primary $SERVER_IP ;;
         2) 
-           read -p "Enter PRIMARY server IP: " PRIMARY_IP
+           echo -e "${YELLOW}Thiết lập SECONDARY Node${NC}"
+           echo -e "SECONDARY IP đã được phát hiện: ${GREEN}$SERVER_IP${NC}"
+           read -p "Nhập địa chỉ IP của PRIMARY node: " PRIMARY_IP
            setup_secondary $SERVER_IP $PRIMARY_IP ;;
         3) troubleshoot_mongodb ;;
         4) return 0 ;;
-        *) echo -e "${RED}❌ Invalid option${NC}" && return 1 ;;
+        *) echo -e "${RED}❌ Tùy chọn không hợp lệ${NC}" && return 1 ;;
     esac
 }
 
