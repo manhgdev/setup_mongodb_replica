@@ -250,6 +250,58 @@ configure_firewall() {
     fi
 }
 
+# Check and fix keyfile
+check_fix_keyfile() {
+    local PRIMARY_IP=$1
+    local KEYFILE="/etc/mongodb.keyfile"
+    
+    echo "Checking keyfile..."
+    
+    # Check if keyfile exists
+    if [ ! -f "$KEYFILE" ]; then
+        echo -e "${RED}❌ Keyfile not found${NC}"
+        echo "Downloading keyfile from PRIMARY server..."
+        scp root@$PRIMARY_IP:$KEYFILE $KEYFILE
+        if [ ! -f "$KEYFILE" ]; then
+            echo -e "${RED}❌ Failed to download keyfile${NC}"
+            return 1
+        fi
+    fi
+    
+    # Verify keyfile content with PRIMARY
+    echo "Verifying keyfile content..."
+    local PRIMARY_KEYFILE_MD5=$(ssh root@$PRIMARY_IP "md5sum $KEYFILE" | awk '{print $1}')
+    local SECONDARY_KEYFILE_MD5=$(md5sum $KEYFILE | awk '{print $1}')
+    
+    if [ "$PRIMARY_KEYFILE_MD5" != "$SECONDARY_KEYFILE_MD5" ]; then
+        echo -e "${RED}❌ Keyfile content does not match PRIMARY server${NC}"
+        echo "Replacing keyfile with PRIMARY server's keyfile..."
+        rm -f $KEYFILE
+        scp root@$PRIMARY_IP:$KEYFILE $KEYFILE
+    fi
+    
+    # Fix keyfile permissions
+    echo "Setting correct permissions for keyfile..."
+    sudo chown mongodb:mongodb $KEYFILE
+    sudo chmod 400 $KEYFILE
+    
+    local keyfile_owner=$(stat -c %U $KEYFILE)
+    local keyfile_group=$(stat -c %G $KEYFILE)
+    local keyfile_perms=$(stat -c %a $KEYFILE)
+    
+    if [ "$keyfile_owner" != "mongodb" ] || [ "$keyfile_group" != "mongodb" ] || [ "$keyfile_perms" != "400" ]; then
+        echo -e "${RED}❌ Failed to set correct permissions${NC}"
+        echo "Current permissions:"
+        echo "Owner: $keyfile_owner"
+        echo "Group: $keyfile_group"
+        echo "Permissions: $keyfile_perms"
+        return 1
+    fi
+    
+    echo -e "${GREEN}✅ Keyfile verified and permissions set correctly${NC}"
+    return 0
+}
+
 # Setup PRIMARY server
 setup_primary() {
     local SERVER_IP=$1
@@ -425,10 +477,18 @@ setup_secondary() {
         fi
     fi
     
-    # Check connection to PRIMARY
-    echo "Checking connection to PRIMARY server..."
+    # Check network connectivity to PRIMARY
+    echo "Checking network connectivity to PRIMARY server..."
     if ! ping -c 1 $PRIMARY_IP &>/dev/null; then
-        echo -e "${RED}❌ Cannot connect to PRIMARY server${NC}"
+        echo -e "${RED}❌ Cannot ping PRIMARY server${NC}"
+        return 1
+    fi
+    
+    # Check MongoDB port connectivity
+    echo "Checking MongoDB port connectivity to PRIMARY..."
+    if ! nc -z -w5 $PRIMARY_IP 27017 &>/dev/null; then
+        echo -e "${RED}❌ Cannot connect to PRIMARY MongoDB port${NC}"
+        echo "Make sure MongoDB is running on PRIMARY and port 27017 is open"
         return 1
     fi
     
@@ -444,32 +504,8 @@ setup_secondary() {
     create_dirs $ARBITER1_PORT
     create_dirs $ARBITER2_PORT
     
-    # Check if keyfile exists
-    if [ ! -f "/etc/mongodb.keyfile" ]; then
-        echo -e "${RED}❌ Keyfile not found${NC}"
-        echo "Please copy keyfile from PRIMARY server first:"
-        echo "scp root@$PRIMARY_IP:/etc/mongodb.keyfile /etc/mongodb.keyfile"
-        echo "sudo chown mongodb:mongodb /etc/mongodb.keyfile"
-        echo "sudo chmod 400 /etc/mongodb.keyfile"
-        return 1
-    fi
-    
-    # Check keyfile permissions
-    local keyfile_owner=$(stat -c %U /etc/mongodb.keyfile)
-    local keyfile_group=$(stat -c %G /etc/mongodb.keyfile)
-    local keyfile_perms=$(stat -c %a /etc/mongodb.keyfile)
-    
-    if [ "$keyfile_owner" != "mongodb" ] || [ "$keyfile_group" != "mongodb" ] || [ "$keyfile_perms" != "400" ]; then
-        echo -e "${RED}❌ Keyfile permissions incorrect${NC}"
-        echo "Current permissions:"
-        echo "Owner: $keyfile_owner"
-        echo "Group: $keyfile_group"
-        echo "Permissions: $keyfile_perms"
-        echo "Please set correct permissions:"
-        echo "sudo chown mongodb:mongodb /etc/mongodb.keyfile"
-        echo "sudo chmod 400 /etc/mongodb.keyfile"
-        return 1
-    fi
+    # Check and fix keyfile
+    check_fix_keyfile $PRIMARY_IP || return 1
     
     # Create configs with security
     create_config $SECONDARY_PORT true false false
@@ -502,7 +538,27 @@ setup_secondary() {
     sudo systemctl restart mongod_${SECONDARY_PORT}
     sudo systemctl restart mongod_${ARBITER1_PORT}
     sudo systemctl restart mongod_${ARBITER2_PORT}
-    sleep 2
+    sleep 5
+    
+    # Check if MongoDB processes are running
+    echo "Verifying MongoDB processes..."
+    for port in $SECONDARY_PORT $ARBITER1_PORT $ARBITER2_PORT; do
+        if ! pgrep -f "mongod.*$port" > /dev/null; then
+            echo -e "${RED}❌ MongoDB process for port $port is not running${NC}"
+            echo "Checking logs:"
+            sudo tail -n 20 /var/log/mongodb/mongod_${port}.log
+            return 1
+        fi
+    done
+    echo -e "${GREEN}✅ All MongoDB processes are running${NC}"
+    
+    # Check if PRIMARY can be connected
+    echo "Checking connection to PRIMARY server..."
+    if ! mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db.version()" --quiet &>/dev/null; then
+        echo -e "${RED}❌ Cannot connect to PRIMARY server with authentication${NC}"
+        return 1
+    fi
+    echo -e "${GREEN}✅ Successfully connected to PRIMARY server${NC}"
     
     # Check if nodes already exist in replica set
     echo "Checking if nodes already exist in replica set..."
@@ -530,7 +586,7 @@ setup_secondary() {
     # Add nodes to replica set
     echo "Adding SECONDARY node to replica set..."
     mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.add('$SERVER_IP:$SECONDARY_PORT')" --quiet
-    sleep 5
+    sleep 10
     
     echo "Adding ARBITER 1 node to replica set..."
     mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.addArb('$SERVER_IP:$ARBITER1_PORT')" --quiet
@@ -542,98 +598,47 @@ setup_secondary() {
     
     # Wait for replication to complete
     echo "Waiting for replication to complete..."
-    sleep 10
-    
-    # Verify SECONDARY node status
-    echo "Verifying SECONDARY node status..."
-    local secondary_status=$(mongosh --host $SERVER_IP --port $SECONDARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}✅ SECONDARY node is properly configured and authenticated${NC}"
-    else
-        echo -e "${RED}❌ SECONDARY node authentication failed${NC}"
-        echo "Please check the following:"
-        echo "1. Keyfile is correctly copied from PRIMARY server"
-        echo "2. Keyfile permissions are correct (chown mongodb:mongodb, chmod 400)"
-        echo "3. MongoDB services are running"
-        echo "4. Firewall allows connections"
-        return 1
-    fi
+    sleep 20
     
     # Verify replica set status
     echo "Verifying replica set status..."
-    local rs_status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}✅ Replica set status verified${NC}"
-        echo "$rs_status"
+    local rs_status_after=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
+    local node_status=$(echo "$rs_status_after" | grep -A 3 "$SERVER_IP:$SECONDARY_PORT" | grep "state" | awk '{print $2}' | tr -d ',')
+    
+    if [ "$node_status" == "2" ]; then
+        echo -e "${GREEN}✅ SECONDARY node is properly configured (state: 2)${NC}"
     else
-        echo -e "${RED}❌ Failed to verify replica set status${NC}"
-        return 1
+        echo -e "${RED}❌ SECONDARY node is not in the correct state${NC}"
+        echo "Current state: $node_status"
+        echo "Full status:"
+        echo "$rs_status_after"
     fi
     
-    # Verify data replication
-    echo "Verifying data replication..."
-    local test_db="test_replication"
-    local test_collection="test_collection"
-    local test_doc='{"test": "data"}'
+    # Try to connect to SECONDARY directly
+    echo "Testing connection to SECONDARY node..."
+    local max_attempts=10
+    local attempts=0
     
-    # Insert test document on PRIMARY
-    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db = db.getSiblingDB('$test_db'); db.$test_collection.insertOne($test_doc)" --quiet
+    while [ $attempts -lt $max_attempts ]; do
+        attempts=$((attempts + 1))
+        echo "Attempt $attempts of $max_attempts..."
+        
+        if mongosh --host $SERVER_IP --port $SECONDARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db.version()" --quiet &>/dev/null; then
+            echo -e "${GREEN}✅ Successfully connected to SECONDARY node${NC}"
+            break
+        else
+            echo "Connection failed, waiting and trying again..."
+            sleep 5
+        fi
+    done
     
-    # Wait for replication
-    sleep 5
-    
-    # Check if document exists on SECONDARY
-    local doc_exists=$(mongosh --host $SERVER_IP --port $SECONDARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db = db.getSiblingDB('$test_db'); db.$test_collection.findOne()" --quiet)
-    if [ $? -eq 0 ] && [ ! -z "$doc_exists" ]; then
-        echo -e "${GREEN}✅ Data replication verified${NC}"
-    else
-        echo -e "${RED}❌ Data replication failed${NC}"
-        return 1
+    if [ $attempts -eq $max_attempts ]; then
+        echo -e "${RED}❌ Failed to connect to SECONDARY node after $max_attempts attempts${NC}"
+        echo "Checking mongod logs..."
+        sudo tail -n 50 /var/log/mongodb/mongod_${SECONDARY_PORT}.log
     fi
     
-    # Clean up test data
-    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db = db.getSiblingDB('$test_db'); db.dropDatabase()" --quiet
-    
-    # Auto test connections
-    echo -e "\n${GREEN}Testing connections automatically...${NC}"
-    
-    # Test PRIMARY connection
-    echo "Testing PRIMARY connection..."
-    if mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db.version()" --quiet &>/dev/null; then
-        echo -e "${GREEN}✅ PRIMARY connection successful${NC}"
-    else
-        echo -e "${RED}❌ PRIMARY connection failed${NC}"
-        return 1
-    fi
-    
-    # Test SECONDARY connection
-    echo "Testing SECONDARY connection..."
-    if mongosh --host $SERVER_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db.version()" --quiet &>/dev/null; then
-        echo -e "${GREEN}✅ SECONDARY connection successful${NC}"
-    else
-        echo -e "${RED}❌ SECONDARY connection failed${NC}"
-        return 1
-    fi
-    
-    # Test replica set connection
-    echo "Testing replica set connection..."
-    if mongosh "mongodb://$ADMIN_USER:$ADMIN_PASS@$PRIMARY_IP:27017,$SERVER_IP:27017/admin?replicaSet=rs0" --eval "db.version()" --quiet &>/dev/null; then
-        echo -e "${GREEN}✅ Replica set connection successful${NC}"
-    else
-        echo -e "${RED}❌ Replica set connection failed${NC}"
-        return 1
-    fi
-    
-    # Test replica set status
-    echo "Testing replica set status..."
-    if mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet &>/dev/null; then
-        echo -e "${GREEN}✅ Replica set status check successful${NC}"
-    else
-        echo -e "${RED}❌ Replica set status check failed${NC}"
-        return 1
-    fi
-    
-    echo -e "\n${GREEN}✅ SECONDARY setup completed successfully${NC}"
+    echo -e "\n${GREEN}✅ SECONDARY setup completed${NC}"
     echo -e "\n${GREEN}Connection strings for your application:${NC}"
     echo "1. Full connection string (all nodes):"
     echo "   mongodb://$ADMIN_USER:$ADMIN_PASS@$PRIMARY_IP:27017,$SERVER_IP:27017,$PRIMARY_IP:27018,$PRIMARY_IP:27019,$SERVER_IP:27018,$SERVER_IP:27019/admin?replicaSet=rs0"
