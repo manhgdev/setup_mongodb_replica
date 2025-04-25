@@ -804,9 +804,9 @@ EOL
             echo -e "${RED}❌ MongoDB vẫn không thể khởi động. Kiểm tra lại cấu hình.${NC}"
             return 1
         fi
-    } else {
+    else
         echo -e "${GREEN}✅ MongoDB với cấu hình replica set đã khởi động thành công${NC}"
-    }
+    fi
     
     # Thêm kiểm tra kết nối MongoDB tại local
     echo -e "${YELLOW}12. Kiểm tra kết nối MongoDB tại local...${NC}"
@@ -1079,4 +1079,3 @@ setup_replica_linux() {
         read -p "Nhấn Enter để tiếp tục..."
     done
 }
-!/bin/bash
