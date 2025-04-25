@@ -75,8 +75,6 @@ create_config() {
 # Where and how to store data.
 storage:
   dbPath: /var/lib/mongodb_${PORT}
-  journal:
-    enabled: true
 #  engine:
 #  wiredTiger:
 
@@ -544,6 +542,19 @@ setup_secondary() {
     echo ""
     echo "3. Connection string with additional options:"
     echo "   mongodb://$ADMIN_USER:$ADMIN_PASS@$PRIMARY_IP:27017,$SERVER_IP:27017/admin?replicaSet=rs0&readPreference=primary&retryWrites=true&w=majority"
+    
+    echo -e "\n${GREEN}Test connection commands:${NC}"
+    echo "1. Test connection to PRIMARY:"
+    echo "   mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
+    echo ""
+    echo "2. Test connection to SECONDARY:"
+    echo "   mongosh --host $SERVER_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
+    echo ""
+    echo "3. Test connection to replica set:"
+    echo "   mongosh \"mongodb://$ADMIN_USER:$ADMIN_PASS@$PRIMARY_IP:27017,$SERVER_IP:27017/admin?replicaSet=rs0\""
+    echo ""
+    echo "4. Check replica set status:"
+    echo "   mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval \"rs.status()\""
 }
 
 # Main function
