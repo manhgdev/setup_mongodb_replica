@@ -401,6 +401,13 @@ setup_secondary() {
         return 1
     fi
     
+    # Check connection to PRIMARY
+    echo "Checking connection to PRIMARY server..."
+    if ! ping -c 1 $PRIMARY_IP &>/dev/null; then
+        echo -e "${RED}❌ Cannot connect to PRIMARY server${NC}"
+        return 1
+    fi
+    
     # Configure firewall
     echo "Configuring firewall..."
     if command -v ufw &> /dev/null; then
@@ -476,38 +483,29 @@ setup_secondary() {
     echo "Checking if SECONDARY is already in replica set..."
     local rs_status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
     local is_member=$(echo "$rs_status" | grep -c "$SERVER_IP:$SECONDARY_PORT")
-    
-    if [ "$is_member" -gt 0 ]; then
-        echo "SECONDARY is already in replica set, removing it first..."
-        mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.remove('$SERVER_IP:$SECONDARY_PORT')"
-        sleep 2
-    fi
-    
-    # Check if ARBITER is already in replica set
     local is_arbiter=$(echo "$rs_status" | grep -c "$SERVER_IP:$ARBITER_PORT")
-    if [ "$is_arbiter" -gt 0 ]; then
-        echo "ARBITER is already in replica set, removing it first..."
-        mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.remove('$SERVER_IP:$ARBITER_PORT')"
-        sleep 2
+    
+    if [ "$is_member" -gt 0 ] && [ "$is_arbiter" -gt 0 ]; then
+        echo "SECONDARY and ARBITER are already in replica set, skipping addition..."
+    else
+        # Add SECONDARY to replica set
+        echo "Adding SECONDARY to replica set..."
+        local add_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
+        rs.add({
+            host: '$SERVER_IP:$SECONDARY_PORT',
+            priority: 5,
+            votes: 1
+        });
+        rs.addArb('$SERVER_IP:$ARBITER_PORT')")
+        
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}❌ Failed to add SECONDARY to replica set${NC}"
+            echo "Error: $add_result"
+            return 1
+        fi
+        
+        echo -e "${GREEN}✅ SECONDARY added to replica set successfully${NC}"
     fi
-    
-    # Add SECONDARY to replica set
-    echo "Adding SECONDARY to replica set..."
-    local add_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
-    rs.add({
-        host: '$SERVER_IP:$SECONDARY_PORT',
-        priority: 5,
-        votes: 1
-    });
-    rs.addArb('$SERVER_IP:$ARBITER_PORT')")
-    
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}❌ Failed to add SECONDARY to replica set${NC}"
-        echo "Error: $add_result"
-        return 1
-    fi
-    
-    echo -e "${GREEN}✅ SECONDARY added to replica set successfully${NC}"
     
     # Wait for replication
     echo "Waiting for replication to complete..."
