@@ -102,7 +102,7 @@ uninstall_mongodb() {
                         sudo systemctl disable mongod
                         
                         # Xóa MongoDB và các gói phụ thuộc
-                        sudo apt-get purge -y mongodb-org*
+                        # sudo apt-get purge -y mongodb-org*
                         sudo apt-get autoremove -y
                         
                         # Xóa các file cấu hình và data
@@ -110,6 +110,11 @@ uninstall_mongodb() {
                         sudo rm -rf /var/log/mongodb
                         sudo rm -rf /etc/mongodb.conf
                         sudo rm -rf /etc/mongod.conf
+
+                        # Xóa các file replica set
+                        sudo rm -rf /var/lib/mongodb_27017/replset.election*
+                        sudo rm -rf /var/lib/mongodb_27017/local.*
+                        
                         ;;
                     *)
                         echo "❌ Hệ điều hành Linux không được hỗ trợ: $ID"
