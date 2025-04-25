@@ -3,6 +3,9 @@
 setup_replica() {
     echo -e "${YELLOW}=== MongoDB Replica Set Configuration ===${NC}"
     
+    # Get the absolute path of the script directory
+    SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+    
     # Detect OS
     if [[ "$OSTYPE" == "darwin"* ]]; then
         # macOS detected
@@ -24,12 +27,16 @@ setup_replica() {
         else
             # Try to source the Linux setup script directly as a fallback
             echo "setup_replica_linux function not found, trying to source it directly..."
-            if [ -f "$(dirname "$0")/setup_replica_linux.sh" ]; then
-                source "$(dirname "$0")/setup_replica_linux.sh"
-                setup_replica_linux
+            if [ -f "$SCRIPT_DIR/setup_replica_linux.sh" ]; then
+                source "$SCRIPT_DIR/setup_replica_linux.sh"
+                if type setup_replica_linux >/dev/null 2>&1; then
+                    setup_replica_linux
+                else
+                    echo -e "${RED}❌ Error: setup_replica_linux function not found after sourcing${NC}"
+                    return 1
+                fi
             else
-                echo -e "${RED}❌ Error: setup_replica_linux function not found and setup_replica_linux.sh file not found${NC}"
-                echo "Make sure scripts/setup_replica_linux.sh is properly sourced in main.sh"
+                echo -e "${RED}❌ Error: setup_replica_linux.sh file not found at $SCRIPT_DIR/setup_replica_linux.sh${NC}"
                 return 1
             fi
         fi
