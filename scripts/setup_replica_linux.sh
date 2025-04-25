@@ -838,7 +838,7 @@ EOL
     
     # Kiểm tra PRIMARY có đang hoạt động không
     echo -e "${YELLOW}14. Kiểm tra PRIMARY có đang hoạt động không...${NC}"
-    local rs_status=$(mongosh --host "$PRIMARY_IP" --port 27017 --eval "rs.status()" --quiet 2>&1)
+    local rs_status=$(mongosh --host "$PRIMARY_IP" --port 27017 -u "$PRIMARY_USER" -p "$PRIMARY_PASS" --authenticationDatabase admin --eval "rs.status()" --quiet 2>&1)
     
     if echo "$rs_status" | grep -q "MongoNetworkError\|failed\|error"; then
         echo -e "${RED}❌ Không thể kết nối tới PRIMARY. Lỗi:${NC}"
@@ -849,10 +849,15 @@ EOL
     echo -e "${GREEN}✅ Kết nối tới PRIMARY thành công${NC}"
     
     # Kiểm tra trạng thái của PRIMARY
-    local primary_status=$(mongosh --host "$PRIMARY_IP" --port 27017 --eval "rs.status().members[0].stateStr" --quiet)
-    if [ "$primary_status" != "PRIMARY" ]; then
+    local primary_status=$(mongosh --host "$PRIMARY_IP" --port 27017 -u "$PRIMARY_USER" -p "$PRIMARY_PASS" --authenticationDatabase admin --eval "
+    var status = rs.status();
+    var primary = status.members.find(m => m.stateStr === 'PRIMARY');
+    print(primary ? primary.stateStr : '');
+    " --quiet)
+    
+    if [ -z "$primary_status" ]; then
         echo -e "${RED}❌ Node $PRIMARY_IP không phải là PRIMARY! Trạng thái hiện tại:${NC}"
-        echo -e "      stateStr: '$primary_status',"
+        echo -e "      stateStr: '',"
         echo -e "${YELLOW}Vui lòng chạy 'initialize_primary' trên node $PRIMARY_IP trước.${NC}"
         return 1
     fi
@@ -913,7 +918,7 @@ EOL
                 rs.remove('$SERVER_IP:27017');
                 print('✅ Đã xóa node khỏi replica set');
                 sleep(2000);
-                rs.add({host:'$SERVER_IP:27017', priority:0.5});
+                rs.add({host:'$SERVER_IP:27017', priority:5});
                 print('✅ Đã thêm lại node vào replica set');
             } catch (err) {
                 print('❌ Lỗi: ' + err.message);
@@ -925,16 +930,16 @@ EOL
     fi
     
     # Đợi node đồng bộ
-    echo -e "${YELLOW}19. Đợi node đồng bộ (60 giây)...${NC}"
+    echo -e "${YELLOW}19. Đợi node đồng bộ (30 giây)...${NC}"
     echo -e "Đây là thời gian cần thiết để node đồng bộ dữ liệu với PRIMARY."
-    local seconds=60
+    local seconds=30
     while [ $seconds -gt 0 ]; do
         echo -ne "${YELLOW}Còn lại: ${seconds}s${NC}\r"
         sleep 5
         seconds=$((seconds-5))
         
-        # Kiểm tra nhanh sau 30 giây để xem node đã lên SECONDARY chưa
-        if [ $seconds -eq 30 ]; then
+        # Kiểm tra nhanh sau 5 giây để xem node đã lên SECONDARY chưa
+        if [ $seconds -eq 5 ]; then
             echo -e "${YELLOW}Kiểm tra trạng thái giữa chừng...${NC}"
             local current_status=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "
             rs.status().members.forEach(function(m) {
