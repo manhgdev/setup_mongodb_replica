@@ -60,8 +60,9 @@ create_dirs() {
 # Create MongoDB config
 create_config() {
     local PORT=$1
-    local IS_SECONDARY=$2
+    local IS_INITIAL_SETUP=$2
     local IS_ARBITER=$3
+    local WITH_SECURITY=$4
     
     local CONFIG_FILE="/etc/mongod_${PORT}.conf"
     
@@ -92,11 +93,20 @@ processManagement:
   timeZoneInfo: /usr/share/zoneinfo
   fork: true
 
+EOF
+
+    # Chỉ thêm security nếu WITH_SECURITY = true
+    if [ "$WITH_SECURITY" = "true" ]; then
+        cat >> $CONFIG_FILE << EOF
 # security
 security:
   keyFile: /etc/mongodb.keyfile
   authorization: enabled
+EOF
+    fi
 
+    # Phần replication luôn được thêm
+    cat >> $CONFIG_FILE << EOF
 # replication
 replication:
   replSetName: rs0
@@ -214,10 +224,10 @@ setup_primary() {
     # Configure firewall
     configure_firewall
     
-    # Create initial configs without security
-    create_config $PRIMARY_PORT false false false
-    create_config $ARBITER1_PORT false true false
-    create_config $ARBITER2_PORT false true false
+    # Create initial configs WITHOUT security
+    create_config $PRIMARY_PORT true false false
+    create_config $ARBITER1_PORT true true false 
+    create_config $ARBITER2_PORT true true false
     
     # Start all nodes
     echo "Starting PRIMARY node..."
@@ -274,8 +284,10 @@ rs.initiate({
         echo "Checking node statuses..."
         echo "PRIMARY node status:"
         mongosh --port $PRIMARY_PORT --eval "db.serverStatus()" --quiet
-        echo "ARBITER node status:"
+        echo "ARBITER 1 node status:"
         mongosh --port $ARBITER1_PORT --eval "db.serverStatus()" --quiet
+        echo "ARBITER 2 node status:"
+        mongosh --port $ARBITER2_PORT --eval "db.serverStatus()" --quiet
         return 1
     fi
     
@@ -295,11 +307,11 @@ rs.initiate({
         # Create admin user with default values
         create_admin_user $PRIMARY_PORT $ADMIN_USER $ADMIN_PASS || return 1
         
-        # Create keyfile and update configs with security
+        # Create keyfile and update configs WITH security
         create_keyfile "/etc/mongodb.keyfile"
         create_config $PRIMARY_PORT true false true
-        create_config $ARBITER1_PORT true true false
-        create_config $ARBITER2_PORT true true false
+        create_config $ARBITER1_PORT true true true
+        create_config $ARBITER2_PORT true true true
         
         # Create systemd services
         echo "Creating systemd services..."
@@ -386,27 +398,11 @@ setup_secondary() {
     
     # Config files
     for port in $SECONDARY_PORT $ARBITER1_PORT $ARBITER2_PORT; do
-        sudo bash -c "cat > /etc/mongod_${port}.conf << EOF
-storage:
-  dbPath: /var/lib/mongodb_${port}
-systemLog:
-  destination: file
-  logAppend: true
-  path: /var/log/mongodb/mongod_${port}.log
-net:
-  port: ${port}
-  bindIp: 0.0.0.0
-processManagement:
-  timeZoneInfo: /usr/share/zoneinfo
-security:
-  keyFile: $KEYFILE
-  authorization: enabled
-replication:
-  replSetName: rs0
-setParameter:
-  allowMultipleArbiters: true
-EOF"
-        sudo chown mongodb:mongodb /etc/mongod_${port}.conf
+        local IS_ARBITER="false"
+        if [ "$port" != "$SECONDARY_PORT" ]; then
+            IS_ARBITER="true"
+        fi
+        create_config $port false $IS_ARBITER true
     done
     
     # Systemd services
