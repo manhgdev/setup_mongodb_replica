@@ -100,6 +100,10 @@ security:
 # replication
 replication:
   replSetName: rs0
+
+# Cho phép nhiều arbiter
+setParameter:
+  allowMultipleArbiters: true
 EOF
     
     # Set permissions
@@ -255,6 +259,7 @@ setup_primary() {
     # Initialize replica set using private IP
     echo "Initializing replica set..."
     local init_result=$(mongosh --port $PRIMARY_PORT --eval "
+    db.adminCommand({ setParameter: 1, allowMultipleArbiters: true });
     rs.initiate({
         _id: 'rs0',
         members: [
@@ -270,10 +275,8 @@ setup_primary() {
         echo "Checking node statuses..."
         echo "PRIMARY node status:"
         mongosh --port $PRIMARY_PORT --eval "db.serverStatus()" --quiet
-        echo "ARBITER 1 node status:"
+        echo "ARBITER node status:"
         mongosh --port $ARBITER1_PORT --eval "db.serverStatus()" --quiet
-        echo "ARBITER 2 node status:"
-        mongosh --port $ARBITER2_PORT --eval "db.serverStatus()" --quiet
         return 1
     fi
     
@@ -310,6 +313,7 @@ setup_primary() {
         sudo systemctl restart mongod_27017
         sleep 5
         sudo systemctl restart mongod_27018
+        sleep 5
         sudo systemctl restart mongod_27019
         sleep 5
         
@@ -400,6 +404,8 @@ security:
   authorization: enabled
 replication:
   replSetName: rs0
+setParameter:
+  allowMultipleArbiters: true
 EOF"
         sudo chown mongodb:mongodb /etc/mongod_${port}.conf
     done
@@ -437,6 +443,9 @@ EOF"
     
     # Thêm vào replica set
     echo "Thêm vào replica set..."
+    # Đảm bảo cho phép nhiều arbiter
+    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db.adminCommand({ setParameter: 1, allowMultipleArbiters: true })" --quiet
+    
     local rs_status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
     
     for node in "$SERVER_IP:$SECONDARY_PORT" "$SERVER_IP:$ARBITER1_PORT" "$SERVER_IP:$ARBITER2_PORT"; do
@@ -462,7 +471,7 @@ EOF"
     # Hoàn tất
     echo -e "\n${GREEN}✅ Thiết lập xong${NC}"
     echo -e "\n${GREEN}Connection string:${NC}"
-    echo "mongodb://$ADMIN_USER:$ADMIN_PASS@$PRIMARY_IP:27017,$SERVER_IP:27017/admin?replicaSet=rs0&readPreference=primary&retryWrites=true&w=majority"
+    echo "mongodb://$ADMIN_USER:$ADMIN_PASS@$PRIMARY_IP:27017,$SERVER_IP:27017,$SERVER_IP:27018,$SERVER_IP:27019/admin?replicaSet=rs0&readPreference=primary&retryWrites=true&w=majority"
     
     echo -e "\n${GREEN}Lệnh kiểm tra:${NC}"
     echo "mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval \"rs.status()\""
