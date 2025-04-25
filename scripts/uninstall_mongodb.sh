@@ -11,6 +11,21 @@ detect_mongodb_version() {
 }
 
 uninstall_mongodb() {
+    echo -e "${YELLOW}=== Xóa MongoDB ===${NC}"
+    
+    # Kiểm tra quyền sudo
+    if [[ "$(uname -s)" == "Linux" ]] && [[ $EUID -ne 0 ]]; then
+        echo -e "${RED}❌ Cần quyền sudo để xóa MongoDB trên Linux${NC}"
+        return 1
+    fi
+    
+    # Dừng MongoDB trước khi xóa
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        brew services stop mongodb-community || true
+    else
+        systemctl stop mongod || true
+    fi
+
     echo "Đang xóa MongoDB..."
     
     # Kiểm tra hệ điều hành

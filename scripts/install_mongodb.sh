@@ -82,7 +82,7 @@ install_mongodb() {
             Darwin*)
                 if ! brew services list | grep mongodb-community | grep started > /dev/null; then
                     echo "Khởi động lại MongoDB service..."
-                    brew services restart mongodb-community@7.0
+                    brew services restart mongodb-community@8.0
                 fi
                 ;;
         esac
