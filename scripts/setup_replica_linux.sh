@@ -1,39 +1,6 @@
 #!/bin/bash
 
-# ANSI color codes
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-NC='\033[0m' # No Color
-
 setup_node_linux() {
-    # Main script execution
-echo "MongoDB Replica Set Setup for Linux"
-echo "===================================="
-echo "1. Setup PRIMARY server"
-echo "2. Setup SECONDARY server"
-echo "3. Exit"
-read -p "Select option (1-3): " option
-
-SERVER_IP=$(hostname -I | awk '{print $1}')
-echo "Using server IP: $SERVER_IP"
-
-case $option in
-    1)
-        setup_replica_primary_linux $SERVER_IP
-        ;;
-    2)
-        setup_replica_secondary_linux $SERVER_IP
-        ;;
-    3)
-        echo "Exiting..."
-        exit 0
-        ;;
-    *)
-        echo -e "${RED}❌ Invalid option${NC}"
-        exit 1
-        ;;
-esac
-
     local PORT=$1
     local NODE_TYPE=$2
     local ENABLE_SECURITY=$3 # "yes" or "no"
@@ -245,6 +212,36 @@ setup_replica_secondary_linux() {
     else
         echo -e "${RED}❌ Error occurred when configuring SECONDARY${NC}"
     fi
+}
+
+# Function to be called from main.sh
+setup_replica_linux() {
+    echo "MongoDB Replica Set Setup for Linux"
+    echo "===================================="
+    echo "1. Setup PRIMARY server"
+    echo "2. Setup SECONDARY server"
+    echo "3. Return to main menu"
+    read -p "Select option (1-3): " option
+
+    SERVER_IP=$(hostname -I | awk '{print $1}')
+    echo "Using server IP: $SERVER_IP"
+
+    case $option in
+        1)
+            setup_replica_primary_linux $SERVER_IP
+            ;;
+        2)
+            setup_replica_secondary_linux $SERVER_IP
+            ;;
+        3)
+            echo "Returning to main menu..."
+            return 0
+            ;;
+        *)
+            echo -e "${RED}❌ Invalid option${NC}"
+            return 1
+            ;;
+    esac
 }
 
 
