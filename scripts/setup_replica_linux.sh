@@ -382,7 +382,114 @@ setup_replica_primary_linux() {
 }
 
 setup_replica_secondary_linux() {
+    local SERVER_IP=$1
+    local PRIMARY_PORT=27017
+    local ARBITER_PORT=27018
     
+    # Get primary server information
+    echo -e "${YELLOW}Setting up a SECONDARY MongoDB server${NC}"
+    read -p "Enter PRIMARY server IP address: " PRIMARY_IP
+    if [ -z "$PRIMARY_IP" ]; then
+        echo -e "${RED}❌ ERROR: PRIMARY server IP is required${NC}"
+        return 1
+    fi
+    
+    read -p "Enter admin username on PRIMARY (default: manhg): " admin_username
+    admin_username=${admin_username:-manhg}
+    read -p "Enter admin password on PRIMARY (default: manhnk): " admin_password
+    admin_password=${admin_password:-manhnk}
+    
+    # Step 1: Stop any existing MongoDB processes
+    echo "Step 1: Stopping any existing MongoDB processes..."
+    pkill -f mongod || true
+    sleep 5
+    
+    # Step 2: Create keyfile (needs to be the same as primary)
+    echo "Step 2: Creating keyFile..."
+    create_keyfile_linux
+    
+    # Step 3: Start MongoDB without security first
+    echo "Step 3: Starting MongoDB without security..."
+    setup_node_linux $PRIMARY_PORT "no" "clean"  # Add clean flag
+    setup_node_linux $ARBITER_PORT "no" "clean"  # Add clean flag
+    
+    # Step 4: Test connection to primary
+    echo "Step 4: Testing connection to PRIMARY server..."
+    if ! mongosh --host $PRIMARY_IP --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'db.runCommand({ping:1})' &>/dev/null; then
+        echo -e "${RED}❌ Failed to connect to PRIMARY server. Check IP address and credentials.${NC}"
+        return 1
+    fi
+    echo -e "${GREEN}✅ Connection to PRIMARY server successful${NC}"
+    
+    # Step 5: Add this server to replica set
+    echo "Step 5: Adding this server to replica set..."
+    mongosh --host $PRIMARY_IP --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval '
+    try {
+        print("Adding secondary node: "'$SERVER_IP:$PRIMARY_PORT'");
+        rs.add("'$SERVER_IP:$PRIMARY_PORT'");
+        
+        print("Adding arbiter node: "'$SERVER_IP:$ARBITER_PORT'");
+        rs.addArb("'$SERVER_IP:$ARBITER_PORT'");
+        
+        print("Updated replica set configuration:");
+        printjson(rs.conf());
+    } catch(err) {
+        print("Error: " + err);
+        quit(1);
+    }
+    '
+    
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}❌ Failed to add server to replica set${NC}"
+        return 1
+    fi
+    
+    # Step 6: Restart with security enabled
+    echo "Step 6: Restarting MongoDB with security enabled..."
+    pkill -f mongod || true
+    sleep 5
+    
+    setup_node_linux $PRIMARY_PORT "yes"
+    setup_node_linux $ARBITER_PORT "yes"
+    sleep 10
+    
+    # Step 7: Verify replica set status
+    echo "Step 7: Verifying replica set status..."
+    mongosh --host $PRIMARY_IP --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval '
+    try {
+        print("Replica set status:");
+        printjson(rs.status());
+        
+        const members = rs.status().members;
+        const secondary = members.find(m => m.name.includes("'$SERVER_IP:$PRIMARY_PORT'"));
+        const arbiter = members.find(m => m.name.includes("'$SERVER_IP:$ARBITER_PORT'"));
+        
+        if (secondary && (secondary.state === 2 || secondary.stateStr === "SECONDARY")) {
+            print("✅ SECONDARY node is properly configured");
+        } else if (secondary) {
+            print("⚠️ SECONDARY node found but not yet fully synced. Current state: " + (secondary.stateStr || secondary.state));
+        } else {
+            print("❌ SECONDARY node not found in replica set");
+        }
+        
+        if (arbiter && (arbiter.state === 7 || arbiter.stateStr === "ARBITER")) {
+            print("✅ ARBITER node is properly configured");
+        } else if (arbiter) {
+            print("⚠️ ARBITER node found but in unexpected state: " + (arbiter.stateStr || arbiter.state));
+        } else {
+            print("❌ ARBITER node not found in replica set");
+        }
+    } catch(err) {
+        print("Error verifying replica set: " + err);
+    }
+    '
+    
+    # Final status
+    echo -e "\n${GREEN}✅ MongoDB SECONDARY setup completed${NC}"
+    echo "This server (SECONDARY): $SERVER_IP:$PRIMARY_PORT"
+    echo "Arbiter node on this server: $SERVER_IP:$ARBITER_PORT"
+    echo "Connected to PRIMARY server: $PRIMARY_IP:$PRIMARY_PORT"
+    echo "Connect to this SECONDARY: mongosh --host $SERVER_IP --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin"
 }
 
 # Function to be called from main.sh
