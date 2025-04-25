@@ -9,6 +9,11 @@ NC='\033[0m'
 stop_mongodb() {
     pkill -f mongod || true
     sleep 2
+    # Kill any processes using MongoDB ports
+    for port in 27017 27018 27019; do
+        lsof -ti:$port | xargs kill -9 2>/dev/null || true
+    done
+    sleep 2
 }
 
 # Create directories
@@ -46,6 +51,8 @@ replication:
   replSetName: rs0
 setParameter:
   allowMultipleArbiters: true
+processManagement:
+  fork: true
 EOL
 
     # Start MongoDB
