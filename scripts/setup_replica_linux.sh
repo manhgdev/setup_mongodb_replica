@@ -203,8 +203,37 @@ setup_primary() {
     
     # Start MongoDB
     echo "Starting MongoDB node..."
-    mongod --config /etc/mongod_27017.conf --fork
+    # Khởi động MongoDB sử dụng systemctl
+    if systemctl is-active --quiet mongod_27017; then
+      sudo systemctl stop mongod_27017
+      sleep 2
+    fi
+    
+    # Đảm bảo thư mục và quyền
+    sudo mkdir -p /var/lib/mongodb_27017 /var/log/mongodb 2>/dev/null
+    sudo chown -R mongodb:mongodb /var/lib/mongodb_27017 /var/log/mongodb
+    sudo chmod 755 /var/lib/mongodb_27017
+    sudo rm -rf /var/lib/mongodb_27017/mongod.lock 2>/dev/null || true
+    
+    # Tạo service trước khi khởi động
+    create_systemd_service
+    
+    # Khởi động MongoDB
+    sudo systemctl daemon-reload
+    sudo systemctl enable mongod_27017
+    sudo systemctl start mongod_27017
+    
+    # Kiểm tra kết quả
     sleep 5
+    if sudo systemctl is-active mongod_27017 &>/dev/null; then
+      echo -e "${GREEN}✓ MongoDB đã khởi động thành công${NC}"
+    else
+      echo -e "${RED}✗ Không thể khởi động MongoDB${NC}"
+      sudo systemctl status mongod_27017
+      echo "Kiểm tra log:"
+      sudo tail -n 20 /var/log/mongodb/mongod_27017.log
+      return 1
+    fi
     
     # Check if MongoDB is running
     if ! mongosh --port $PRIMARY_PORT --eval "db.version()" --quiet &>/dev/null; then
@@ -306,8 +335,37 @@ setup_secondary() {
     
     # Start MongoDB
     echo "Starting MongoDB node..."
-    mongod --config /etc/mongod_27017.conf --fork
+    # Khởi động MongoDB sử dụng systemctl
+    if systemctl is-active --quiet mongod_27017; then
+      sudo systemctl stop mongod_27017
+      sleep 2
+    fi
+    
+    # Đảm bảo thư mục và quyền
+    sudo mkdir -p /var/lib/mongodb_27017 /var/log/mongodb 2>/dev/null
+    sudo chown -R mongodb:mongodb /var/lib/mongodb_27017 /var/log/mongodb
+    sudo chmod 755 /var/lib/mongodb_27017
+    sudo rm -rf /var/lib/mongodb_27017/mongod.lock 2>/dev/null || true
+    
+    # Tạo service trước khi khởi động
+    create_systemd_service
+    
+    # Khởi động MongoDB
+    sudo systemctl daemon-reload
+    sudo systemctl enable mongod_27017
+    sudo systemctl start mongod_27017
+    
+    # Kiểm tra kết quả
     sleep 5
+    if sudo systemctl is-active mongod_27017 &>/dev/null; then
+      echo -e "${GREEN}✓ MongoDB đã khởi động thành công${NC}"
+    else
+      echo -e "${RED}✗ Không thể khởi động MongoDB${NC}"
+      sudo systemctl status mongod_27017
+      echo "Kiểm tra log:"
+      sudo tail -n 20 /var/log/mongodb/mongod_27017.log
+      return 1
+    fi
     
     # Check if MongoDB is running
     if ! mongosh --port $SECONDARY_PORT --eval "db.version()" --quiet &>/dev/null; then
