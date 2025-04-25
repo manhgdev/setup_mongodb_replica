@@ -163,6 +163,7 @@ create_systemd_service() {
 [Unit]
 Description=MongoDB Database Server (Port ${PORT})
 After=network.target
+Wants=network.target
 
 [Service]
 User=mongodb
@@ -171,20 +172,25 @@ ExecStart=/usr/bin/mongod --config ${CONFIG_FILE}
 ExecStop=/usr/bin/mongod --config ${CONFIG_FILE} --shutdown
 Restart=always
 RestartSec=3
+StartLimitInterval=60
+StartLimitBurst=3
+TimeoutStartSec=60
+TimeoutStopSec=60
 
 [Install]
 WantedBy=multi-user.target
 EOL
 
-    systemctl daemon-reload
-    systemctl enable $SERVICE_NAME
-    systemctl start $SERVICE_NAME
+    sudo systemctl daemon-reload
+    sudo systemctl enable $SERVICE_NAME
+    sudo systemctl start $SERVICE_NAME
     
-    if systemctl is-active --quiet $SERVICE_NAME; then
+    if sudo systemctl is-active --quiet $SERVICE_NAME; then
         echo -e "${GREEN}✅ Service ${SERVICE_NAME} created and started successfully${NC}"
+        echo "Service will auto-start on system boot"
     else
         echo -e "${RED}❌ Failed to start service ${SERVICE_NAME}${NC}"
-        systemctl status $SERVICE_NAME
+        sudo systemctl status $SERVICE_NAME
         return 1
     fi
 }
