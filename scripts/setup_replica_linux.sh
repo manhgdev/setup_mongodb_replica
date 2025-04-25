@@ -132,16 +132,28 @@ setup_replica_primary_linux() {
     # Tạo user admin trên PRIMARY
     create_admin_user $PRIMARY_PORT $admin_username $admin_password
     
-    # Khởi tạo replica set
-    echo "Đang khởi tạo replica set..."
-    mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.initiate({
-        _id: "rs0",
-        members: [
-            { _id: 0, host: "'$SERVER_IP:$PRIMARY_PORT'", priority: 2 },
-            { _id: 1, host: "'$SERVER_IP:$ARBITER1_PORT'", arbiterOnly: true },
-            { _id: 2, host: "'$SERVER_IP:$ARBITER2_PORT'", arbiterOnly: true }
-        ]
-    })'
+    # Kiểm tra trạng thái replica set
+    echo "Đang kiểm tra trạng thái replica set..."
+    local rs_status=$(mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.status()' --quiet)
+    
+    # Nếu replica set chưa được khởi tạo
+    if echo "$rs_status" | grep -q "NotYetInitialized"; then
+        echo "Đang khởi tạo replica set..."
+        mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.initiate({
+            _id: "rs0",
+            members: [
+                { _id: 0, host: "'$SERVER_IP:$PRIMARY_PORT'", priority: 2 },
+                { _id: 1, host: "'$SERVER_IP:$ARBITER1_PORT'", arbiterOnly: true },
+                { _id: 2, host: "'$SERVER_IP:$ARBITER2_PORT'", arbiterOnly: true }
+            ]
+        })'
+    else
+        echo "Replica set đã được khởi tạo trước đó"
+        echo "Đang kiểm tra cấu hình hiện tại..."
+        local current_config=$(mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.conf()' --quiet)
+        echo "Cấu hình hiện tại:"
+        echo "$current_config"
+    fi
     
     # Kiểm tra trạng thái
     if check_replica_status $PRIMARY_PORT $admin_username $admin_password; then
@@ -156,6 +168,8 @@ setup_replica_primary_linux() {
         generate_setup_guide $SERVER_IP $PRIMARY_PORT $ARBITER1_PORT $ARBITER2_PORT $admin_username $admin_password
     else
         echo -e "${RED}❌ Có lỗi xảy ra khi cấu hình PRIMARY${NC}"
+        echo "Đang kiểm tra log file..."
+        sudo tail -n 50 /var/log/mongodb/mongod_${PRIMARY_PORT}.log
     fi
 }
 
