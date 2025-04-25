@@ -182,20 +182,19 @@ create_systemd_service() {
     
     echo -e "${YELLOW}Tạo dịch vụ systemd...${NC}"
     
-    # Vô hiệu hóa dịch vụ MongoDB mặc định
-    sudo systemctl stop mongod 2>/dev/null || true
-    sudo systemctl disable mongod 2>/dev/null || true
+    # Vô hiệu hóa và mask dịch vụ MongoDB mặc định
+    sudo systemctl stop mongod &>/dev/null || true
+    sudo systemctl disable mongod &>/dev/null || true
+    sudo systemctl mask mongod &>/dev/null || true
     
     # Xóa file dịch vụ mặc định nếu có xung đột
     if [ -f "/etc/systemd/system/mongod.service" ]; then
+        echo "Xóa file dịch vụ mongod.service mặc định để tránh xung đột"
         sudo rm -f /etc/systemd/system/mongod.service
-    fi
-    if [ -f "/lib/systemd/system/mongod.service" ]; then
-        sudo systemctl mask mongod.service
     fi
     
     # Cập nhật cấu hình với tham số security nếu cần
-    create_config $WITH_SECURITY
+    create_config $WITH_SECURITY $2
     
     # Tạo file dịch vụ
     sudo cat > $SERVICE_FILE <<EOL
@@ -212,15 +211,16 @@ ExecStart=/usr/bin/mongod --config ${CONFIG_FILE}
 ExecStop=/usr/bin/mongod --config ${CONFIG_FILE} --shutdown
 Restart=on-failure
 RestartSec=5
-StandardOutput=syslog
-StandardError=syslog
-SyslogIdentifier=mongodb
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mongodb-${PORT}
 
 [Install]
 WantedBy=multi-user.target
 EOL
 
     sudo systemctl daemon-reload
+    sudo systemctl unmask $SERVICE_NAME &>/dev/null || true
     sudo systemctl enable $SERVICE_NAME
     
     echo -e "${GREEN}✅ Dịch vụ ${SERVICE_NAME} đã được tạo${NC}"
@@ -234,11 +234,11 @@ start_mongodb() {
     echo -e "${YELLOW}Khởi động MongoDB...${NC}"
     
     # Kiểm tra xung đột với dịch vụ mặc định
-    if sudo systemctl is-active --quiet mongod; then
-        echo -e "${YELLOW}⚠️ Dịch vụ mongod mặc định đang chạy, đang dừng...${NC}"
-        sudo systemctl stop mongod
-        sudo systemctl disable mongod
-        sleep 2
+    if systemctl is-enabled mongod &>/dev/null && ! systemctl is-masked mongod &>/dev/null; then
+        echo -e "${YELLOW}⚠️ Dịch vụ mongod mặc định đang được bật, đang vô hiệu hóa...${NC}"
+        sudo systemctl stop mongod &>/dev/null || true
+        sudo systemctl disable mongod &>/dev/null || true
+        sudo systemctl mask mongod &>/dev/null || true
     fi
     
     # Kiểm tra và dừng MongoDB nếu đang chạy
@@ -253,6 +253,7 @@ start_mongodb() {
     
     # Xóa lock file nếu tồn tại
     sudo rm -f /var/lib/mongodb_${PORT}/mongod.lock 2>/dev/null || true
+    sudo rm -f /tmp/mongodb-*.sock 2>/dev/null || true
     
     # Kiểm tra lại quyền trước khi khởi động
     sudo chown -R mongodb:mongodb /var/lib/mongodb_${PORT} /var/log/mongodb
@@ -260,60 +261,51 @@ start_mongodb() {
     sudo touch /var/log/mongodb/mongod_${PORT}.log
     sudo chown mongodb:mongodb /var/log/mongodb/mongod_${PORT}.log
     
-    # Khởi động MongoDB trực tiếp trước để kiểm tra nếu có lỗi
-    echo -e "${YELLOW}Kiểm tra khởi động trực tiếp...${NC}"
-    sudo -u mongodb mongod --config /etc/mongod_${PORT}.conf --fork --logpath /var/log/mongodb/mongod_${PORT}.log --logappend
-    sleep 2
-    if pgrep -f "mongod --config" > /dev/null; then
-        echo -e "${GREEN}✓ MongoDB khởi động trực tiếp thành công${NC}"
-        sudo pkill -f mongod || true
-        sleep 2
-    else
-        echo -e "${RED}⚠️ Khởi động trực tiếp thất bại, kiểm tra log:${NC}"
-        sudo tail -n 10 /var/log/mongodb/mongod_${PORT}.log
-    fi
-    
     # Khởi động MongoDB qua systemd
     sudo systemctl daemon-reload
+    sudo systemctl unmask $SERVICE_NAME &>/dev/null || true
+    sudo systemctl enable $SERVICE_NAME
     sudo systemctl start $SERVICE_NAME
     
     # Đợi lâu hơn và kiểm tra nhiều lần
     echo "Đợi MongoDB khởi động..."
-    for i in {1..5}; do
-        sleep 2
+    for i in {1..10}; do
+        sleep 3
         if sudo systemctl is-active --quiet $SERVICE_NAME; then
             echo -e "${GREEN}✓ MongoDB đã khởi động thành công${NC}"
+            echo -e "${GREEN}✅ MongoDB đã được cài đặt thành công${NC}"
             
-            # Kiểm tra MongoDB đang lắng nghe trên những địa chỉ nào
-            echo "Kiểm tra kết nối mạng của MongoDB:"
-            sudo netstat -ntlp | grep mongo || sudo ss -ntlp | grep mongo || true
-            sleep 1
-            
-            # Kiểm tra rõ ràng log
-            echo "10 dòng log gần nhất:"
-            sudo tail -n 10 /var/log/mongodb/mongod_${PORT}.log
+            # Hiển thị phiên bản MongoDB
+            mongosh --quiet --eval "db.version()" || true
             
             return 0
         fi
-        echo "Đang chờ... ($i/5)"
+        echo "Đang chờ... ($i/10)"
     done
     
     # Hiển thị thông tin lỗi chi tiết
-    echo -e "${RED}✗ Không thể khởi động MongoDB${NC}"
+    echo -e "${RED}✗ Không thể khởi động MongoDB qua systemd${NC}"
     echo "Trạng thái dịch vụ:"
     sudo systemctl status $SERVICE_NAME
-    echo "Kiểm tra log MongoDB chi tiết:"
-    sudo tail -n 30 /var/log/mongodb/mongod_${PORT}.log
     
-    # Thử kiểm tra file cấu hình
-    echo "Kiểm tra file cấu hình:"
-    sudo cat /etc/mongod_${PORT}.conf
+    # Nếu systemd thất bại, thử khởi động trực tiếp
+    echo -e "${YELLOW}Thử khởi động trực tiếp...${NC}"
+    sudo -u mongodb mongod --config /etc/mongod_${PORT}.conf --fork --logpath /var/log/mongodb/mongod_direct.log
     
-    # Thử khởi động trực tiếp với output hiển thị
-    echo "Thử khởi động trực tiếp với output chi tiết:"
-    sudo -u mongodb mongod --config /etc/mongod_${PORT}.conf --fork --logpath /var/log/mongodb/mongod_test.log
-    sleep 2
-    sudo cat /var/log/mongodb/mongod_test.log
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}✅ MongoDB đã khởi động thành công (trực tiếp)${NC}"
+        echo -e "${YELLOW}⚠️ Dịch vụ systemd thất bại, nhưng MongoDB đang chạy trực tiếp${NC}"
+        echo -e "${GREEN}✅ MongoDB đã được cài đặt thành công${NC}"
+        
+        # Hiển thị phiên bản MongoDB
+        mongosh --quiet --eval "db.version()" || true
+        
+        return 0
+    fi
+    
+    echo -e "${RED}✗ Không thể khởi động MongoDB bằng bất kỳ cách nào${NC}"
+    echo "Xem log để biết thêm chi tiết:"
+    sudo tail -n 30 /var/log/mongodb/mongod_direct.log
     
     return 1
 }
@@ -392,22 +384,32 @@ setup_primary() {
     # Cấu hình tường lửa
     configure_firewall
     
+    # Kiểm tra kết nối mạng
+    echo -e "${YELLOW}Kiểm tra kết nối mạng...${NC}"
+    echo "Địa chỉ IP Server: $SERVER_IP"
+    ping -c 1 -W 1 $SERVER_IP || echo "Không thể ping tới IP của server, nhưng tiếp tục thử"
+    
     # Tạo cấu hình không có bảo mật và không có replSetName ban đầu
     create_config false "no_repl"
     
     # Tạo và khởi động dịch vụ
-    create_systemd_service false
+    create_systemd_service false "no_repl"
     if ! start_mongodb; then
         return 1
     fi
     
     # Kiểm tra kết nối - thử cả localhost và IP
-    local CONNECT_HOST=$SERVER_IP
-    if ! verify_mongodb_connection false "" "" $SERVER_IP; then
-        if ! verify_mongodb_connection false "" "" "localhost"; then
-            return 1
+    local CONNECT_HOST="localhost"
+    if ! verify_mongodb_connection false "" "" "localhost"; then
+        if ! verify_mongodb_connection false "" "" "127.0.0.1"; then
+            if ! verify_mongodb_connection false "" "" $SERVER_IP; then
+                echo -e "${RED}❌ Không thể kết nối tới MongoDB từ bất kỳ host nào${NC}"
+                return 1
+            else
+                CONNECT_HOST=$SERVER_IP
+            fi
         else
-            CONNECT_HOST="localhost"
+            CONNECT_HOST="127.0.0.1"
         fi
     fi
     
@@ -419,14 +421,25 @@ setup_primary() {
     create_config false
     
     # Khởi động lại với cấu hình replica set
+    create_systemd_service false
     if ! start_mongodb; then
         return 1
     fi
     
     # Kiểm tra lại kết nối
     if ! verify_mongodb_connection false "" "" $CONNECT_HOST; then
+        echo -e "${YELLOW}Thử kết nối lại với các host khác...${NC}"
         if ! verify_mongodb_connection false "" "" "localhost"; then
-            return 1
+            if ! verify_mongodb_connection false "" "" "127.0.0.1"; then
+                if ! verify_mongodb_connection false "" "" $SERVER_IP; then
+                    echo -e "${RED}❌ Không thể kết nối lại sau khi thêm cấu hình replication${NC}"
+                    return 1
+                else
+                    CONNECT_HOST=$SERVER_IP
+                fi
+            else
+                CONNECT_HOST="127.0.0.1"
+            fi
         else
             CONNECT_HOST="localhost"
         fi
@@ -439,19 +452,36 @@ setup_primary() {
     # Thử vài cách khởi tạo khác nhau
     local success=false
     
-    # Cách 1: Khởi tạo với cấu hình đầy đủ
-    echo "Phương pháp 1: Khởi tạo với cấu hình đầy đủ"
+    # Cách 1: Khởi tạo với localhost trước
+    echo "Phương pháp 1: Khởi tạo với localhost"
     local init_result=$(mongosh --host $CONNECT_HOST --port $PRIMARY_PORT --eval "
     rs.initiate({
         _id: 'rs0',
         members: [
-            { _id: 0, host: '$SERVER_IP:$PRIMARY_PORT', priority: 10 }
+            { _id: 0, host: 'localhost:$PRIMARY_PORT', priority: 10 }
         ]
     })" --quiet)
     
     if echo "$init_result" | grep -q "ok" && ! echo "$init_result" | grep -q "NotYetInitialized"; then
-        echo -e "${GREEN}✅ Khởi tạo replica set thành công (phương pháp 1)${NC}"
+        echo -e "${GREEN}✅ Khởi tạo replica set với localhost thành công${NC}"
         success=true
+        
+        # Chờ một chút cho MongoDB ổn định
+        sleep 10
+        
+        # Cập nhật cấu hình với IP thực
+        echo "Cập nhật cấu hình với IP thực tế..."
+        local update_result=$(mongosh --host localhost --port $PRIMARY_PORT --eval "
+        var config = rs.conf();
+        config.members[0].host = '$SERVER_IP:$PRIMARY_PORT';
+        rs.reconfig(config, {force: true});" --quiet)
+        
+        if echo "$update_result" | grep -q "ok"; then
+            echo -e "${GREEN}✅ Cập nhật cấu hình với IP thực tế thành công${NC}"
+        else
+            echo -e "${YELLOW}⚠️ Không thể cập nhật cấu hình, nhưng replica set đã hoạt động với localhost${NC}"
+            echo "Lỗi: $update_result"
+        fi
     else
         echo -e "${YELLOW}⚠️ Phương pháp 1 thất bại, đang thử phương pháp 2...${NC}"
         echo "Lỗi: $init_result"
@@ -463,48 +493,23 @@ setup_primary() {
         if echo "$init_result2" | grep -q "ok" && ! echo "$init_result2" | grep -q "NotYetInitialized"; then
             echo -e "${GREEN}✅ Khởi tạo replica set thành công (phương pháp 2)${NC}"
             success=true
-            
-            # Chờ một chút cho MongoDB ổn định
-            sleep 5
-            
-            # Thêm host với IP
-            echo "Thêm server với địa chỉ IP..."
-            mongosh --host $CONNECT_HOST --port $PRIMARY_PORT --eval "
-            rs.add('$SERVER_IP:$PRIMARY_PORT')" --quiet
         else
             echo -e "${YELLOW}⚠️ Phương pháp 2 thất bại, đang thử phương pháp 3...${NC}"
             echo "Lỗi: $init_result2"
             
-            # Cách 3: Dùng mongo local và thay host
-            echo "Phương pháp 3: Khởi tạo với localhost và cập nhật cấu hình"
+            # Cách 3: Force khởi tạo
+            echo "Phương pháp 3: Khởi tạo với localhost và force"
             local init_result3=$(mongosh --host localhost --port $PRIMARY_PORT --eval "
             rs.initiate({
                 _id: 'rs0',
                 members: [
                     { _id: 0, host: 'localhost:$PRIMARY_PORT', priority: 10 }
                 ]
-            })" --quiet)
+            }, {force: true})" --quiet)
             
             if echo "$init_result3" | grep -q "ok" && ! echo "$init_result3" | grep -q "NotYetInitialized"; then
-                echo -e "${GREEN}✅ Khởi tạo replica set với localhost thành công${NC}"
-                
-                # Chờ MongoDB ổn định
-                sleep 10
-                
-                # Cập nhật cấu hình với IP thực
-                echo "Cập nhật cấu hình với IP thực tế..."
-                local update_result=$(mongosh --host localhost --port $PRIMARY_PORT --eval "
-                var config = rs.conf();
-                config.members[0].host = '$SERVER_IP:$PRIMARY_PORT';
-                rs.reconfig(config);" --quiet)
-                
-                if echo "$update_result" | grep -q "ok"; then
-                    echo -e "${GREEN}✅ Cập nhật cấu hình replica set thành công${NC}"
-                    success=true
-                else
-                    echo -e "${RED}❌ Không thể cập nhật cấu hình replica set${NC}"
-                    echo "Lỗi: $update_result"
-                fi
+                echo -e "${GREEN}✅ Khởi tạo replica set với localhost và force thành công${NC}"
+                success=true
             else
                 echo -e "${RED}❌ Tất cả các phương pháp khởi tạo đều thất bại${NC}"
                 echo "Lỗi cuối cùng: $init_result3"
@@ -519,7 +524,7 @@ setup_primary() {
     echo -e "${YELLOW}Đợi MongoDB khởi tạo và bầu chọn PRIMARY...${NC}"
     sleep 15
     
-    # Kiểm tra trạng thái replica set 
+    # Kiểm tra trạng thái replica set
     echo -e "${YELLOW}Kiểm tra trạng thái replica set...${NC}"
     local status=$(mongosh --host $CONNECT_HOST --port $PRIMARY_PORT --eval "rs.status()" --quiet)
     local primary_state=$(echo "$status" | grep -A 5 "stateStr" | grep "PRIMARY")
@@ -548,6 +553,9 @@ setup_primary() {
             echo -e "\n${GREEN}=== THIẾT LẬP MONGODB PRIMARY HOÀN TẤT ===${NC}"
             echo -e "${GREEN}Lệnh kết nối:${NC}"
             echo "mongosh --host $SERVER_IP --port $PRIMARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
+            echo ""
+            echo -e "${YELLOW}Lưu ý:${NC} Nếu không thể kết nối qua IP, sử dụng lệnh:"
+            echo "mongosh --host localhost --port $PRIMARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
         else
             return 1
         fi
