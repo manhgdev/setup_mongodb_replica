@@ -24,38 +24,50 @@ generate_setup_guide() {
 - Username: $ADMIN_USERNAME
 - Password: $ADMIN_PASSWORD
 
-## Các lệnh hữu ích
+## Các bước cài đặt
 
-1. Kết nối đến MongoDB:
+1. Lấy KEY_FILE từ PRIMARY server:
    \`\`\`bash
-   mongosh --host $SERVER_IP --port $PRIMARY_PORT -u $ADMIN_USERNAME -p $ADMIN_PASSWORD --authenticationDatabase admin
+   # Trên PRIMARY server
+   scp /etc/mongodb.key root@$SERVER_IP:/etc/mongodb.key
+   
+   # Trên SECONDARY server
+   chown mongodb:mongodb /etc/mongodb.key
+   chmod 600 /etc/mongodb.key
    \`\`\`
 
-2. Kiểm tra trạng thái replica set:
-   \`\`\`javascript
-   rs.status()
-   \`\`\`
-
-3. Xem cấu hình replica set:
-   \`\`\`javascript
-   rs.conf()
-   \`\`\`
-
-4. Kết nối đến PRIMARY server:
+2. Kết nối với PRIMARY server:
    \`\`\`bash
    mongosh --host $PRIMARY_SERVER_IP --port $PRIMARY_PORT -u $ADMIN_USERNAME -p $ADMIN_PASSWORD --authenticationDatabase admin
    \`\`\`
 
-## Quản lý dữ liệu
-
-1. Backup dữ liệu:
-   \`\`\`bash
-   mongodump --host $SERVER_IP --port $PRIMARY_PORT -u $ADMIN_USERNAME -p $ADMIN_PASSWORD --authenticationDatabase admin --out /path/to/backup
+3. Thêm node vào replica set:
+   \`\`\`javascript
+   // Thêm SECONDARY
+   rs.add("$SERVER_IP:$PRIMARY_PORT")
+   
+   // Thêm ARBITER 1
+   rs.addArb("$SERVER_IP:$ARBITER1_PORT")
+   
+   // Thêm ARBITER 2
+   rs.addArb("$SERVER_IP:$ARBITER2_PORT")
    \`\`\`
 
-2. Restore dữ liệu:
+## Các lệnh hữu ích
+
+1. Kiểm tra trạng thái replica set:
+   \`\`\`javascript
+   rs.status()
+   \`\`\`
+
+2. Xem cấu hình replica set:
+   \`\`\`javascript
+   rs.conf()
+   \`\`\`
+
+3. Kết nối đến MongoDB:
    \`\`\`bash
-   mongorestore --host $SERVER_IP --port $PRIMARY_PORT -u $ADMIN_USERNAME -p $ADMIN_PASSWORD --authenticationDatabase admin /path/to/backup
+   mongosh --host $SERVER_IP --port $PRIMARY_PORT -u $ADMIN_USERNAME -p $ADMIN_PASSWORD --authenticationDatabase admin
    \`\`\`
 
 ## Lưu ý quan trọng

@@ -46,8 +46,6 @@ replication:
   replSetName: rs0
 setParameter:
   allowMultipleArbiters: true
-processManagement:
-  fork: true
 EOL
 
     # Dừng instance MongoDB hiện tại nếu có
@@ -56,7 +54,8 @@ EOL
     
     # Khởi động node MongoDB
     echo "Đang khởi động MongoDB trên port $PORT..."
-    sudo mongod --config "$CONFIG_FILE"
+    sudo mongod --config "$CONFIG_FILE" &
+    sleep 5
     
     # Kiểm tra kết nối
     local max_attempts=3
@@ -64,8 +63,6 @@ EOL
     while [ $attempt -le $max_attempts ]; do
         if mongosh --port $PORT --eval 'db.runCommand({ ping: 1 })' &> /dev/null; then
             echo "✅ Node MongoDB trên port $PORT đã sẵn sàng"
-            # Đợi thêm một chút để đảm bảo MongoDB hoàn toàn sẵn sàng
-            sleep 10
             return 0
         fi
         echo "Đang chờ node MongoDB trên port $PORT khởi động... ($attempt/$max_attempts)"
@@ -151,7 +148,29 @@ setup_replica_primary_linux() {
     
     sleep 5
     
-    # Tạo user admin trước khi khởi tạo replica set
+    # Khởi tạo replica set trước
+    echo "Đang khởi tạo replica set..."
+    local init_result=$(mongosh --port $PRIMARY_PORT --eval 'rs.initiate({
+        _id: "rs0",
+        members: [
+            { _id: 0, host: "'$SERVER_IP:$PRIMARY_PORT'", priority: 2 },
+            { _id: 1, host: "'$SERVER_IP:$ARBITER1_PORT'", arbiterOnly: true },
+            { _id: 2, host: "'$SERVER_IP:$ARBITER2_PORT'", arbiterOnly: true }
+        ]
+    })' 2>&1)
+    
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}❌ Lỗi khi khởi tạo replica set:${NC}"
+        echo "$init_result"
+        echo "Đang kiểm tra log file..."
+        sudo tail -n 50 /var/log/mongodb/mongod_${PRIMARY_PORT}.log
+        return 1
+    fi
+    
+    # Đợi replica set khởi tạo xong
+    sleep 5
+    
+    # Tạo user admin sau khi đã khởi tạo replica set
     echo "Đang tạo user admin..."
     local create_user_result=$(mongosh --port $PRIMARY_PORT --eval '
         db = db.getSiblingDB("admin");
@@ -173,50 +192,7 @@ setup_replica_primary_linux() {
         return 1
     fi
     
-    # Khởi động lại MongoDB để áp dụng xác thực
-    echo "Đang khởi động lại MongoDB để áp dụng xác thực..."
-    sudo pkill -f "mongod.*${PRIMARY_PORT}" || true
-    sleep 2
-    sudo mongod --config "/etc/mongod_${PRIMARY_PORT}.conf"
-    
-    # Đợi MongoDB khởi động lại
-    local max_attempts=30
-    local attempt=1
-    while [ $attempt -le $max_attempts ]; do
-        if mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'db.runCommand({ ping: 1 })' &> /dev/null; then
-            echo "✅ MongoDB đã khởi động lại và sẵn sàng"
-            break
-        fi
-        echo "Đang chờ MongoDB khởi động lại... ($attempt/$max_attempts)"
-        sleep 2
-        attempt=$((attempt + 1))
-    done
-    
-    if [ $attempt -gt $max_attempts ]; then
-        echo -e "${RED}❌ Không thể kết nối đến MongoDB sau khi khởi động lại${NC}"
-        return 1
-    fi
-    
-    # Khởi tạo replica set sau khi đã có xác thực
-    echo "Đang khởi tạo replica set..."
-    local init_result=$(mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.initiate({
-        _id: "rs0",
-        members: [
-            { _id: 0, host: "'$SERVER_IP:$PRIMARY_PORT'", priority: 2 },
-            { _id: 1, host: "'$SERVER_IP:$ARBITER1_PORT'", arbiterOnly: true },
-            { _id: 2, host: "'$SERVER_IP:$ARBITER2_PORT'", arbiterOnly: true }
-        ]
-    })' 2>&1)
-    
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}❌ Lỗi khi khởi tạo replica set:${NC}"
-        echo "$init_result"
-        echo "Đang kiểm tra log file..."
-        sudo tail -n 50 /var/log/mongodb/mongod_${PRIMARY_PORT}.log
-        return 1
-    fi
-    
-    # Kiểm tra trạng thái replica set
+    # Kiểm tra trạng thái replica set với xác thực
     echo "Đang kiểm tra trạng thái replica set..."
     local status_result=$(mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.status()' 2>&1)
     if [ $? -ne 0 ]; then
