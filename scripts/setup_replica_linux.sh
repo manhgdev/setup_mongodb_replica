@@ -13,6 +13,11 @@ stop_mongodb() {
     pkill -9 -f mongod || true
     sleep 2
     
+    # Stop all MongoDB services
+    for port in 27017 27018 27019; do
+        sudo systemctl stop mongod_${port} 2>/dev/null || true
+    done
+    
     # Kill any processes using MongoDB ports
     for port in 27017 27018 27019; do
         echo "Killing processes on port $port..."
@@ -257,18 +262,33 @@ setup_primary() {
         # Restart with authentication
         echo "Restarting MongoDB with authentication..."
         stop_mongodb
-        sleep 2
-        systemctl start mongod_${PRIMARY_PORT}
-        systemctl start mongod_${ARBITER1_PORT}
-        systemctl start mongod_${ARBITER2_PORT}
+        sleep 5
+        
+        # Start services in order
+        echo "Starting PRIMARY node..."
+        sudo systemctl start mongod_27017
+        sleep 10
+        
+        echo "Starting ARBITER nodes..."
+        sudo systemctl start mongod_27018
+        sudo systemctl start mongod_27019
+        sleep 5
         
         # Verify connection with auth
         echo "Verifying connection with authentication..."
-        if mongosh --port $PRIMARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet &>/dev/null; then
+        local auth_result=$(mongosh --port $PRIMARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet 2>&1)
+        
+        if [ $? -eq 0 ]; then
             echo -e "${GREEN}✅ Authentication verified successfully${NC}"
             echo "Connection command: mongosh --host $SERVER_IP --port $PRIMARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
         else
             echo -e "${RED}❌ Authentication verification failed${NC}"
+            echo "Error details:"
+            echo "$auth_result"
+            echo "Trying to check MongoDB status..."
+            sudo systemctl status mongod_27017
+            sudo systemctl status mongod_27018
+            sudo systemctl status mongod_27019
             return 1
         fi
     else
