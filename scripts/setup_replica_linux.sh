@@ -14,6 +14,15 @@ setup_node_linux() {
     sudo chown -R mongodb:mongodb "/var/lib/mongodb_${PORT}"
     sudo chown -R mongodb:mongodb "/var/log/mongodb"
     
+    # Tạo keyFile nếu chưa tồn tại
+    local KEY_FILE="/etc/mongodb.key"
+    if [ ! -f "$KEY_FILE" ]; then
+        echo "Đang tạo keyFile..."
+        openssl rand -base64 756 > "$KEY_FILE"
+        sudo chown mongodb:mongodb "$KEY_FILE"
+        sudo chmod 600 "$KEY_FILE"
+    fi
+    
     # Tạo file config cho node
     sudo tee "$CONFIG_FILE" > /dev/null << EOL
 systemLog:
@@ -27,6 +36,7 @@ net:
   port: ${PORT}
 security:
   authorization: enabled
+  keyFile: /etc/mongodb.key
 replication:
   replSetName: rs0
 setParameter:
