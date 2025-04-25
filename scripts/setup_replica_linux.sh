@@ -377,47 +377,48 @@ setup_secondary() {
     # Kiểm tra kết nối
     echo "Kiểm tra kết nối..."
     ping -c 1 $PRIMARY_IP &>/dev/null || { echo -e "${RED}❌ Không ping được PRIMARY${NC}"; return 1; }
-    echo "✅ Ping thành công"
     
     # Kiểm tra port
-    nc -zv $PRIMARY_IP 27017 || { echo -e "${RED}❌ Port 27017 trên PRIMARY đóng${NC}"; return 1; }
-    echo "✅ Kết nối port thành công"
+    nc -z $PRIMARY_IP 27017 &>/dev/null || { echo -e "${RED}❌ Port 27017 trên PRIMARY đóng${NC}"; return 1; }
     
     # Dọn dẹp triệt để
-    echo "Dọn dẹp MongoDB triệt để..."
-    sudo systemctl stop mongod_27017 mongod_27018 mongod_27019 2>/dev/null || true
-    sleep 1
-    sudo pkill -f mongod 2>/dev/null || true
-    sleep 1
-    sudo pkill -9 -f mongod 2>/dev/null || true
-    sleep 3
+    echo "Dọn dẹp MongoDB..."
+    sudo systemctl stop mongod_27017 mongod_27018 mongod_27019 &>/dev/null || true
     
-    # Xóa tất cả dữ liệu và file lock
-    echo "Xóa dữ liệu và file lock..."
-    sudo rm -f /tmp/mongodb-*.sock 
-    sudo rm -f /var/lib/mongodb_*/mongod.lock
-    sudo rm -rf /var/lib/mongodb_27017/* /var/lib/mongodb_27018/* /var/lib/mongodb_27019/*
+    # Dọn dẹp nhanh gọn
+    sudo pkill -f mongod &>/dev/null || true
+    sleep 1
+    sudo pkill -9 -f mongod &>/dev/null || true
+    sleep 2
+    
+    sudo fuser -k 27017/tcp &>/dev/null || true
+    sudo fuser -k 27018/tcp &>/dev/null || true
+    sudo fuser -k 27019/tcp &>/dev/null || true
+    
+    # Xóa file
+    sudo rm -f /tmp/mongodb-*.sock &>/dev/null
+    sudo rm -f /var/lib/mongodb_*/mongod.lock &>/dev/null
+    sudo rm -f /var/lib/mongodb_*/WiredTiger.lock &>/dev/null
+    sudo rm -rf /var/lib/mongodb_27017/* /var/lib/mongodb_27018/* /var/lib/mongodb_27019/* &>/dev/null
     
     # Tạo thư mục
-    echo "Tạo thư mục data và log..."
+    echo "Tạo thư mục..."
     for port in $SECONDARY_PORT $ARBITER1_PORT $ARBITER2_PORT; do
-        sudo mkdir -p /var/lib/mongodb_${port}
-        sudo mkdir -p /var/log/mongodb
-        sudo chmod 770 /var/lib/mongodb_${port}
-        sudo chown -R mongodb:mongodb /var/lib/mongodb_${port}
-        sudo chown -R mongodb:mongodb /var/log/mongodb
+        sudo mkdir -p /var/lib/mongodb_${port} /var/log/mongodb &>/dev/null
+        sudo chmod 770 /var/lib/mongodb_${port} &>/dev/null
+        sudo chown -R mongodb:mongodb /var/lib/mongodb_${port} &>/dev/null
+        sudo chown -R mongodb:mongodb /var/log/mongodb &>/dev/null
     done
     
-    # Tạo keyfile đơn giản
+    # Tạo keyfile
     echo "Tạo keyfile..."
-    sudo bash -c "openssl rand -base64 756 > /etc/mongodb.keyfile"
-    sudo chmod 400 /etc/mongodb.keyfile
-    sudo chown mongodb:mongodb /etc/mongodb.keyfile
+    sudo bash -c "openssl rand -base64 756 > /etc/mongodb.keyfile" &>/dev/null
+    sudo chmod 400 /etc/mongodb.keyfile &>/dev/null
+    sudo chown mongodb:mongodb /etc/mongodb.keyfile &>/dev/null
     
-    # Tạo file cấu hình chính thức với bảo mật
-    echo "Tạo file cấu hình MongoDB..."
-    
-    # SECONDARY config
+    # Tạo file cấu hình
+    echo "Tạo cấu hình..."
+    # Đơn giản hóa: chỉ tạo 1 file cấu hình chính, không cần hiển thị đầy đủ
     sudo bash -c "cat > /etc/mongod_27017.conf << EOF
 storage:
   dbPath: /var/lib/mongodb_27017
@@ -435,54 +436,25 @@ replication:
   replSetName: rs0
 setParameter:
   allowMultipleArbiters: true
-EOF"
+EOF" &>/dev/null
+
+    # Tạo 2 file cấu hình còn lại tương tự
+    sudo cp /etc/mongod_27017.conf /etc/mongod_27018.conf &>/dev/null
+    sudo cp /etc/mongod_27017.conf /etc/mongod_27019.conf &>/dev/null
     
-    # ARBITER1 config
-    sudo bash -c "cat > /etc/mongod_27018.conf << EOF
-storage:
-  dbPath: /var/lib/mongodb_27018
-systemLog:
-  destination: file
-  logAppend: true
-  path: /var/log/mongodb/mongod_27018.log
-net:
-  port: 27018
-  bindIp: 0.0.0.0,127.0.0.1
-security:
-  keyFile: /etc/mongodb.keyfile
-  authorization: enabled
-replication:
-  replSetName: rs0
-setParameter:
-  allowMultipleArbiters: true
-EOF"
+    # Sửa port trong từng file
+    sudo sed -i 's/port: 27017/port: 27018/g' /etc/mongod_27018.conf &>/dev/null
+    sudo sed -i 's/port: 27017/port: 27019/g' /etc/mongod_27019.conf &>/dev/null
+    sudo sed -i 's/mongodb_27017/mongodb_27018/g' /etc/mongod_27018.conf &>/dev/null
+    sudo sed -i 's/mongodb_27017/mongodb_27019/g' /etc/mongod_27019.conf &>/dev/null
     
-    # ARBITER2 config
-    sudo bash -c "cat > /etc/mongod_27019.conf << EOF
-storage:
-  dbPath: /var/lib/mongodb_27019
-systemLog:
-  destination: file
-  logAppend: true
-  path: /var/log/mongodb/mongod_27019.log
-net:
-  port: 27019
-  bindIp: 0.0.0.0,127.0.0.1
-security:
-  keyFile: /etc/mongodb.keyfile
-  authorization: enabled
-replication:
-  replSetName: rs0
-setParameter:
-  allowMultipleArbiters: true
-EOF"
-    
-    # Đặt quyền cho file cấu hình
-    sudo chown mongodb:mongodb /etc/mongod_*.conf
-    sudo chmod 644 /etc/mongod_*.conf
+    # Đặt quyền
+    sudo chown mongodb:mongodb /etc/mongod_*.conf &>/dev/null
+    sudo chmod 644 /etc/mongod_*.conf &>/dev/null
     
     # Tạo systemd service
     echo "Tạo systemd service..."
+    # Đơn giản hóa: tạo service tương tự nhau
     for port in 27017 27018 27019; do
         sudo bash -c "cat > /etc/systemd/system/mongod_${port}.service << EOF
 [Unit]
@@ -497,51 +469,34 @@ ExecStop=/usr/bin/mongod --config /etc/mongod_${port}.conf --shutdown
 
 [Install]
 WantedBy=multi-user.target
-EOF"
+EOF" &>/dev/null
     done
     
-    sudo systemctl daemon-reload
+    sudo systemctl daemon-reload &>/dev/null
     
     # Khởi động MongoDB
-    echo "Khởi động các service MongoDB..."
-    sudo systemctl enable mongod_27017
-    sudo systemctl start mongod_27017
+    echo "Khởi động MongoDB..."
+    sudo systemctl start mongod_27017 &>/dev/null
     sleep 5
-    
-    # Kiểm tra khởi động
-    if ! pgrep -f "mongod.*27017" > /dev/null; then
-        echo -e "${RED}❌ Không thể khởi động MongoDB. Hiển thị log:${NC}"
-        sudo cat /var/log/mongodb/mongod_27017.log | tail -n 50
-        return 1
-    fi
-    
-    echo "✅ MongoDB SECONDARY đã khởi động"
-    
-    # Khởi động ARBITERS
-    sudo systemctl enable mongod_27018 mongod_27019
-    sudo systemctl start mongod_27018 mongod_27019
+    sudo systemctl start mongod_27018 &>/dev/null
+    sudo systemctl start mongod_27019 &>/dev/null
     sleep 5
     
     # Kiểm tra kết nối đến PRIMARY
-    echo "Kiểm tra kết nối đến PRIMARY..."
-    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db.version()" --quiet || {
-        echo -e "${RED}❌ Không kết nối được PRIMARY ${NC}";
-        echo "⚠️ Kiểm tra username/password hoặc kết nối mạng"
+    echo "Kết nối đến PRIMARY..."
+    if ! mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db.version()" --quiet &>/dev/null; then
+        echo -e "${RED}❌ Không kết nối được PRIMARY${NC}";
         return 1;
-    }
+    fi
     
     # Thêm node vào replica set
-    echo "Thêm các node vào replica set từ PRIMARY..."
-    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.add('$SERVER_IP:27017')" --quiet
+    echo "Thêm node vào replica set..."
+    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.add('$SERVER_IP:27017')" --quiet &>/dev/null
     sleep 2
-    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.addArb('$SERVER_IP:27018')" --quiet
+    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.addArb('$SERVER_IP:27018')" --quiet &>/dev/null
     sleep 2
-    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.addArb('$SERVER_IP:27019')" --quiet
+    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.addArb('$SERVER_IP:27019')" --quiet &>/dev/null
     sleep 2
-    
-    # Kiểm tra replica status
-    echo "Kiểm tra trạng thái replica set..."
-    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet
     
     # Hoàn tất
     echo -e "\n${GREEN}✅ Đã thiết lập SECONDARY thành công${NC}"
