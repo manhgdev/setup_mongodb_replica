@@ -236,23 +236,27 @@ setup_replica() {
     read -p "Chọn một tùy chọn (1-3): " choice
     
     case $choice in
-        1)
+        1|2)
             echo "Nhập IP của server này [Enter để tự động lấy IP]: "
             read -r server_ip
             if [ -z "$server_ip" ]; then
                 server_ip=$(get_server_ip)
                 echo "Đã tự động lấy IP: $server_ip"
             fi
-            setup_replica_primary "$server_ip"
-            ;;
-        2)
-            echo "Nhập IP của server này [Enter để tự động lấy IP]: "
-            read -r server_ip
-            if [ -z "$server_ip" ]; then
-                server_ip=$(get_server_ip)
-                echo "Đã tự động lấy IP: $server_ip"
+            
+            if [[ "$(uname -s)" == "Darwin" ]]; then
+                if [ "$choice" == "1" ]; then
+                    setup_replica_primary_macos "$server_ip"
+                else
+                    setup_replica_secondary_macos "$server_ip"
+                fi
+            else
+                if [ "$choice" == "1" ]; then
+                    setup_replica_primary_linux "$server_ip"
+                else
+                    setup_replica_secondary_linux "$server_ip"
+                fi
             fi
-            setup_replica_secondary "$server_ip"
             ;;
         3)
             return 0
