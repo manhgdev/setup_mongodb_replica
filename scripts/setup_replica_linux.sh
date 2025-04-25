@@ -500,10 +500,15 @@ setup_primary() {
     PRIMARY_PASS=${PRIMARY_PASS:-$ADMIN_PASS}
     echo ""
     
+    # Tạo keyfile ngay từ đầu
+    echo -e "${YELLOW}Tạo keyfile xác thực cho PRIMARY node...${NC}"
+    create_keyfile "/etc/mongodb.keyfile" $SERVER_IP
+    
     # Xác nhận thông tin
     echo -e "${YELLOW}=== THÔNG TIN ĐÃ NHẬP ===${NC}"
     echo "Server IP: $SERVER_IP"
     echo "Admin User: $PRIMARY_USER"
+    echo "Keyfile: /etc/mongodb.keyfile"
     echo -e "${YELLOW}=========================${NC}"
     read -p "Xác nhận thông tin trên? (y/n): " CONFIRM
     if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
@@ -694,9 +699,6 @@ setup_primary() {
         # Tạo người dùng admin
         create_admin_user $PRIMARY_USER $PRIMARY_PASS || return 1
         
-        # Tạo keyfile
-        create_keyfile "/etc/mongodb.keyfile" $SERVER_IP
-        
         # Bật bảo mật và khởi động lại
         echo -e "${YELLOW}Khởi động lại với bảo mật...${NC}"
         create_systemd_service true
@@ -757,12 +759,24 @@ setup_secondary() {
     SEC_PASS=${SEC_PASS:-$ADMIN_PASS}
     echo ""
     
+    # Tạo keyfile ngay từ đầu
+    echo -e "${YELLOW}Lấy keyfile từ PRIMARY node...${NC}"
+    if ! create_keyfile "/etc/mongodb.keyfile" $PRIMARY_IP; then
+        echo -e "${RED}❌ Lỗi khi lấy keyfile từ PRIMARY.${NC}"
+        echo -e "${YELLOW}Thử tạo keyfile mới...${NC}"
+        openssl rand -base64 756 | sudo tee /etc/mongodb.keyfile > /dev/null
+        sudo chmod 400 /etc/mongodb.keyfile
+        sudo chown mongodb:mongodb /etc/mongodb.keyfile
+        echo -e "${YELLOW}⚠️ Đã tạo keyfile cục bộ. Cần sao chép thủ công sang PRIMARY.${NC}"
+    fi
+    
     # Xác nhận thông tin
     echo -e "${YELLOW}=== THÔNG TIN ĐÃ NHẬP ===${NC}"
     echo "Server IP: $SERVER_IP"
     echo "PRIMARY IP: $PRIMARY_IP"
     echo "PRIMARY User: $PRIMARY_USER"
     echo "SECONDARY User: $SEC_USER"
+    echo "Keyfile: /etc/mongodb.keyfile"
     echo -e "${YELLOW}=========================${NC}"
     read -p "Xác nhận thông tin trên? (y/n): " CONFIRM
     if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
@@ -953,13 +967,7 @@ setup_secondary() {
     fi
     
     # BƯỚC 5: Tạo keyfile và cấu hình bảo mật
-    echo -e "${YELLOW}BƯỚC 5: Tạo keyfile và cấu hình bảo mật...${NC}"
-    
-    # Tạo hoặc sao chép keyfile
-    if ! create_keyfile "/etc/mongodb.keyfile" $PRIMARY_IP; then
-        echo -e "${RED}❌ Có vấn đề khi tạo/sao chép keyfile.${NC}"
-        echo -e "${YELLOW}Tiếp tục quá trình nhưng có thể gặp vấn đề với xác thực.${NC}"
-    fi
+    echo -e "${YELLOW}BƯỚC 5: Áp dụng bảo mật với keyfile...${NC}"
     
     # Kiểm tra và đảm bảo quyền keyfile đúng
     echo -e "${YELLOW}Kiểm tra và sửa quyền keyfile...${NC}"
