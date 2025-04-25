@@ -490,18 +490,58 @@ setup_secondary() {
     sudo systemctl restart mongod_${ARBITER_PORT}
     sleep 2
     
-    echo -e "${GREEN}✅ SECONDARY setup completed successfully${NC}"
-    echo -e "\n${GREEN}Next Steps:${NC}"
-    echo "1. Copy keyfile from PRIMARY server to /etc/mongodb.keyfile"
-    echo "2. Set correct permissions:"
-    echo "   sudo chown mongodb:mongodb /etc/mongodb.keyfile"
-    echo "   sudo chmod 400 /etc/mongodb.keyfile"
-    echo "3. Restart MongoDB services:"
-    echo "   sudo systemctl restart mongod_27017 mongod_27018"
-    echo "4. Connect to PRIMARY server and add this node to replica set:"
-    echo "   mongosh --host $PRIMARY_IP --port 27017 -u admin -p admin --authenticationDatabase admin"
-    echo "   rs.add({host: '$SERVER_IP:$SECONDARY_PORT', priority: 5, votes: 1})"
-    echo "   rs.addArb('$SERVER_IP:$ARBITER_PORT')"
+    # Get admin credentials from PRIMARY
+    echo "Getting admin credentials from PRIMARY..."
+    read -p "Enter admin username from PRIMARY [manhg]: " ADMIN_USER
+    ADMIN_USER=${ADMIN_USER:-manhg}
+    
+    read -sp "Enter admin password from PRIMARY [manhnk]: " ADMIN_PASS
+    ADMIN_PASS=${ADMIN_PASS:-manhnk}
+    echo
+    
+    # Add SECONDARY to replica set
+    echo "Adding SECONDARY to replica set..."
+    local add_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
+    rs.add({
+        host: '$SERVER_IP:$SECONDARY_PORT',
+        priority: 5,
+        votes: 1
+    });
+    rs.addArb('$SERVER_IP:$ARBITER_PORT')")
+    
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}❌ Failed to add SECONDARY to replica set${NC}"
+        echo "Error: $add_result"
+        return 1
+    fi
+    
+    echo -e "${GREEN}✅ SECONDARY added to replica set successfully${NC}"
+    
+    # Wait for replication
+    echo "Waiting for replication to complete..."
+    sleep 3
+    
+    # Check replica set status
+    local status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
+    local secondary_state=$(echo "$status" | grep -A 5 "stateStr" | grep "SECONDARY")
+    
+    if [ -n "$secondary_state" ]; then
+        echo -e "${GREEN}✅ SECONDARY setup completed successfully${NC}"
+        echo -e "\n${GREEN}Connection Commands:${NC}"
+        echo "1. Connect to PRIMARY:"
+        echo "mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
+        echo "2. Connect to SECONDARY:"
+        echo "mongosh --host $SERVER_IP --port $SECONDARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
+        echo "3. Connect to ARBITER:"
+        echo "mongosh --host $SERVER_IP --port $ARBITER_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
+        echo "4. Connect to Replica Set:"
+        echo "mongosh \"mongodb://$ADMIN_USER:$ADMIN_PASS@$PRIMARY_IP:27017,$SERVER_IP:$SECONDARY_PORT,$SERVER_IP:$ARBITER_PORT/admin?replicaSet=rs0\""
+    else
+        echo -e "${RED}❌ SECONDARY setup failed - Node not in SECONDARY state${NC}"
+        echo "Current status:"
+        echo "$status"
+        return 1
+    fi
 }
 
 # Main function
