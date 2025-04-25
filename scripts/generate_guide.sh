@@ -70,40 +70,6 @@ generate_setup_guide() {
    mongosh --host $SERVER_IP --port $PRIMARY_PORT -u $ADMIN_USERNAME -p $ADMIN_PASSWORD --authenticationDatabase admin
    \`\`\`
 
-## Lưu ý quan trọng
-
-1. Bảo mật:
-   - Giữ keyFile an toàn: /etc/mongodb.key
-   - Thay đổi password admin định kỳ
-   - Giới hạn IP truy cập
-
-2. Quản lý:
-   - Log files: /var/log/mongodb/
-   - Data files: /var/lib/mongodb_*
-   - Config files: /etc/mongod_*.conf
-
-3. Giám sát:
-   - Kiểm tra log file thường xuyên
-   - Theo dõi dung lượng ổ đĩa
-   - Giám sát hiệu suất
-
-## Xử lý sự cố
-
-1. MongoDB không khởi động:
-   - Kiểm tra log file
-   - Kiểm tra quyền truy cập
-   - Kiểm tra port đã sử dụng
-
-2. Replica set không hoạt động:
-   - Kiểm tra kết nối với PRIMARY server
-   - Kiểm tra trạng thái các node
-   - Kiểm tra cấu hình replica set
-
-3. Lỗi xác thực:
-   - Kiểm tra keyFile
-   - Kiểm tra user/password
-   - Kiểm tra quyền truy cập
-
 ## Liên hệ hỗ trợ
 
 Nếu gặp vấn đề trong quá trình vận hành, vui lòng liên hệ:
@@ -111,6 +77,4 @@ Nếu gặp vấn đề trong quá trình vận hành, vui lòng liên hệ:
 - Phone: +84 123 456 789
 EOL
 
-    echo -e "${GREEN}✅ Đã tạo file hướng dẫn: $GUIDE_FILE${NC}"
-    echo "Bạn có thể sử dụng file này để quản lý MongoDB Replica Set"
 } 

@@ -148,29 +148,7 @@ setup_replica_primary_linux() {
     
     sleep 5
     
-    # Khởi tạo replica set trước
-    echo "Đang khởi tạo replica set..."
-    local init_result=$(mongosh --port $PRIMARY_PORT --eval 'rs.initiate({
-        _id: "rs0",
-        members: [
-            { _id: 0, host: "'$SERVER_IP:$PRIMARY_PORT'", priority: 2 },
-            { _id: 1, host: "'$SERVER_IP:$ARBITER1_PORT'", arbiterOnly: true },
-            { _id: 2, host: "'$SERVER_IP:$ARBITER2_PORT'", arbiterOnly: true }
-        ]
-    })' 2>&1)
-    
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}❌ Lỗi khi khởi tạo replica set:${NC}"
-        echo "$init_result"
-        echo "Đang kiểm tra log file..."
-        sudo tail -n 50 /var/log/mongodb/mongod_${PRIMARY_PORT}.log
-        return 1
-    fi
-    
-    # Đợi replica set khởi tạo xong
-    sleep 5
-    
-    # Tạo user admin sau khi đã khởi tạo replica set
+    # Tạo user admin trước khi khởi tạo replica set
     echo "Đang tạo user admin..."
     local create_user_result=$(mongosh --port $PRIMARY_PORT --eval '
         db = db.getSiblingDB("admin");
@@ -192,19 +170,62 @@ setup_replica_primary_linux() {
         return 1
     fi
     
-    # Kiểm tra trạng thái replica set với xác thực
-    echo "Đang kiểm tra trạng thái replica set..."
-    local status_result=$(mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.status()' 2>&1)
+    # Khởi động lại MongoDB để áp dụng xác thực
+    echo "Đang khởi động lại MongoDB để áp dụng xác thực..."
+    sudo pkill -f "mongod.*${PRIMARY_PORT}" || true
+    sleep 2
+    sudo mongod --config "/etc/mongod_${PRIMARY_PORT}.conf" &
+    sleep 5
+    
+    # Kiểm tra kết nối với xác thực
+    echo "Đang kiểm tra kết nối với xác thực..."
+    local auth_check=$(mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'db.runCommand({ ping: 1 })' 2>&1)
     if [ $? -ne 0 ]; then
-        echo -e "${RED}❌ Lỗi khi kiểm tra trạng thái replica set:${NC}"
-        echo "$status_result"
-        echo "Đang kiểm tra log file..."
-        sudo tail -n 50 /var/log/mongodb/mongod_${PRIMARY_PORT}.log
+        echo -e "${RED}❌ Lỗi khi kiểm tra xác thực:${NC}"
+        echo "$auth_check"
         return 1
     fi
     
-    echo "Trạng thái replica set:"
-    echo "$status_result"
+    # Kiểm tra trạng thái replica set
+    echo "Đang kiểm tra trạng thái replica set..."
+    local rs_status=$(mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.status()' 2>&1)
+    
+    # Nếu replica set chưa được khởi tạo
+    if echo "$rs_status" | grep -q "NotYetInitialized"; then
+        echo "Đang khởi tạo replica set..."
+        local init_result=$(mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.initiate({
+            _id: "rs0",
+            members: [
+                { _id: 0, host: "'$SERVER_IP:$PRIMARY_PORT'", priority: 2 },
+                { _id: 1, host: "'$SERVER_IP:$ARBITER1_PORT'", arbiterOnly: true },
+                { _id: 2, host: "'$SERVER_IP:$ARBITER2_PORT'", arbiterOnly: true }
+            ]
+        })' 2>&1)
+        
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}❌ Lỗi khi khởi tạo replica set:${NC}"
+            echo "$init_result"
+            echo "Đang kiểm tra log file..."
+            sudo tail -n 50 /var/log/mongodb/mongod_${PRIMARY_PORT}.log
+            return 1
+        fi
+        
+        # Đợi replica set khởi tạo xong
+        sleep 10
+        
+        # Kiểm tra lại trạng thái
+        local rs_status_after=$(mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.status()' 2>&1)
+        if echo "$rs_status_after" | grep -q "PRIMARY"; then
+            echo "✅ Replica set đã được khởi tạo thành công"
+        else
+            echo -e "${RED}❌ Replica set chưa được khởi tạo đúng cách${NC}"
+            echo "$rs_status_after"
+            return 1
+        fi
+    else
+        echo "Replica set đã được khởi tạo trước đó"
+        echo "$rs_status"
+    fi
     
     echo -e "${GREEN}✅ Đã cấu hình MongoDB Replica Set PRIMARY thành công${NC}"
     echo "Thông tin kết nối:"
