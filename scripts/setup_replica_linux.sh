@@ -76,7 +76,7 @@ systemLog:
   path: $LOG_PATH/mongod_${PORT}.log
 net:
   port: ${PORT}
-  bindIp: ${PRIVATE_IP},127.0.0.1
+  bindIp: 0.0.0.0
 processManagement:
   timeZoneInfo: /usr/share/zoneinfo
 replication:
@@ -407,7 +407,7 @@ setup_secondary() {
     # Start SECONDARY node
     echo "Starting SECONDARY node..."
     mongod --config /etc/mongod_${SECONDARY_PORT}.conf --fork
-    sleep 5
+    sleep 2
     
     if ! mongosh --port $SECONDARY_PORT --eval "db.version()" --quiet &>/dev/null; then
         echo -e "${RED}❌ Failed to start SECONDARY node${NC}"
@@ -421,7 +421,7 @@ setup_secondary() {
     # Start ARBITER node
     echo "Starting ARBITER node..."
     mongod --config /etc/mongod_${ARBITER_PORT}.conf --fork
-    sleep 5
+    sleep 2
     
     if ! mongosh --port $ARBITER_PORT --eval "db.version()" --quiet &>/dev/null; then
         echo -e "${RED}❌ Failed to start ARBITER node${NC}"
@@ -441,7 +441,7 @@ setup_secondary() {
     echo "Restarting services..."
     sudo systemctl restart mongod_${SECONDARY_PORT}
     sudo systemctl restart mongod_${ARBITER_PORT}
-    sleep 3
+    sleep 2
     
     # Get admin credentials from PRIMARY
     echo "Getting admin credentials from PRIMARY..."
@@ -472,7 +472,7 @@ setup_secondary() {
     
     # Wait for replication
     echo "Waiting for replication to complete..."
-    sleep 5
+    sleep 3
     
     # Check replica set status
     local status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
