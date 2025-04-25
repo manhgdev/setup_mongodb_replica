@@ -47,13 +47,9 @@ systemLog:
   logAppend: true
 storage:
   dbPath: $DB_PATH
-  journal:
-    enabled: true
 net:
   bindIp: 0.0.0.0
   port: $PORT
-  unixDomainSocket:
-    enabled: false
 replication:
   replSetName: rs0
 setParameter:
