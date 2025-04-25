@@ -1,5 +1,4 @@
 #!/bin/bash
-
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -109,7 +108,7 @@ security:
   
 EOF
     fi
-    
+
     echo -e "${GREEN}✅ Đã tạo file cấu hình MongoDB tại /etc/mongod.conf${NC}"
 }
 
@@ -419,9 +418,9 @@ verify_mongodb_connection() {
                 HOST="localhost"
                 return 0
             fi
-        fi
-        
-        return 1
+    fi
+    
+    return 1
     fi
 }
 
@@ -572,8 +571,8 @@ setup_primary() {
             
             # Chờ một chút cho MongoDB ổn định
             echo "Đợi 5 giây cho MongoDB ổn định..."
-            sleep 5
-            
+    sleep 5
+    
             # Cập nhật cấu hình với IP thực tế
             echo "Cập nhật cấu hình với IP thực tế..."
             local update_result=$(mongosh --host $CONNECT_HOST --port $PRIMARY_PORT --eval "
@@ -594,9 +593,9 @@ setup_primary() {
             # Cách 3: Force khởi tạo
             echo "Phương pháp 3: Khởi tạo với localhost và force, sau đó cập nhật IP"
             local init_result3=$(mongosh --host localhost --port $PRIMARY_PORT --eval "
-            rs.initiate({
-                _id: 'rs0',
-                members: [
+rs.initiate({
+    _id: 'rs0',
+    members: [
                     { _id: 0, host: 'localhost:$PRIMARY_PORT', priority: 10 }
                 ]
             }, {force: true})" --quiet)
@@ -768,7 +767,7 @@ EOL
     echo -e "${YELLOW}7. Khởi động MongoDB tạm thời...${NC}"
     sudo systemctl daemon-reload
     sudo systemctl restart mongod
-    sleep 5
+        sleep 5
     
     # Kiểm tra MongoDB có đang chạy không
     if ! sudo systemctl is-active --quiet mongod; then
@@ -827,7 +826,7 @@ EOL
     
     # Kiểm tra MongoDB có đang chạy không sau 5 giây
     echo -e "${YELLOW}Đợi MongoDB khởi động...${NC}"
-    sleep 5
+        sleep 5
     if ! sudo systemctl is-active --quiet mongod; then
         echo -e "${RED}❌ MongoDB không thể khởi động với cấu hình replica set. Kiểm tra lỗi:${NC}"
         sudo systemctl status mongod --no-pager
@@ -870,7 +869,7 @@ EOL
         nc -zv $PRIMARY_IP 27017
         echo -e "${YELLOW}Kiểm tra firewall:${NC}"
         sudo iptables -L -n | grep 27017 || echo "Không tìm thấy quy tắc firewall cho cổng 27017"
-        return 1
+            return 1
     else
         echo -e "${GREEN}✅ Kết nối tới PRIMARY:27017 thành công${NC}"
     fi
@@ -1286,7 +1285,7 @@ fix_keyfile_and_restart() {
         if [ -n "$PRIMARY_IP" ]; then
             echo -e "${YELLOW}Sao chép keyfile từ PRIMARY $PRIMARY_IP...${NC}"
             scp -o StrictHostKeyChecking=accept-new root@$PRIMARY_IP:/etc/mongodb.keyfile /etc/mongodb.keyfile 2>/dev/null
-            if [ $? -ne 0 ]; then
+    if [ $? -ne 0 ]; then
                 echo -e "${RED}❌ Không thể sao chép keyfile từ PRIMARY. Tạo keyfile mới cục bộ...${NC}"
                 openssl rand -base64 756 | sudo tee /etc/mongodb.keyfile > /dev/null
             fi
@@ -1972,8 +1971,8 @@ troubleshoot_mongodb() {
         echo "0. Quay lại menu chính"
         
         read -p "Chọn tùy chọn (0-10): " option
-        
-        case $option in
+
+    case $option in
             1)
                 check_mongodb_status
                 ;;
@@ -2032,10 +2031,9 @@ setup_replica_linux() {
         echo -e "Server IP hiện tại: ${YELLOW}$SERVER_IP${NC}"
         echo "1. Thiết lập PRIMARY Node"
         echo "2. Thiết lập SECONDARY Node"
-        echo "3. Sửa lỗi MongoDB (Troubleshoot)"
         echo "0. Quay lại menu chính"
         
-        read -p "Chọn tùy chọn (0-3): " option
+        read -p "Chọn tùy chọn (0-2): " option
         
         case $option in
             1)
@@ -2044,9 +2042,6 @@ setup_replica_linux() {
             2)
                 read -p "Nhập địa chỉ IP của PRIMARY: " PRIMARY_IP
                 setup_secondary "$SERVER_IP" "$PRIMARY_IP"
-                ;;
-            3)
-                troubleshoot_mongodb
                 ;;
             0)
                 return
