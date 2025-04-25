@@ -157,7 +157,9 @@ setup_primary() {
         pwd: '$admin_password',
         roles: [
             { role: 'root', db: 'admin' },
-            { role: 'clusterAdmin', db: 'admin' }
+            { role: 'clusterAdmin', db: 'admin' },
+            { role: 'userAdminAnyDatabase', db: 'admin' },
+            { role: 'readWriteAnyDatabase', db: 'admin' }
         ]
     })"
     
