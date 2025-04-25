@@ -34,15 +34,31 @@ create_dirs() {
     local DB_PATH="/var/lib/mongodb_${PORT}"
     local LOG_PATH="/var/log/mongodb"
     
-    echo "Creating MongoDB directories..."
+    echo -e "${YELLOW}Tạo thư mục dữ liệu và log...${NC}"
+    
+    # Dừng dịch vụ trước khi tạo lại thư mục
+    sudo systemctl stop mongod_${PORT} &>/dev/null || true
+    sleep 2
+    
+    # Tạo thư mục với quyền hạn chặt chẽ
     sudo mkdir -p $DB_PATH $LOG_PATH
-    sudo chown -R mongodb:mongodb $DB_PATH $LOG_PATH
-    sudo chmod 755 $DB_PATH
     
-    # Remove lock file if exists
+    # Xóa lock file và log cũ nếu cần
     sudo rm -rf $DB_PATH/mongod.lock 2>/dev/null || true
+    sudo rm -f $LOG_PATH/mongod_${PORT}.log 2>/dev/null || true
     
-    echo -e "${GREEN}✅ MongoDB directories prepared${NC}"
+    # Cấp quyền đúng
+    sudo chown -R mongodb:mongodb $DB_PATH $LOG_PATH
+    sudo chmod 750 $DB_PATH $LOG_PATH
+    
+    # Nếu có SELinux, cập nhật context
+    if command -v sestatus &>/dev/null && sestatus | grep -q "enabled"; then
+        echo "SELinux được kích hoạt, đang cập nhật context..."
+        sudo chcon -R -t mongod_var_lib_t $DB_PATH 2>/dev/null || true
+        sudo chcon -R -t mongod_log_t $LOG_PATH 2>/dev/null || true
+    fi
+    
+    echo -e "${GREEN}✅ Thư mục MongoDB đã được chuẩn bị${NC}"
 }
 
 # Create MongoDB config
@@ -191,25 +207,66 @@ start_mongodb() {
     # Kiểm tra và dừng MongoDB nếu đang chạy
     if sudo systemctl is-active --quiet $SERVICE_NAME; then
         sudo systemctl stop $SERVICE_NAME
-        sleep 2
+        sleep 3
     fi
+    
+    # Xóa lock file nếu tồn tại
+    sudo rm -f /var/lib/mongodb_${PORT}/mongod.lock 2>/dev/null || true
+    
+    # Kiểm tra lại quyền trước khi khởi động
+    sudo chown -R mongodb:mongodb /var/lib/mongodb_${PORT} /var/log/mongodb
+    sudo chmod 750 /var/lib/mongodb_${PORT} /var/log/mongodb
+    sudo touch /var/log/mongodb/mongod_${PORT}.log
+    sudo chown mongodb:mongodb /var/log/mongodb/mongod_${PORT}.log
+    
+    # Thử chạy trực tiếp để kiểm tra lỗi
+    echo -e "${YELLOW}Kiểm tra cấu hình trước khi khởi động...${NC}"
+    sudo -u mongodb mongod --config /etc/mongod_${PORT}.conf --dbpath /var/lib/mongodb_${PORT} --shutdown &>/dev/null || true
+    sleep 1
     
     # Khởi động MongoDB
+    sudo systemctl daemon-reload
     sudo systemctl start $SERVICE_NAME
     
-    # Kiểm tra trạng thái
-    sleep 5
-    if sudo systemctl is-active --quiet $SERVICE_NAME; then
-        echo -e "${GREEN}✓ MongoDB đã khởi động thành công${NC}"
-        return 0
-    else
-        echo -e "${RED}✗ Không thể khởi động MongoDB${NC}"
-        echo "Trạng thái dịch vụ:"
-        sudo systemctl status $SERVICE_NAME
-        echo "Kiểm tra log:"
-        sudo tail -n 20 /var/log/mongodb/mongod_${PORT}.log
-        return 1
+    # Đợi lâu hơn và kiểm tra nhiều lần
+    echo "Đợi MongoDB khởi động..."
+    for i in {1..5}; do
+        sleep 2
+        if sudo systemctl is-active --quiet $SERVICE_NAME; then
+            echo -e "${GREEN}✓ MongoDB đã khởi động thành công${NC}"
+            return 0
+        fi
+        echo "Đang chờ... ($i/5)"
+    done
+    
+    # Hiển thị thông tin lỗi chi tiết
+    echo -e "${RED}✗ Không thể khởi động MongoDB${NC}"
+    echo "Trạng thái dịch vụ:"
+    sudo systemctl status $SERVICE_NAME
+    echo "Kiểm tra log MongoDB:"
+    sudo tail -n 30 /var/log/mongodb/mongod_${PORT}.log
+    
+    # Kiểm tra thư mục dữ liệu
+    echo "Kiểm tra quyền thư mục dữ liệu:"
+    ls -la /var/lib/mongodb_${PORT}
+    ls -la /var/log/mongodb
+    
+    # Kiểm tra SELinux
+    if command -v sestatus &>/dev/null; then
+        echo "Trạng thái SELinux:"
+        sestatus
+        echo "Thử tắt tạm thời SELinux và khởi động lại:"
+        sudo setenforce 0 2>/dev/null || true
+        sudo systemctl restart $SERVICE_NAME
+        sleep 3
+        if sudo systemctl is-active --quiet $SERVICE_NAME; then
+            echo -e "${GREEN}✓ MongoDB đã khởi động thành công sau khi tắt SELinux${NC}"
+            echo -e "${YELLOW}Cần cấu hình SELinux đúng cách cho MongoDB${NC}"
+            return 0
+        fi
     fi
+    
+    return 1
 }
 
 # Configure firewall
