@@ -296,7 +296,7 @@ rs.initiate({
         create_admin_user $PRIMARY_PORT $ADMIN_USER $ADMIN_PASS || return 1
         
         # Create keyfile and update configs with security
-        create_keyfile
+        create_keyfile "/etc/mongodb.keyfile"
         create_config $PRIMARY_PORT true false true
         create_config $ARBITER1_PORT true true false
         create_config $ARBITER2_PORT true true false
@@ -475,8 +475,8 @@ EOF"
 
 # Create keyfile
 create_keyfile() {
-  echo -e "${YELLOW}Tạo keyfile xác thực...${NC}"
-  local keyfile=$1
+  echo -e "${GREEN}Tạo keyfile xác thực...${NC}"
+  local keyfile=${1:-"/etc/mongodb.keyfile"}
   
   if [ ! -f "$keyfile" ]; then
     openssl rand -base64 756 | sudo tee $keyfile > /dev/null
@@ -486,10 +486,15 @@ create_keyfile() {
       mongo_user="mongod"
     fi
     sudo chown $mongo_user:$mongo_user $keyfile
-    echo -e "${GREEN}✓ Đã tạo keyfile tại $keyfile${NC}"
+    echo -e "${GREEN}✅ Đã tạo keyfile tại $keyfile${NC}"
   else
+    local mongo_user="mongodb"
+    if ! getent passwd mongodb > /dev/null && getent passwd mongod > /dev/null; then
+      mongo_user="mongod"
+    fi
     sudo chown $mongo_user:$mongo_user $keyfile
-    echo -e "${GREEN}✓ Keyfile đã tồn tại${NC}"
+    sudo chmod 400 $keyfile
+    echo -e "${GREEN}✅ Keyfile đã tồn tại tại $keyfile${NC}"
   fi
 }
 
