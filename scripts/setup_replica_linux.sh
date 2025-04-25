@@ -401,6 +401,17 @@ setup_secondary() {
         return 1
     fi
     
+    # Check if this server is already a PRIMARY
+    echo "Checking if this server is already a PRIMARY..."
+    if mongosh --port $SECONDARY_PORT --eval "rs.status()" --quiet &>/dev/null; then
+        local current_status=$(mongosh --port $SECONDARY_PORT --eval "rs.status()" --quiet)
+        if echo "$current_status" | grep -q "stateStr.*PRIMARY"; then
+            echo -e "${RED}❌ This server is already a PRIMARY node${NC}"
+            echo "Please stop all MongoDB services and remove data before setting up as SECONDARY"
+            return 1
+        fi
+    fi
+    
     # Check connection to PRIMARY
     echo "Checking connection to PRIMARY server..."
     if ! ping -c 1 $PRIMARY_IP &>/dev/null; then
@@ -420,7 +431,11 @@ setup_secondary() {
         echo "UFW is not installed, skipping firewall configuration"
     fi
     
+    # Stop all MongoDB processes and remove data
+    echo "Stopping all MongoDB processes and removing data..."
     stop_mongodb
+    sudo rm -rf /var/lib/mongodb_27017/* /var/lib/mongodb_27018/* /var/lib/mongodb_27019/*
+    
     create_dirs $SECONDARY_PORT
     create_dirs $ARBITER_PORT
     
@@ -486,7 +501,31 @@ setup_secondary() {
     local is_arbiter=$(echo "$rs_status" | grep -c "$SERVER_IP:$ARBITER_PORT")
     
     if [ "$is_member" -gt 0 ] && [ "$is_arbiter" -gt 0 ]; then
-        echo "SECONDARY and ARBITER are already in replica set, skipping addition..."
+        echo "SECONDARY and ARBITER are already in replica set, checking status..."
+        
+        # Check if SECONDARY is in correct state
+        local secondary_state=$(echo "$rs_status" | grep -A 5 "stateStr" | grep "SECONDARY")
+        if [ -z "$secondary_state" ]; then
+            echo "SECONDARY is not in correct state, removing and re-adding..."
+            mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.remove('$SERVER_IP:$SECONDARY_PORT')"
+            sleep 2
+            mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.add({
+                host: '$SERVER_IP:$SECONDARY_PORT',
+                priority: 5,
+                votes: 1
+            })"
+            sleep 2
+        fi
+        
+        # Check if ARBITER is in correct state
+        local arbiter_state=$(echo "$rs_status" | grep -A 5 "stateStr" | grep "ARBITER")
+        if [ -z "$arbiter_state" ]; then
+            echo "ARBITER is not in correct state, removing and re-adding..."
+            mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.remove('$SERVER_IP:$ARBITER_PORT')"
+            sleep 2
+            mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.addArb('$SERVER_IP:$ARBITER_PORT')"
+            sleep 2
+        fi
     else
         # Add SECONDARY to replica set
         echo "Adding SECONDARY to replica set..."
