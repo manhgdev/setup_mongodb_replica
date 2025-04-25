@@ -742,8 +742,6 @@ setup_secondary() {
 # mongod.conf tạm thời không replica set
 storage:
   dbPath: /var/lib/mongodb
-  journal:
-    enabled: true
 
 systemLog:
   destination: file
@@ -782,8 +780,6 @@ EOL
 # mongod.conf
 storage:
   dbPath: /var/lib/mongodb
-  journal:
-    enabled: true
 
 systemLog:
   destination: file
