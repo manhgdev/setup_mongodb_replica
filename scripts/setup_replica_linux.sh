@@ -76,6 +76,9 @@ create_config() {
 # Where and how to store data.
 storage:
   dbPath: /var/lib/mongodb_${PORT}
+  wiredTiger:
+    engineConfig:
+      cacheSizeGB: 1
 
 # where to write logging data.
 systemLog:
@@ -417,7 +420,6 @@ User=mongodb
 Group=mongodb
 ExecStart=/usr/bin/mongod --config /etc/mongod_${port}.conf
 ExecStop=/usr/bin/mongod --config /etc/mongod_${port}.conf --shutdown
-Restart=always
 
 [Install]
 WantedBy=multi-user.target
@@ -425,16 +427,37 @@ EOF"
     done
     sudo systemctl daemon-reload
     
-    # Khởi động services
-    echo "Khởi động MongoDB..."
-    sudo systemctl start mongod_$SECONDARY_PORT mongod_$ARBITER1_PORT mongod_$ARBITER2_PORT
+    # Khởi động service PRIMARY trước và kiểm tra
+    echo "Khởi động MongoDB SECONDARY..."
+    sudo systemctl start mongod_$SECONDARY_PORT
+    sleep 5
+    
+    # Kiểm tra SECONDARY đã chạy chưa
+    if ! pgrep -f "mongod.*$SECONDARY_PORT" > /dev/null; then
+        echo -e "${RED}❌ Không thể khởi động SECONDARY${NC}"
+        echo "Kiểm tra log tại: /var/log/mongodb/mongod_${SECONDARY_PORT}.log"
+        return 1
+    fi
+    
+    echo "Khởi động các MongoDB ARBITER..."
+    sudo systemctl start mongod_$ARBITER1_PORT mongod_$ARBITER2_PORT
     sleep 5
     
     # Kiểm tra kết nối
-    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db.version()" --quiet &>/dev/null || { 
+    echo "Kiểm tra kết nối đến PRIMARY..."
+    if ! mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db.version()" --quiet &>/dev/null; then
         echo -e "${RED}❌ Không kết nối được PRIMARY${NC}"; 
-        return 1; 
-    }
+        echo "Vui lòng kiểm tra username, password hoặc kết nối network"
+        return 1
+    fi
+    
+    # Kiểm tra kết nối đến SECONDARY
+    echo "Kiểm tra kết nối đến SECONDARY..."
+    if ! mongosh --host 127.0.0.1 --port 27017 --eval "db.version()" --quiet &>/dev/null; then
+        echo -e "${RED}❌ Không kết nối được SECONDARY${NC}"; 
+        echo "Kiểm tra log tại: /var/log/mongodb/mongod_${SECONDARY_PORT}.log"
+        return 1
+    fi
     
     # Thêm vào replica set
     echo "Thêm vào replica set..."
@@ -544,19 +567,12 @@ create_systemd_service() {
 [Unit]
 Description=MongoDB Database Server (Port ${PORT})
 After=network.target
-Wants=network.target
 
 [Service]
 User=mongodb
 Group=mongodb
 ExecStart=/usr/bin/mongod --config ${CONFIG_FILE}
 ExecStop=/usr/bin/mongod --config ${CONFIG_FILE} --shutdown
-Restart=always
-RestartSec=3
-StartLimitInterval=60
-StartLimitBurst=3
-TimeoutStartSec=60
-TimeoutStopSec=60
 
 [Install]
 WantedBy=multi-user.target
