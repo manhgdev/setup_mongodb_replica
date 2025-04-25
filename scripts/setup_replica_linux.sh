@@ -299,7 +299,7 @@ setup_replica_secondary_linux() {
     echo "Đang kết nối với PRIMARY server..."
     
     # Đợi PRIMARY server sẵn sàng
-    local max_attempts=5
+    local max_attempts=30
     local attempt=1
     while [ $attempt -le $max_attempts ]; do
         if mongosh --host $primary_server_ip --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.status()' &> /dev/null; then
@@ -356,6 +356,16 @@ setup_replica_secondary_linux() {
         echo "Đã kết nối với PRIMARY server: $primary_server_ip"
         echo "Username: $admin_username"
         echo "Password: $admin_password"
+        
+        # Hiển thị hướng dẫn cho SECONDARY server
+        if [ -f "$SCRIPT_DIR/generate_guide.sh" ]; then
+            source "$SCRIPT_DIR/generate_guide.sh"
+            generate_setup_guide $SERVER_IP $PRIMARY_PORT $ARBITER1_PORT $ARBITER2_PORT $admin_username $admin_password $primary_server_ip
+            echo -e "\n${GREEN}✅ Nội dung hướng dẫn:${NC}"
+            cat mongodb_replica_setup_guide.md
+        else
+            echo "⚠️ Không tìm thấy file generate_guide.sh"
+        fi
     else
         echo -e "${RED}❌ Có lỗi xảy ra khi cấu hình SECONDARY${NC}"
     fi

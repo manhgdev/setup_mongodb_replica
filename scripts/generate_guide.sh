@@ -7,18 +7,20 @@ generate_setup_guide() {
     local ARBITER2_PORT=$4
     local ADMIN_USERNAME=$5
     local ADMIN_PASSWORD=$6
+    local PRIMARY_SERVER_IP=$7
     
     local GUIDE_FILE="mongodb_replica_setup_guide.md"
     
     cat > "$GUIDE_FILE" << EOL
-# Hướng dẫn cài đặt MongoDB Replica Set - PRIMARY Server
+# Hướng dẫn cài đặt MongoDB Replica Set - SECONDARY Server
 
 ## Thông tin kết nối
 - IP: $SERVER_IP
 - Ports:
-  - PRIMARY: $PRIMARY_PORT
+  - SECONDARY: $PRIMARY_PORT
   - ARBITER 1: $ARBITER1_PORT
   - ARBITER 2: $ARBITER2_PORT
+- PRIMARY Server IP: $PRIMARY_SERVER_IP
 - Username: $ADMIN_USERNAME
 - Password: $ADMIN_PASSWORD
 
@@ -39,19 +41,9 @@ generate_setup_guide() {
    rs.conf()
    \`\`\`
 
-4. Thêm node mới:
-   \`\`\`javascript
-   rs.add("host:port")
-   \`\`\`
-
-5. Thêm arbiter:
-   \`\`\`javascript
-   rs.addArb("host:port")
-   \`\`\`
-
-6. Xóa node:
-   \`\`\`javascript
-   rs.remove("host:port")
+4. Kết nối đến PRIMARY server:
+   \`\`\`bash
+   mongosh --host $PRIMARY_SERVER_IP --port $PRIMARY_PORT -u $ADMIN_USERNAME -p $ADMIN_PASSWORD --authenticationDatabase admin
    \`\`\`
 
 ## Quản lý dữ liệu
@@ -91,7 +83,7 @@ generate_setup_guide() {
    - Kiểm tra port đã sử dụng
 
 2. Replica set không hoạt động:
-   - Kiểm tra kết nối mạng
+   - Kiểm tra kết nối với PRIMARY server
    - Kiểm tra trạng thái các node
    - Kiểm tra cấu hình replica set
 
