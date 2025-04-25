@@ -508,32 +508,37 @@ setup_secondary() {
     echo "Checking if nodes already exist in replica set..."
     local rs_status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
     
-    # Check SECONDARY node
-    if ! echo "$rs_status" | grep -q "$SERVER_IP:$SECONDARY_PORT"; then
-        echo "Adding SECONDARY node to replica set..."
-        mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.add('$SERVER_IP:$SECONDARY_PORT')" --quiet
+    # Remove existing nodes if they exist
+    if echo "$rs_status" | grep -q "$SERVER_IP:$SECONDARY_PORT"; then
+        echo "Removing existing SECONDARY node..."
+        mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.remove('$SERVER_IP:$SECONDARY_PORT')" --quiet
         sleep 5
-    else
-        echo "SECONDARY node already exists in replica set"
     fi
     
-    # Check ARBITER 1 node
-    if ! echo "$rs_status" | grep -q "$SERVER_IP:$ARBITER1_PORT"; then
-        echo "Adding ARBITER 1 node to replica set..."
-        mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.addArb('$SERVER_IP:$ARBITER1_PORT')" --quiet
+    if echo "$rs_status" | grep -q "$SERVER_IP:$ARBITER1_PORT"; then
+        echo "Removing existing ARBITER 1 node..."
+        mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.remove('$SERVER_IP:$ARBITER1_PORT')" --quiet
         sleep 5
-    else
-        echo "ARBITER 1 node already exists in replica set"
     fi
     
-    # Check ARBITER 2 node
-    if ! echo "$rs_status" | grep -q "$SERVER_IP:$ARBITER2_PORT"; then
-        echo "Adding ARBITER 2 node to replica set..."
-        mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.addArb('$SERVER_IP:$ARBITER2_PORT')" --quiet
+    if echo "$rs_status" | grep -q "$SERVER_IP:$ARBITER2_PORT"; then
+        echo "Removing existing ARBITER 2 node..."
+        mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.remove('$SERVER_IP:$ARBITER2_PORT')" --quiet
         sleep 5
-    else
-        echo "ARBITER 2 node already exists in replica set"
     fi
+    
+    # Add nodes to replica set
+    echo "Adding SECONDARY node to replica set..."
+    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.add('$SERVER_IP:$SECONDARY_PORT')" --quiet
+    sleep 5
+    
+    echo "Adding ARBITER 1 node to replica set..."
+    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.addArb('$SERVER_IP:$ARBITER1_PORT')" --quiet
+    sleep 5
+    
+    echo "Adding ARBITER 2 node to replica set..."
+    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.addArb('$SERVER_IP:$ARBITER2_PORT')" --quiet
+    sleep 5
     
     # Wait for replication to complete
     echo "Waiting for replication to complete..."
@@ -551,6 +556,80 @@ setup_secondary() {
         echo "2. Keyfile permissions are correct (chown mongodb:mongodb, chmod 400)"
         echo "3. MongoDB services are running"
         echo "4. Firewall allows connections"
+        return 1
+    fi
+    
+    # Verify replica set status
+    echo "Verifying replica set status..."
+    local rs_status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}✅ Replica set status verified${NC}"
+        echo "$rs_status"
+    else
+        echo -e "${RED}❌ Failed to verify replica set status${NC}"
+        return 1
+    fi
+    
+    # Verify data replication
+    echo "Verifying data replication..."
+    local test_db="test_replication"
+    local test_collection="test_collection"
+    local test_doc='{"test": "data"}'
+    
+    # Insert test document on PRIMARY
+    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db = db.getSiblingDB('$test_db'); db.$test_collection.insertOne($test_doc)" --quiet
+    
+    # Wait for replication
+    sleep 5
+    
+    # Check if document exists on SECONDARY
+    local doc_exists=$(mongosh --host $SERVER_IP --port $SECONDARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db = db.getSiblingDB('$test_db'); db.$test_collection.findOne()" --quiet)
+    if [ $? -eq 0 ] && [ ! -z "$doc_exists" ]; then
+        echo -e "${GREEN}✅ Data replication verified${NC}"
+    else
+        echo -e "${RED}❌ Data replication failed${NC}"
+        return 1
+    fi
+    
+    # Clean up test data
+    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db = db.getSiblingDB('$test_db'); db.dropDatabase()" --quiet
+    
+    # Auto test connections
+    echo -e "\n${GREEN}Testing connections automatically...${NC}"
+    
+    # Test PRIMARY connection
+    echo "Testing PRIMARY connection..."
+    if mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db.version()" --quiet &>/dev/null; then
+        echo -e "${GREEN}✅ PRIMARY connection successful${NC}"
+    else
+        echo -e "${RED}❌ PRIMARY connection failed${NC}"
+        return 1
+    fi
+    
+    # Test SECONDARY connection
+    echo "Testing SECONDARY connection..."
+    if mongosh --host $SERVER_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db.version()" --quiet &>/dev/null; then
+        echo -e "${GREEN}✅ SECONDARY connection successful${NC}"
+    else
+        echo -e "${RED}❌ SECONDARY connection failed${NC}"
+        return 1
+    fi
+    
+    # Test replica set connection
+    echo "Testing replica set connection..."
+    if mongosh "mongodb://$ADMIN_USER:$ADMIN_PASS@$PRIMARY_IP:27017,$SERVER_IP:27017/admin?replicaSet=rs0" --eval "db.version()" --quiet &>/dev/null; then
+        echo -e "${GREEN}✅ Replica set connection successful${NC}"
+    else
+        echo -e "${RED}❌ Replica set connection failed${NC}"
+        return 1
+    fi
+    
+    # Test replica set status
+    echo "Testing replica set status..."
+    if mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet &>/dev/null; then
+        echo -e "${GREEN}✅ Replica set status check successful${NC}"
+    else
+        echo -e "${RED}❌ Replica set status check failed${NC}"
         return 1
     fi
     
