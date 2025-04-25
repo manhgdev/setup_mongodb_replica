@@ -94,7 +94,7 @@ net:
 # how the process runs
 processManagement:
   timeZoneInfo: /usr/share/zoneinfo
-  fork: true
+  # fork: true
 
 EOF
 
