@@ -1,5 +1,6 @@
 setup_node_linux() {
     local PORT=$1
+    local SECURITY=$2  # "yes" or "no"
     local CONFIG_FILE="/etc/mongod_${PORT}.conf"
     local DB_PATH="/var/lib/mongodb_${PORT}"
     local LOG_PATH="/var/log/mongodb"
@@ -21,7 +22,7 @@ systemLog:
 storage:
   dbPath: $DB_PATH
 net:
-  bindIp: 0.0.0.0
+  bindIp: localhost,127.0.0.1,$(hostname -I | awk '{print $1}')
   port: $PORT
 replication:
   replSetName: rs0
@@ -32,7 +33,7 @@ processManagement:
 EOL
 
     # Add security if enabled
-    if [ "$2" = "yes" ]; then
+    if [ "$SECURITY" = "yes" ]; then
         cat >> $CONFIG_FILE <<EOL
 security:
   authorization: enabled
@@ -42,7 +43,16 @@ EOL
 
     # Start mongod
     mongod --config $CONFIG_FILE
-    sleep 2
+    
+    # Check if MongoDB started successfully
+    sleep 3
+    if pgrep -f "mongod.*--port $PORT" > /dev/null; then
+        echo -e "${GREEN}✅ MongoDB started successfully on port $PORT${NC}"
+    else
+        echo -e "${RED}❌ Failed to start MongoDB on port $PORT${NC}"
+        echo "Last 10 lines of log:"
+        tail -n 10 "$LOG_PATH/mongod_${PORT}.log"
+    fi
 }
 
 create_keyfile_linux() {
@@ -104,10 +114,10 @@ setup_replica_primary_linux() {
 
     # Step 4: Create admin user
     echo "Step 4: Creating admin user..."
-    read -p "Enter admin username (default: admin): " admin_username
-    admin_username=${admin_username:-admin}
-    read -p "Enter admin password (default: adminpass): " admin_password
-    admin_password=${admin_password:-adminpass}
+    read -p "Enter admin username (default: manhg): " admin_username
+    admin_username=${admin_username:-manhg}
+    read -p "Enter admin password (default: manhnk): " admin_password
+    admin_password=${admin_password:-manhnk}
     
     mongosh --port $PRIMARY_PORT --eval '
     db = db.getSiblingDB("admin");
@@ -125,20 +135,60 @@ setup_replica_primary_linux() {
     # Step 5: Create keyFile and restart with security
     echo "Step 5: Creating keyFile and restarting with security..."
     create_keyfile_linux
+    
+    # Save connection info for verification
+    echo "Saving connection info for verification..."
+    echo "$SERVER_IP" > /tmp/mongodb_server_ip
+    echo "$admin_username" > /tmp/mongodb_username
+    echo "$admin_password" > /tmp/mongodb_password
+    
     pkill -f mongod || true
-    sleep 2
+    sleep 5
+    
+    # Check if all MongoDB processes stopped
+    if pgrep -f mongod > /dev/null; then
+        echo "Warning: Some MongoDB processes are still running. Forcing shutdown..."
+        pkill -9 -f mongod
+        sleep 2
+    fi
     
     setup_node_linux $PRIMARY_PORT "yes"
     setup_node_linux $ARBITER1_PORT "yes"
     setup_node_linux $ARBITER2_PORT "yes"
-    sleep 5
+    
+    # Wait for MongoDB to be fully ready
+    echo "Waiting for MongoDB to be ready with security..."
+    sleep 10
     
     # Step 6: Verify setup
     echo "Step 6: Verifying replica set with authentication..."
-    mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval '
-    print("Authentication successful!");
-    print("\nReplica set status:");
-    printjson(rs.status());
+    
+    # Try both localhost and server IP
+    echo "Trying to connect to MongoDB..."
+    if mongosh --host $SERVER_IP --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'db.runCommand({ping:1})' &>/dev/null; then
+        echo -e "${GREEN}✅ Connection successful using server IP${NC}"
+        SERVER_HOST=$SERVER_IP
+    elif mongosh --host localhost --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'db.runCommand({ping:1})' &>/dev/null; then
+        echo -e "${GREEN}✅ Connection successful using localhost${NC}"
+        SERVER_HOST="localhost"
+    else
+        echo -e "${RED}❌ Failed to connect to MongoDB${NC}"
+        echo "Showing MongoDB processes:"
+        ps aux | grep mongod | grep -v grep
+        echo "Showing network connections:"
+        netstat -tuln | grep -E "27017|27018|27019" || echo "No MongoDB ports found"
+        return 1
+    fi
+    
+    # Get replica set status
+    mongosh --host $SERVER_HOST --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval '
+    try {
+        print("Authentication successful!");
+        print("\nReplica set status:");
+        printjson(rs.status());
+    } catch(err) {
+        print("Error: " + err);
+    }
     '
     
     # Final status
@@ -146,7 +196,7 @@ setup_replica_primary_linux() {
     echo "Primary node: $SERVER_IP:$PRIMARY_PORT"
     echo "Arbiter nodes: $SERVER_IP:$ARBITER1_PORT, $SERVER_IP:$ARBITER2_PORT"
     echo "Admin user: $admin_username"
-    echo "Connection command: mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin"
+    echo "Connection command: mongosh --host $SERVER_HOST --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin"
 }
 
 setup_replica_secondary_linux() {
