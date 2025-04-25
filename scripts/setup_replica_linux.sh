@@ -60,49 +60,59 @@ create_dirs() {
 # Create MongoDB config
 create_config() {
     local PORT=$1
+    local IS_SECONDARY=$2
+    local IS_ARBITER=$3
+    
     local CONFIG_FILE="/etc/mongod_${PORT}.conf"
-    local DB_PATH="/var/lib/mongodb_${PORT}"
-    local LOG_PATH="/var/log/mongodb"
-    local WITH_SECURITY=${2:-false}
     
-    echo "Creating MongoDB config for port $PORT..."
-    
-    # Get private IP
-    local PRIVATE_IP=$(hostname -I | awk '{print $1}')
-    
-    # Create base config
+    # Create config file
     cat > $CONFIG_FILE << EOF
+# mongod.conf
+
+# for documentation of all options, see:
+#   http://docs.mongodb.org/manual/reference/configuration-options/
+
+# Where and how to store data.
 storage:
-  dbPath: $DB_PATH
+  dbPath: /var/lib/mongodb_${PORT}
+  journal:
+    enabled: true
+#  engine:
+#  wiredTiger:
+
+# where to write logging data.
 systemLog:
   destination: file
   logAppend: true
-  path: $LOG_PATH/mongod_${PORT}.log
+  path: /var/log/mongodb/mongod_${PORT}.log
+
+# network interfaces
 net:
   port: ${PORT}
   bindIp: 0.0.0.0
+  ipv6: false
+
+# how the process runs
 processManagement:
   timeZoneInfo: /usr/share/zoneinfo
+
+#security:
+security:
+  authorization: enabled
+  keyFile: /etc/mongodb.keyfile
+
+#operationProfiling:
+
+#replication:
 replication:
   replSetName: rs0
-setParameter:
-  allowMultipleArbiters: true
 EOF
-
-    # Add security section if needed
-    if [ "$WITH_SECURITY" = true ]; then
-        cat >> $CONFIG_FILE << EOF
-security:
-  keyFile: /etc/mongodb.keyfile
-  authorization: enabled
-EOF
-    fi
-
-    # Set proper permissions
-    chmod 644 $CONFIG_FILE
-    chown mongodb:mongodb $CONFIG_FILE
     
-    echo -e "${GREEN}✅ MongoDB config created for port $PORT${NC}"
+    # Set permissions
+    chown mongodb:mongodb $CONFIG_FILE
+    chmod 644 $CONFIG_FILE
+    
+    echo -e "${GREEN}✅ Config file created: $CONFIG_FILE${NC}"
 }
 
 # Setup MongoDB node
@@ -258,9 +268,9 @@ setup_primary() {
     configure_firewall
     
     # Create initial configs without security
-    create_config $PRIMARY_PORT false
-    create_config $ARBITER1_PORT false
-    create_config $ARBITER2_PORT false
+    create_config $PRIMARY_PORT false false false
+    create_config $ARBITER1_PORT false true false
+    create_config $ARBITER2_PORT false true false
     
     # Start all nodes
     echo "Starting PRIMARY node..."
@@ -342,9 +352,9 @@ setup_primary() {
         
         # Create keyfile and update configs with security
         create_keyfile
-        create_config $PRIMARY_PORT true
-        create_config $ARBITER1_PORT true
-        create_config $ARBITER2_PORT true
+        create_config $PRIMARY_PORT true false true
+        create_config $ARBITER1_PORT true true false
+        create_config $ARBITER2_PORT true true false
         
         # Create systemd services
         echo "Creating systemd services..."
@@ -464,54 +474,24 @@ setup_secondary() {
     fi
     
     # Create configs with security
-    create_config $SECONDARY_PORT true
-    create_config $ARBITER1_PORT true
-    create_config $ARBITER2_PORT true
+    create_config $SECONDARY_PORT true false false
+    create_config $ARBITER1_PORT true true false
+    create_config $ARBITER2_PORT true true false
     
     # Start SECONDARY node
     echo "Starting SECONDARY node..."
     mongod --config /etc/mongod_${SECONDARY_PORT}.conf --fork
     sleep 2
     
-    # Check if SECONDARY is running without auth
-    if ! mongosh --port $SECONDARY_PORT --eval "db.version()" --quiet &>/dev/null; then
-        echo -e "${RED}❌ Failed to start SECONDARY node${NC}"
-        echo "Last 50 lines of log:"
-        tail -n 50 /var/log/mongodb/mongod_${SECONDARY_PORT}.log
-        return 1
-    fi
-    
-    echo -e "${GREEN}✅ SECONDARY node started successfully${NC}"
-    
     # Start ARBITER 1 node
     echo "Starting ARBITER 1 node..."
     mongod --config /etc/mongod_${ARBITER1_PORT}.conf --fork
     sleep 2
     
-    # Check if ARBITER 1 is running without auth
-    if ! mongosh --port $ARBITER1_PORT --eval "db.version()" --quiet &>/dev/null; then
-        echo -e "${RED}❌ Failed to start ARBITER 1 node${NC}"
-        echo "Last 50 lines of log:"
-        tail -n 50 /var/log/mongodb/mongod_${ARBITER1_PORT}.log
-        return 1
-    fi
-    
-    echo -e "${GREEN}✅ ARBITER 1 node started successfully${NC}"
-    
     # Start ARBITER 2 node
     echo "Starting ARBITER 2 node..."
     mongod --config /etc/mongod_${ARBITER2_PORT}.conf --fork
     sleep 2
-    
-    # Check if ARBITER 2 is running without auth
-    if ! mongosh --port $ARBITER2_PORT --eval "db.version()" --quiet &>/dev/null; then
-        echo -e "${RED}❌ Failed to start ARBITER 2 node${NC}"
-        echo "Last 50 lines of log:"
-        tail -n 50 /var/log/mongodb/mongod_${ARBITER2_PORT}.log
-        return 1
-    fi
-    
-    echo -e "${GREEN}✅ ARBITER 2 node started successfully${NC}"
     
     # Create systemd services
     echo "Creating systemd services..."
@@ -526,13 +506,44 @@ setup_secondary() {
     sudo systemctl restart mongod_${ARBITER2_PORT}
     sleep 2
     
+    # Check if nodes already exist in replica set
+    echo "Checking if nodes already exist in replica set..."
+    local rs_status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
+    
+    # Check SECONDARY node
+    if ! echo "$rs_status" | grep -q "$SERVER_IP:$SECONDARY_PORT"; then
+        echo "Adding SECONDARY node to replica set..."
+        mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.add('$SERVER_IP:$SECONDARY_PORT')" --quiet
+    else
+        echo "SECONDARY node already exists in replica set"
+    fi
+    
+    # Check ARBITER 1 node
+    if ! echo "$rs_status" | grep -q "$SERVER_IP:$ARBITER1_PORT"; then
+        echo "Adding ARBITER 1 node to replica set..."
+        mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.addArb('$SERVER_IP:$ARBITER1_PORT')" --quiet
+    else
+        echo "ARBITER 1 node already exists in replica set"
+    fi
+    
+    # Check ARBITER 2 node
+    if ! echo "$rs_status" | grep -q "$SERVER_IP:$ARBITER2_PORT"; then
+        echo "Adding ARBITER 2 node to replica set..."
+        mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.addArb('$SERVER_IP:$ARBITER2_PORT')" --quiet
+    else
+        echo "ARBITER 2 node already exists in replica set"
+    fi
+    
     echo -e "\n${GREEN}✅ SECONDARY setup completed successfully${NC}"
-    echo -e "\n${GREEN}Next steps:${NC}"
-    echo "1. Connect to PRIMARY server and add this node to replica set:"
-    echo "   mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
-    echo "   rs.add('$SERVER_IP:$SECONDARY_PORT')"
-    echo "   rs.addArb('$SERVER_IP:$ARBITER1_PORT')"
-    echo "   rs.addArb('$SERVER_IP:$ARBITER2_PORT')"
+    echo -e "\n${GREEN}Connection strings for your application:${NC}"
+    echo "1. Full connection string (all nodes):"
+    echo "   mongodb://$ADMIN_USER:$ADMIN_PASS@$PRIMARY_IP:27017,$SERVER_IP:27017,$PRIMARY_IP:27018,$PRIMARY_IP:27019,$SERVER_IP:27018,$SERVER_IP:27019/admin?replicaSet=rs0"
+    echo ""
+    echo "2. Optimized connection string (PRIMARY and SECONDARY only):"
+    echo "   mongodb://$ADMIN_USER:$ADMIN_PASS@$PRIMARY_IP:27017,$SERVER_IP:27017/admin?replicaSet=rs0"
+    echo ""
+    echo "3. Connection string with additional options:"
+    echo "   mongodb://$ADMIN_USER:$ADMIN_PASS@$PRIMARY_IP:27017,$SERVER_IP:27017/admin?replicaSet=rs0&readPreference=primary&retryWrites=true&w=majority"
 }
 
 # Main function
