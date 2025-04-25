@@ -564,37 +564,39 @@ setup_secondary() {
     echo "Checking if nodes already exist in replica set..."
     local rs_status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
     
-    # Remove existing nodes if they exist
+    # Check SECONDARY node
+    local secondary_exists=false
+    local arbiter1_exists=false
+    local arbiter2_exists=false
+    
     if echo "$rs_status" | grep -q "$SERVER_IP:$SECONDARY_PORT"; then
-        echo "Removing existing SECONDARY node..."
-        mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.remove('$SERVER_IP:$SECONDARY_PORT')" --quiet
-        sleep 5
+        echo -e "${GREEN}✅ SECONDARY node already exists in replica set${NC}"
+        secondary_exists=true
+    else
+        echo "Adding SECONDARY node to replica set..."
+        mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.add('$SERVER_IP:$SECONDARY_PORT')" --quiet
+        sleep 10
     fi
     
+    # Check ARBITER 1 node
     if echo "$rs_status" | grep -q "$SERVER_IP:$ARBITER1_PORT"; then
-        echo "Removing existing ARBITER 1 node..."
-        mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.remove('$SERVER_IP:$ARBITER1_PORT')" --quiet
+        echo -e "${GREEN}✅ ARBITER 1 node already exists in replica set${NC}"
+        arbiter1_exists=true
+    else
+        echo "Adding ARBITER 1 node to replica set..."
+        mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.addArb('$SERVER_IP:$ARBITER1_PORT')" --quiet
         sleep 5
     fi
     
+    # Check ARBITER 2 node
     if echo "$rs_status" | grep -q "$SERVER_IP:$ARBITER2_PORT"; then
-        echo "Removing existing ARBITER 2 node..."
-        mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.remove('$SERVER_IP:$ARBITER2_PORT')" --quiet
+        echo -e "${GREEN}✅ ARBITER 2 node already exists in replica set${NC}"
+        arbiter2_exists=true
+    else
+        echo "Adding ARBITER 2 node to replica set..."
+        mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.addArb('$SERVER_IP:$ARBITER2_PORT')" --quiet
         sleep 5
     fi
-    
-    # Add nodes to replica set
-    echo "Adding SECONDARY node to replica set..."
-    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.add('$SERVER_IP:$SECONDARY_PORT')" --quiet
-    sleep 10
-    
-    echo "Adding ARBITER 1 node to replica set..."
-    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.addArb('$SERVER_IP:$ARBITER1_PORT')" --quiet
-    sleep 5
-    
-    echo "Adding ARBITER 2 node to replica set..."
-    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.addArb('$SERVER_IP:$ARBITER2_PORT')" --quiet
-    sleep 5
     
     # Wait for replication to complete
     echo "Waiting for replication to complete..."
@@ -603,15 +605,15 @@ setup_secondary() {
     # Verify replica set status
     echo "Verifying replica set status..."
     local rs_status_after=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
-    local node_status=$(echo "$rs_status_after" | grep -A 3 "$SERVER_IP:$SECONDARY_PORT" | grep "state" | awk '{print $2}' | tr -d ',')
+    local node_status=""
     
-    if [ "$node_status" == "2" ]; then
+    # Check if SECONDARY node is in proper state
+    if echo "$rs_status_after" | grep -A 10 "$SERVER_IP:$SECONDARY_PORT" | grep -q "state.*2"; then
         echo -e "${GREEN}✅ SECONDARY node is properly configured (state: 2)${NC}"
     else
-        echo -e "${RED}❌ SECONDARY node is not in the correct state${NC}"
-        echo "Current state: $node_status"
-        echo "Full status:"
-        echo "$rs_status_after"
+        echo -e "${YELLOW}⚠️ SECONDARY node may not be in the correct state${NC}"
+        echo "Current status:"
+        echo "$rs_status_after" | grep -A 10 "$SERVER_IP:$SECONDARY_PORT" | grep "state\|stateStr"
     fi
     
     # Try to connect to SECONDARY directly
