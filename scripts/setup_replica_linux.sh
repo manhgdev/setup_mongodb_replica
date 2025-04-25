@@ -59,13 +59,13 @@ EOL
     sudo mongod --config "$CONFIG_FILE"
     
     # Kiểm tra kết nối
-    local max_attempts=5
+    local max_attempts=3
     local attempt=1
     while [ $attempt -le $max_attempts ]; do
         if mongosh --port $PORT --eval 'db.runCommand({ ping: 1 })' &> /dev/null; then
             echo "✅ Node MongoDB trên port $PORT đã sẵn sàng"
             # Đợi thêm một chút để đảm bảo MongoDB hoàn toàn sẵn sàng
-            sleep 5
+            sleep 10
             return 0
         fi
         echo "Đang chờ node MongoDB trên port $PORT khởi động... ($attempt/$max_attempts)"
@@ -203,6 +203,30 @@ setup_replica_primary_linux() {
         echo "$create_user_result"
         echo "Đang kiểm tra log file..."
         sudo tail -n 50 /var/log/mongodb/mongod_${PRIMARY_PORT}.log
+        return 1
+    fi
+    
+    # Khởi động lại MongoDB để áp dụng xác thực
+    echo "Đang khởi động lại MongoDB để áp dụng xác thực..."
+    sudo pkill -f "mongod.*${PRIMARY_PORT}" || true
+    sleep 2
+    sudo mongod --config "/etc/mongod_${PRIMARY_PORT}.conf"
+    
+    # Đợi MongoDB khởi động lại
+    local max_attempts=30
+    local attempt=1
+    while [ $attempt -le $max_attempts ]; do
+        if mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'db.runCommand({ ping: 1 })' &> /dev/null; then
+            echo "✅ MongoDB đã khởi động lại và sẵn sàng"
+            break
+        fi
+        echo "Đang chờ MongoDB khởi động lại... ($attempt/$max_attempts)"
+        sleep 2
+        attempt=$((attempt + 1))
+    done
+    
+    if [ $attempt -gt $max_attempts ]; then
+        echo -e "${RED}❌ Không thể kết nối đến MongoDB sau khi khởi động lại${NC}"
         return 1
     fi
     
