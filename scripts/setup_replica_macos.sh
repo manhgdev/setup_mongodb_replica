@@ -28,6 +28,22 @@ EOL
 
     # Khởi động node MongoDB
     mongod --config "$CONFIG_FILE" --fork
+    
+    # Kiểm tra kết nối
+    local max_attempts=30
+    local attempt=1
+    while [ $attempt -le $max_attempts ]; do
+        if mongosh --port $PORT --eval 'db.runCommand({ ping: 1 })' &> /dev/null; then
+            echo "✅ Node MongoDB trên port $PORT đã sẵn sàng"
+            return 0
+        fi
+        echo "Đang chờ node MongoDB trên port $PORT khởi động... ($attempt/$max_attempts)"
+        sleep 2
+        attempt=$((attempt + 1))
+    done
+    
+    echo "❌ Không thể kết nối đến node MongoDB trên port $PORT"
+    return 1
 }
 
 setup_replica_primary_macos() {
@@ -41,13 +57,28 @@ setup_replica_primary_macos() {
     sleep 2
     
     # Thiết lập các node
-    setup_node_macos $PRIMARY_PORT "primary"
-    setup_node_macos $ARBITER1_PORT "arbiter"
-    setup_node_macos $ARBITER2_PORT "arbiter"
+    echo "Đang thiết lập node PRIMARY..."
+    if ! setup_node_macos $PRIMARY_PORT "primary"; then
+        echo -e "${RED}❌ Không thể khởi động node PRIMARY${NC}"
+        return 1
+    fi
+    
+    echo "Đang thiết lập node ARBITER 1..."
+    if ! setup_node_macos $ARBITER1_PORT "arbiter"; then
+        echo -e "${RED}❌ Không thể khởi động node ARBITER 1${NC}"
+        return 1
+    fi
+    
+    echo "Đang thiết lập node ARBITER 2..."
+    if ! setup_node_macos $ARBITER2_PORT "arbiter"; then
+        echo -e "${RED}❌ Không thể khởi động node ARBITER 2${NC}"
+        return 1
+    fi
     
     sleep 5
     
     # Khởi tạo replica set
+    echo "Đang khởi tạo replica set..."
     mongosh --port $PRIMARY_PORT --eval 'rs.initiate({
         _id: "rs0",
         members: [

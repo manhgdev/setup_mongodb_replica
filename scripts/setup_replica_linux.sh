@@ -19,8 +19,6 @@ systemLog:
   logAppend: true
 storage:
   dbPath: /var/lib/mongodb_${PORT}
-  journal:
-    enabled: true
 processManagement:
   fork: true
 net:
