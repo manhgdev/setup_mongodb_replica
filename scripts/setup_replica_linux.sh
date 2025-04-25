@@ -9,10 +9,6 @@ NC='\033[0m'
 stop_mongodb() {
     echo "Stopping all MongoDB processes..."
     
-    # Kill all mongod processes
-    pkill -9 -f mongod || true
-    sleep 2
-    
     # Stop all MongoDB services
     for port in 27017 27018 27019; do
         sudo systemctl stop mongod_${port} 2>/dev/null || true
@@ -37,7 +33,6 @@ stop_mongodb() {
         if lsof -i:$port &>/dev/null || netstat -tulpn 2>/dev/null | grep -q ":$port"; then
             echo -e "${RED}❌ Port $port is still in use${NC}"
             echo "Trying to kill again..."
-            pkill -9 -f mongod
             lsof -ti:$port | xargs kill -9 2>/dev/null || true
             fuser -k $port/tcp 2>/dev/null || true
             sleep 2
@@ -247,8 +242,16 @@ setup_primary() {
     
     # Start PRIMARY first
     echo "Starting PRIMARY node..."
-    sudo systemctl start mongod_27017
+    mongod --config /etc/mongod_27017.conf > /var/log/mongodb/mongod_27017.log 2>&1 &
     sleep 10
+    
+    # Check if PRIMARY is running
+    if ! mongosh --port $PRIMARY_PORT --eval "db.version()" --quiet &>/dev/null; then
+        echo -e "${RED}❌ Failed to start PRIMARY node${NC}"
+        echo "Last 50 lines of log:"
+        tail -n 50 /var/log/mongodb/mongod_27017.log
+        return 1
+    fi
     
     # Initialize replica set
     echo "Initializing replica set..."
@@ -281,15 +284,25 @@ setup_primary() {
         echo "Primary node: $SERVER_IP:$PRIMARY_PORT"
         echo "Arbiter nodes: $SERVER_IP:$ARBITER1_PORT, $SERVER_IP:$ARBITER2_PORT"
         
-        # Create admin user with default values
-        read -p "Enter admin username [manhg]: " ADMIN_USER
-        ADMIN_USER=${ADMIN_USER:-manhg}
-        
-        read -sp "Enter admin password [manhnk]: " ADMIN_PASS
-        ADMIN_PASS=${ADMIN_PASS:-manhnk}
-        echo
-        
-        create_admin_user $PRIMARY_PORT $ADMIN_USER $ADMIN_PASS || return 1
+        # Check if admin user exists
+        local admin_exists=$(mongosh --port $PRIMARY_PORT --eval "db.getSiblingDB('admin').getUsers()" --quiet 2>&1)
+        if echo "$admin_exists" | grep -q "not authorized"; then
+            echo "Admin user already exists, skipping creation..."
+            # Get existing admin user
+            local existing_users=$(mongosh --port $PRIMARY_PORT --eval "db.getSiblingDB('admin').getUsers()" --quiet)
+            ADMIN_USER=$(echo "$existing_users" | grep -o '"user" : "[^"]*"' | cut -d'"' -f4 | head -n1)
+            echo "Using existing admin user: $ADMIN_USER"
+        else
+            # Create admin user with default values
+            read -p "Enter admin username [manhg]: " ADMIN_USER
+            ADMIN_USER=${ADMIN_USER:-manhg}
+            
+            read -sp "Enter admin password [manhnk]: " ADMIN_PASS
+            ADMIN_PASS=${ADMIN_PASS:-manhnk}
+            echo
+            
+            create_admin_user $PRIMARY_PORT $ADMIN_USER $ADMIN_PASS || return 1
+        fi
         
         # Create keyfile and update configs with security
         create_keyfile
