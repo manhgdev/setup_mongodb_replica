@@ -241,21 +241,37 @@ setup_primary() {
     # Start all nodes
     echo "Starting PRIMARY node..."
     mongod --dbpath /var/lib/mongodb_27017 --port 27017 --fork --logpath /var/log/mongodb/mongod_27017.log --replSet rs0 --setParameter allowMultipleArbiters=true
-    sleep 5
-    
-    echo "Starting ARBITER 1 node..."
-    mongod --dbpath /var/lib/mongodb_27018 --port 27018 --fork --logpath /var/log/mongodb/mongod_27018.log --replSet rs0 --setParameter allowMultipleArbiters=true
-    sleep 5
-    
-    echo "Starting ARBITER 2 node..."
-    mongod --dbpath /var/lib/mongodb_27019 --port 27019 --fork --logpath /var/log/mongodb/mongod_27019.log --replSet rs0 --setParameter allowMultipleArbiters=true
-    sleep 5
+    sleep 10
     
     # Check if PRIMARY is running
     if ! mongosh --port $PRIMARY_PORT --eval "db.version()" --quiet &>/dev/null; then
         echo -e "${RED}❌ Failed to start PRIMARY node${NC}"
         echo "Last 50 lines of log:"
         tail -n 50 /var/log/mongodb/mongod_27017.log
+        return 1
+    fi
+    
+    echo "Starting ARBITER 1 node..."
+    mongod --dbpath /var/lib/mongodb_27018 --port 27018 --fork --logpath /var/log/mongodb/mongod_27018.log --replSet rs0 --setParameter allowMultipleArbiters=true
+    sleep 10
+    
+    # Check if ARBITER 1 is running
+    if ! mongosh --port $ARBITER1_PORT --eval "db.version()" --quiet &>/dev/null; then
+        echo -e "${RED}❌ Failed to start ARBITER 1 node${NC}"
+        echo "Last 50 lines of log:"
+        tail -n 50 /var/log/mongodb/mongod_27018.log
+        return 1
+    fi
+    
+    echo "Starting ARBITER 2 node..."
+    mongod --dbpath /var/lib/mongodb_27019 --port 27019 --fork --logpath /var/log/mongodb/mongod_27019.log --replSet rs0 --setParameter allowMultipleArbiters=true
+    sleep 10
+    
+    # Check if ARBITER 2 is running
+    if ! mongosh --port $ARBITER2_PORT --eval "db.version()" --quiet &>/dev/null; then
+        echo -e "${RED}❌ Failed to start ARBITER 2 node${NC}"
+        echo "Last 50 lines of log:"
+        tail -n 50 /var/log/mongodb/mongod_27019.log
         return 1
     fi
     
@@ -274,11 +290,18 @@ setup_primary() {
     if [ $? -ne 0 ]; then
         echo -e "${RED}❌ Failed to initialize replica set${NC}"
         echo "Error: $init_result"
+        echo "Checking node statuses..."
+        echo "PRIMARY node status:"
+        mongosh --port $PRIMARY_PORT --eval "db.serverStatus()" --quiet
+        echo "ARBITER 1 node status:"
+        mongosh --port $ARBITER1_PORT --eval "db.serverStatus()" --quiet
+        echo "ARBITER 2 node status:"
+        mongosh --port $ARBITER2_PORT --eval "db.serverStatus()" --quiet
         return 1
     fi
     
     echo "Waiting for PRIMARY election..."
-    sleep 15
+    sleep 20
     
     # Check replica set status
     echo "Checking replica set status..."
@@ -325,10 +348,10 @@ setup_primary() {
         # Restart services with security
         echo "Restarting services with security..."
         sudo systemctl restart mongod_27017
-        sleep 5
+        sleep 10
         sudo systemctl restart mongod_27018
         sudo systemctl restart mongod_27019
-        sleep 5
+        sleep 10
         
         # Verify connection with auth
         echo "Verifying connection with authentication..."
