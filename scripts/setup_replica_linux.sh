@@ -1038,8 +1038,8 @@ fix_replica_set_roles() {
                 member.priority = 10;
                 print('Đặt ' + member.host + ' làm PRIMARY với priority 10');
             } else if (!member.arbiterOnly) {
-                member.priority = 1;
-                print('Đặt ' + member.host + ' làm SECONDARY với priority 1');
+                member.priority = 5;
+                print('Đặt ' + member.host + ' làm SECONDARY với priority 5');
             }
         });
     } else {

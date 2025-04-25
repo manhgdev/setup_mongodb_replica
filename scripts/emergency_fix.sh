@@ -3,82 +3,175 @@
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-NC='\033[0m'
 YELLOW='\033[0;33m'
+NC='\033[0m' # No Color
 
-# Default admin credentials
-ADMIN_USER="manhg"
-ADMIN_PASS="manhnk"
+# Cài đặt mặc định
+MAX_RETRIES=5
+RETRY_INTERVAL=5
+CURRENT_IP=$(hostname -I | awk '{print $1}')
+CURRENT_PORT=27017
+MONGO_USERNAME=""
+MONGO_PASSWORD=""
+detected_nodes=""
+unreachable_nodes=""
+connected_primary=""
 
-emergency_fix_replica() {
-    echo -e "${RED}===== KHẮC PHỤC KHẨN CẤP REPLICA SET =====${NC}"
-    echo -e "${RED}Sử dụng khi không có PRIMARY hoặc có node ở trạng thái OTHER${NC}"
+# Hàm kiểm tra kết nối tới MongoDB
+check_connection() {
+    local host=$1
+    local retries=$2
+    local interval=$3
+    local auth_params=""
     
-    # Nhận thông tin kết nối
-    read -p "Nhập IP của node hiện tại: " CURRENT_IP
-    read -p "Nhập port của node hiện tại (mặc định 27017): " CURRENT_PORT
-    CURRENT_PORT=${CURRENT_PORT:-27017}
-    
-    # Nhận thông tin xác thực
-    read -p "Nhập tên người dùng admin (mặc định $ADMIN_USER): " INPUT_ADMIN_USER
-    ADMIN_USER=${INPUT_ADMIN_USER:-$ADMIN_USER}
-    read -p "Nhập mật khẩu admin (mặc định $ADMIN_PASS): " INPUT_ADMIN_PASS
-    ADMIN_PASS=${INPUT_ADMIN_PASS:-$ADMIN_PASS}
-    
-    # Bước 1: Kiểm tra trạng thái hiện tại
-    echo -e "\n${YELLOW}Bước 1: Kiểm tra trạng thái hiện tại của replica set${NC}"
-    echo "Thử kết nối với xác thực..."
-    local status_result=$(mongosh --host $CURRENT_IP --port $CURRENT_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet 2>&1)
-    
-    if [[ $status_result == *"no primary"* || $status_result == *"connect"* || $status_result == *"auth fail"* ]]; then
-        echo -e "${YELLOW}Không thể kết nối với xác thực hoặc không có PRIMARY${NC}"
-        echo "Thử kết nối không xác thực..."
-        status_result=$(mongosh --host $CURRENT_IP --port $CURRENT_PORT --eval "rs.status()" --quiet 2>&1)
+    if [ ! -z "$MONGO_USERNAME" ] && [ ! -z "$MONGO_PASSWORD" ]; then
+        auth_params="--username $MONGO_USERNAME --password $MONGO_PASSWORD --authenticationDatabase admin"
     fi
     
-    echo -e "${GREEN}Trạng thái replica set hiện tại:${NC}"
-    echo "$status_result"
+    echo -e "${YELLOW}Đang kiểm tra kết nối tới $host...${NC}"
     
-    # Bước 2: Liệt kê tất cả các node
-    echo -e "\n${YELLOW}Bước 2: Liệt kê tất cả các node trong replica set${NC}"
-    local nodes_info=$(mongosh --host $CURRENT_IP --port $CURRENT_PORT --eval "rs.conf().members.forEach(function(m) { print(m._id + ': ' + m.host + ' (priority: ' + m.priority + ')') })" --quiet 2>&1)
-    
-    if [[ $nodes_info == *"MongoNetworkError"* || -z "$nodes_info" ]]; then
-        echo -e "${RED}Không thể lấy danh sách node. Replica set có thể đã hỏng hoàn toàn.${NC}"
-        echo "Thử force reconfigure với config mới..."
-        
-        # Tìm tất cả các node MongoDB đang chạy
-        echo "Tìm các port MongoDB đang hoạt động..."
-        local active_ports=$(sudo lsof -i -P -n | grep mongod | grep LISTEN | awk '{print $9}' | cut -d':' -f2 | sort | uniq)
-        
-        if [ -z "$active_ports" ]; then
-            echo -e "${RED}Không tìm thấy port MongoDB nào đang hoạt động${NC}"
-            echo "Đang kiểm tra các dịch vụ MongoDB..."
-            sudo systemctl list-units | grep mongod
-            echo "Bạn cần đảm bảo ít nhất một node MongoDB đang chạy."
-            return 1
-        fi
-        
-        echo "Các port MongoDB đang hoạt động: $active_ports"
-        echo "Tạo cấu hình mới..."
-        
-        # Ưu tiên port 27017 cho PRIMARY nếu có
-        local primary_port=""
-        if [[ $active_ports == *"27017"* ]]; then
-            primary_port="27017"
-            echo "Port 27017 sẽ được cấu hình làm PRIMARY."
+    for ((i=1; i<=$retries; i++)); do
+        if timeout 5 mongosh --quiet --eval "db.runCommand({ ping: 1 })" "$host" $auth_params &>/dev/null; then
+            echo -e "${GREEN}Kết nối thành công tới $host${NC}"
+            return 0
         else
-            # Chọn port đầu tiên trong danh sách làm PRIMARY
-            primary_port=$(echo $active_ports | awk '{print $1}')
-            echo "Port $primary_port sẽ được cấu hình làm PRIMARY (port 27017 không khả dụng)."
+            echo -e "${YELLOW}Lần thử $i: Không thể kết nối tới $host, thử lại sau $interval giây...${NC}"
+            sleep $interval
         fi
-    else
-        echo "Các node đã được tìm thấy:"
-        echo "$nodes_info"
+    done
+    
+    echo -e "${RED}Không thể kết nối tới $host sau $retries lần thử${NC}"
+    return 1
+}
+
+# Hàm tìm host hiện tại
+find_current_host() {
+    local reachable_host=""
+    
+    # Thử kết nối tới các port MongoDB mặc định
+    for port in 27017 27018 27019; do
+        local host="$CURRENT_IP:$port"
+        if check_connection "$host" 1 1; then
+            CURRENT_IP=$CURRENT_IP
+            CURRENT_PORT=$port
+            reachable_host=$host
+            break
+        fi
+    done
+    
+    # Nếu không tìm thấy kết nối
+    if [ -z "$reachable_host" ]; then
+        echo -e "${RED}Không thể kết nối tới bất kỳ node MongoDB nào trên máy hiện tại${NC}"
+        exit 1
     fi
     
-    # Bước 3: Force reconfigure với node có port 27017 làm PRIMARY
-    echo -e "\n${YELLOW}Bước 3: Khởi tạo lại replica set với force config${NC}"
+    echo -e "${GREEN}Sử dụng node $reachable_host cho thao tác${NC}"
+}
+
+# Hàm lấy thông tin replica set
+get_replica_info() {
+    local host="$CURRENT_IP:$CURRENT_PORT"
+    local auth_params=""
+    
+    if [ ! -z "$MONGO_USERNAME" ] && [ ! -z "$MONGO_PASSWORD" ]; then
+        auth_params="--username $MONGO_USERNAME --password $MONGO_PASSWORD --authenticationDatabase admin"
+    fi
+    
+    echo -e "${YELLOW}Đang lấy thông tin replica set từ $host...${NC}"
+    
+    # Lấy thông tin tất cả các nodes trong replica set
+    local all_nodes=$(mongosh --quiet --eval "
+        const status = rs.status();
+        if (!status || !status.members) {
+            print('NOT_IN_REPLSET');
+        } else {
+            status.members.forEach(m => print(m.name + ' ' + m.stateStr));
+        }
+    " "$host" $auth_params)
+    
+    # Kiểm tra xem có trong replica set không
+    if [ "$all_nodes" == "NOT_IN_REPLSET" ]; then
+        echo -e "${RED}Node $host không nằm trong replica set nào${NC}"
+        return 1
+    fi
+    
+    echo -e "${GREEN}Thông tin replica set:${NC}"
+    echo "$all_nodes"
+    
+    # Lấy danh sách tất cả các nodes từ rs.conf()
+    local all_config_nodes=$(mongosh --quiet --eval "
+        const conf = rs.conf();
+        if (!conf || !conf.members) {
+            print('NO_CONFIG');
+        } else {
+            conf.members.forEach(m => print(m.host));
+        }
+    " "$host" $auth_params)
+    
+    if [ "$all_config_nodes" == "NO_CONFIG" ]; then
+        echo -e "${RED}Không thể lấy cấu hình replica set${NC}"
+        return 1
+    fi
+    
+    # Kiểm tra kết nối tới tất cả các nodes
+    detected_nodes=""
+    unreachable_nodes=""
+    echo -e "${YELLOW}Kiểm tra kết nối tới tất cả các nodes trong replica set...${NC}"
+    
+    while read -r node; do
+        if check_connection "$node" 2 2; then
+            if [ -z "$detected_nodes" ]; then
+                detected_nodes="$node"
+            else
+                detected_nodes="$detected_nodes $node"
+            fi
+            
+            # Lưu lại node đầu tiên trên port 27017 nếu nó kết nối được
+            if [[ "$node" == *":27017" ]] && [ -z "$connected_primary" ]; then
+                connected_primary="$node"
+            fi
+        else
+            if [ -z "$unreachable_nodes" ]; then
+                unreachable_nodes="$node"
+            else
+                unreachable_nodes="$unreachable_nodes $node"
+            fi
+        fi
+    done <<< "$all_config_nodes"
+    
+    # Nếu không có node nào trên port 27017 kết nối được, thì dùng node đầu tiên trong danh sách có thể kết nối được làm PRIMARY
+    if [ -z "$connected_primary" ] && [ ! -z "$detected_nodes" ]; then
+        connected_primary=$(echo $detected_nodes | cut -d ' ' -f1)
+        echo -e "${YELLOW}Không tìm thấy node port 27017, sử dụng $connected_primary làm PRIMARY${NC}"
+    fi
+    
+    echo -e "${GREEN}Các node kết nối được: $detected_nodes${NC}"
+    echo -e "${YELLOW}Các node không kết nối được: $unreachable_nodes${NC}"
+    
+    # Kiểm tra xem có đủ node và không có node nào là PRIMARY không
+    local primary_count=$(echo "$all_nodes" | grep "PRIMARY" | wc -l)
+    if [ $primary_count -eq 0 ]; then
+        echo -e "${RED}Cảnh báo: Không có node PRIMARY trong replica set${NC}"
+    elif [ $primary_count -gt 1 ]; then
+        echo -e "${RED}Cảnh báo: Có $primary_count node PRIMARY trong replica set${NC}"
+    fi
+}
+
+# Hàm sửa replica set
+fix_replica_set() {
+    local host="$CURRENT_IP:$CURRENT_PORT"
+    local auth_params=""
+    
+    if [ ! -z "$MONGO_USERNAME" ] && [ ! -z "$MONGO_PASSWORD" ]; then
+        auth_params="--username $MONGO_USERNAME --password $MONGO_PASSWORD --authenticationDatabase admin"
+    fi
+    
+    # Luôn loại bỏ các node không kết nối được
+    REMOVE_NODES="y"
+    if [ ! -z "$unreachable_nodes" ]; then
+        echo -e "${YELLOW}Phát hiện các node không kết nối được: $unreachable_nodes${NC}"
+        echo -e "${YELLOW}Các node này sẽ tự động bị loại bỏ khỏi replica set${NC}"
+    fi
     
     # Tạo force config script
     local force_script="
@@ -90,16 +183,43 @@ emergency_fix_replica() {
         members = currentConfig.members;
         print('Đang sử dụng cấu hình hiện tại với ' + members.length + ' nodes.');
         
-        // Thay đổi priority
-        members.forEach(function(member) {
-            if (member.host.includes(':27017')) {
-                member.priority = 10;
-                print('Đặt ' + member.host + ' làm PRIMARY với priority 10');
-            } else if (!member.arbiterOnly) {
-                member.priority = 1;
-                print('Đặt ' + member.host + ' làm SECONDARY với priority 1');
+        // Thay đổi priority và loại bỏ node không kết nối nếu cần
+        var keepMembers = [];
+        var nextId = 0;
+        
+        for (var i = 0; i < members.length; i++) {
+            var member = members[i];
+            var keep = true;
+            
+            // Kiểm tra có loại bỏ node không kết nối không
+            if ('$REMOVE_NODES' === 'y') {
+                var unreachableNodes = '$unreachable_nodes'.trim().split(' ');
+                for (var j = 0; j < unreachableNodes.length; j++) {
+                    if (unreachableNodes[j] && member.host === unreachableNodes[j]) {
+                        print('Loại bỏ node không kết nối được: ' + member.host);
+                        keep = false;
+                        break;
+                    }
+                }
             }
-        });
+            
+            if (keep) {
+                // Đặt priority
+                if (member.host === '$connected_primary') {
+                    member.priority = 10;
+                    print('Đặt ' + member.host + ' làm PRIMARY với priority 10');
+                } else if (!member.arbiterOnly) {
+                    member.priority = 1;
+                    print('Đặt ' + member.host + ' làm SECONDARY với priority 1');
+                }
+                
+                // Cập nhật ID
+                member._id = nextId++;
+                keepMembers.push(member);
+            }
+        }
+        
+        members = keepMembers;
     } else {
         print('Không tìm thấy cấu hình hiện tại, tạo cấu hình mới');
         
@@ -114,6 +234,9 @@ emergency_fix_replica() {
         _id: 'rs0',
         members: members
     };
+    
+    // Kiểm tra xác nhận số lượng thành viên 
+    print('Cấu hình mới có ' + members.length + ' nodes');
     
     // Force reconfig
     try {
@@ -132,60 +255,57 @@ emergency_fix_replica() {
     }
     "
     
-    echo "Thực hiện force reconfigure..."
-    local force_result=$(mongosh --host $CURRENT_IP --port $CURRENT_PORT --eval "$force_script" --quiet)
+    echo -e "${YELLOW}Đang chuẩn bị force reconfiguration...${NC}"
+    echo -e "${YELLOW}Connected PRIMARY node sẽ là: $connected_primary${NC}"
     
-    echo "$force_result"
+    # Thực hiện force reconfiguration
+    local result=$(mongosh --quiet --eval "$force_script" "$host" $auth_params)
+    echo -e "${GREEN}Kết quả:${NC}"
+    echo "$result"
     
-    # Bước 4: Chờ bầu cử PRIMARY
-    echo -e "\n${YELLOW}Bước 4: Chờ bầu cử PRIMARY mới (60 giây)${NC}"
-    
-    for i in {1..12}; do
-        echo "Kiểm tra lần $i..."
-        local status_check=$(mongosh --host $CURRENT_IP --port $CURRENT_PORT --eval "rs.status().members.forEach(function(m) { print(m.name + ' - ' + m.stateStr) })" --quiet)
+    # Kiểm tra kết quả
+    if echo "$result" | grep -q "force reconfig thành công\|khởi tạo mới replica set"; then
+        echo -e "${GREEN}Đã sửa thành công replica set${NC}"
         
-        echo "$status_check"
+        # Kiểm tra lại trạng thái của replica set
+        echo -e "${YELLOW}Đang kiểm tra lại trạng thái replica set...${NC}"
+        sleep 10
         
-        if [[ $status_check == *"PRIMARY"* ]]; then
-            echo -e "${GREEN}✅ Đã tìm thấy PRIMARY!${NC}"
-            break
-        fi
-        
-        if [ $i -lt 12 ]; then
-            echo "Chờ 5 giây..."
-            sleep 5
-        fi
-    done
-    
-    # Bước 5: Kiểm tra trạng thái cuối cùng
-    echo -e "\n${YELLOW}Bước 5: Kiểm tra trạng thái cuối cùng${NC}"
-    
-    local final_status=$(mongosh --host $CURRENT_IP --port $CURRENT_PORT --eval "rs.status().members.forEach(function(m) { print(m.name + ' - ' + m.stateStr) })" --quiet 2>&1)
-    
-    if [[ $final_status == *"PRIMARY"* ]]; then
-        echo -e "${GREEN}✅ Replica set đã được khôi phục thành công!${NC}"
-        echo "Trạng thái hiện tại:"
-        echo "$final_status"
-        
-        # Kiểm tra xem có node nào ở trạng thái OTHER không
-        if [[ $final_status == *"OTHER"* ]]; then
-            echo -e "${YELLOW}⚠️ Có node ở trạng thái OTHER. Có thể cần khởi động lại các node này.${NC}"
-            echo "Sử dụng lệnh sau trên các node bị ảnh hưởng:"
-            echo "sudo systemctl restart mongod_<port>"
+        local status=$(mongosh --quiet --eval "rs.status()" "$host" $auth_params)
+        if echo "$status" | grep -q "PRIMARY"; then
+            echo -e "${GREEN}Replica set đã có PRIMARY node${NC}"
+            return 0
+        else
+            echo -e "${YELLOW}Replica set vẫn chưa có PRIMARY node, bạn cần đợi thêm...${NC}"
+            return 1
         fi
     else
-        echo -e "${RED}❌ Không thể khôi phục replica set hoàn toàn${NC}"
-        echo "Trạng thái hiện tại:"
-        echo "$final_status"
-        echo -e "${YELLOW}Hãy thử các bước sau:${NC}"
-        echo "1. Kiểm tra log: sudo tail -f /var/log/mongodb/mongod_${CURRENT_PORT}.log"
-        echo "2. Kiểm tra firewall và kết nối mạng giữa các node"
-        echo "3. Khởi động lại toàn bộ các node: sudo systemctl restart mongod_<port>"
-        echo "4. Thử lại process này"
+        echo -e "${RED}Không thể sửa replica set${NC}"
+        return 1
     fi
-    
-    echo -e "\n${GREEN}Quá trình khắc phục khẩn cấp đã hoàn tất.${NC}"
 }
 
-# Chạy hàm khắc phục khẩn cấp
-emergency_fix_replica 
+# Chức năng chính
+main() {
+    echo -e "${GREEN}MongoDB Replica Set Emergency Fix Tool${NC}"
+    
+    # Tìm host hiện tại
+    find_current_host
+    
+    # Lấy thông tin replica set
+    get_replica_info
+    
+    # Hỏi người dùng có muốn sửa replica set không
+    read -p "Bạn có muốn sửa replica set không? (y/n): " CONFIRM_FIX
+    if [ "$CONFIRM_FIX" == "y" ]; then
+        # Sửa replica set
+        fix_replica_set
+    else
+        echo -e "${YELLOW}Đã hủy thao tác sửa replica set${NC}"
+    fi
+    
+    echo -e "${GREEN}Hoàn thành!${NC}"
+}
+
+# Thực thi chương trình
+main 
