@@ -394,8 +394,8 @@ setup_secondary() {
         sudo chmod 755 $LOG_PATH
     done
     
-    # Check and fix keyfile
-    # check_fix_keyfile $PRIMARY_IP || return 1
+    # Create keyfile
+    create_keyfile
     
     # Create configs with security
     echo "Creating configs with security..."
@@ -712,70 +712,6 @@ configure_firewall() {
     fi
 }
 
-# Check and fix keyfile
-check_fix_keyfile() {
-    local PRIMARY_IP=$1
-    local KEYFILE="/etc/mongodb.keyfile"
-    
-    echo "Checking keyfile..."
-    
-    # Check if keyfile exists
-    if [ ! -f "$KEYFILE" ]; then
-        echo -e "${RED}❌ Keyfile not found${NC}"
-        echo "Downloading keyfile from PRIMARY server..."
-        scp root@$PRIMARY_IP:$KEYFILE $KEYFILE
-        if [ ! -f "$KEYFILE" ]; then
-            echo -e "${RED}❌ Failed to download keyfile${NC}"
-            return 1
-        fi
-    fi
-    
-    # Verify keyfile content with PRIMARY
-    echo "Verifying keyfile content..."
-    local PRIMARY_KEYFILE_MD5=$(ssh root@$PRIMARY_IP "md5sum $KEYFILE" | awk '{print $1}')
-    local SECONDARY_KEYFILE_MD5=$(md5sum $KEYFILE | awk '{print $1}')
-    
-    if [ "$PRIMARY_KEYFILE_MD5" != "$SECONDARY_KEYFILE_MD5" ]; then
-        echo -e "${RED}❌ Keyfile content does not match PRIMARY server${NC}"
-        echo "Replacing keyfile with PRIMARY server's keyfile..."
-        rm -f $KEYFILE
-        scp root@$PRIMARY_IP:$KEYFILE $KEYFILE
-    fi
-    
-    # Fix keyfile permissions
-    echo "Setting correct permissions for keyfile..."
-    sudo chown mongodb:mongodb $KEYFILE
-    sudo chmod 400 $KEYFILE
-    
-    local keyfile_owner=$(stat -c %U $KEYFILE)
-    local keyfile_group=$(stat -c %G $KEYFILE)
-    local keyfile_perms=$(stat -c %a $KEYFILE)
-    
-    if [ "$keyfile_owner" != "mongodb" ] || [ "$keyfile_group" != "mongodb" ] || [ "$keyfile_perms" != "400" ]; then
-        echo -e "${RED}❌ Failed to set correct permissions${NC}"
-        echo "Current permissions:"
-        echo "Owner: $keyfile_owner"
-        echo "Group: $keyfile_group"
-        echo "Permissions: $keyfile_perms"
-        
-        # Try as root
-        echo "Trying with sudo..."
-        sudo chown mongodb:mongodb $KEYFILE
-        sudo chmod 400 $KEYFILE
-        
-        keyfile_owner=$(stat -c %U $KEYFILE)
-        keyfile_group=$(stat -c %G $KEYFILE)
-        keyfile_perms=$(stat -c %a $KEYFILE)
-        
-        if [ "$keyfile_owner" != "mongodb" ] || [ "$keyfile_group" != "mongodb" ] || [ "$keyfile_perms" != "400" ]; then
-            echo -e "${RED}❌ Still failed to set correct permissions${NC}"
-            return 1
-        fi
-    fi
-    
-    echo -e "${GREEN}✅ Keyfile verified and permissions set correctly${NC}"
-    return 0
-}
 
 # Main function
 setup_replica_linux() {
