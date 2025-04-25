@@ -3,18 +3,10 @@
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
 NC='\033[0m'
-
-# Check if running as root
-if [ $(id -u) -ne 0 ]; then
-    echo -e "${RED}❌ This script must be run as root${NC}"
-    exit 1
-fi
 
 # Stop MongoDB
 stop_mongodb() {
-    echo "Stopping MongoDB..."
     pkill -f mongod || true
     sleep 2
 }
@@ -25,26 +17,14 @@ create_dirs() {
     local DB_PATH="/var/lib/mongodb_${PORT}"
     local LOG_PATH="/var/log/mongodb"
     
-    sudo mkdir -p $DB_PATH $LOG_PATH
-    sudo chown -R mongodb:mongodb $DB_PATH $LOG_PATH
-    sudo chmod 755 $DB_PATH
-}
-
-# Create keyfile
-create_keyfile() {
-    local KEY_FILE="/etc/mongodb.key"
-    if [ ! -f "$KEY_FILE" ]; then
-        echo "Creating MongoDB keyFile..."
-        openssl rand -base64 756 > $KEY_FILE
-        chmod 600 $KEY_FILE
-        chown mongodb:mongodb $KEY_FILE
-    fi
+    mkdir -p $DB_PATH $LOG_PATH
+    chown -R mongodb:mongodb $DB_PATH $LOG_PATH
+    chmod 755 $DB_PATH
 }
 
 # Setup MongoDB node
 setup_node() {
     local PORT=$1
-    local SECURITY=$2
     local CONFIG_FILE="/etc/mongod_${PORT}.conf"
     local DB_PATH="/var/lib/mongodb_${PORT}"
     local LOG_PATH="/var/log/mongodb"
@@ -67,15 +47,6 @@ setParameter:
 processManagement:
   fork: true
 EOL
-
-    # Add security if enabled
-    if [ "$SECURITY" = "yes" ]; then
-        cat >> $CONFIG_FILE <<EOL
-security:
-  authorization: enabled
-  keyFile: /etc/mongodb.key
-EOL
-    fi
 
     # Start MongoDB
     echo "Starting MongoDB on port $PORT..."
@@ -113,24 +84,17 @@ setup_primary() {
     local ARBITER1_PORT=27018
     local ARBITER2_PORT=27019
 
-    # Stop any running MongoDB
     stop_mongodb
-    
-    # Create directories
     create_dirs $PRIMARY_PORT
     create_dirs $ARBITER1_PORT
     create_dirs $ARBITER2_PORT
     
-    # Start nodes without security
-    echo "Starting nodes without security..."
-    setup_node $PRIMARY_PORT "no" || return 1
-    setup_node $ARBITER1_PORT "no" || return 1
-    setup_node $ARBITER2_PORT "no" || return 1
+    setup_node $PRIMARY_PORT || return 1
+    setup_node $ARBITER1_PORT || return 1
+    setup_node $ARBITER2_PORT || return 1
     
     sleep 5
     
-    # Initialize replica set
-    echo "Initializing replica set..."
     mongosh --port $PRIMARY_PORT --eval "
     rs.initiate({
         _id: 'rs0',
@@ -143,50 +107,14 @@ setup_primary() {
     
     sleep 5
     
-    # Create admin user
-    echo "Creating admin user..."
-    read -p "Enter admin username (default: manhg): " admin_username
-    admin_username=${admin_username:-manhg}
-    read -p "Enter admin password (default: manhnk): " admin_password
-    admin_password=${admin_password:-manhnk}
-    
     mongosh --port $PRIMARY_PORT --eval "
-    db = db.getSiblingDB('admin');
-    db.createUser({
-        user: '$admin_username',
-        pwd: '$admin_password',
-        roles: [
-            { role: 'root', db: 'admin' },
-            { role: 'clusterAdmin', db: 'admin' },
-            { role: 'userAdminAnyDatabase', db: 'admin' },
-            { role: 'readWriteAnyDatabase', db: 'admin' }
-        ]
-    })"
-    
-    # Create keyfile and restart with security
-    create_keyfile
-    stop_mongodb
-    sleep 5
-    
-    # Restart with security
-    echo "Restarting with security..."
-    setup_node $PRIMARY_PORT "yes" || return 1
-    setup_node $ARBITER1_PORT "yes" || return 1
-    setup_node $ARBITER2_PORT "yes" || return 1
-    
-    sleep 5
-    
-    # Verify setup
-    echo "Verifying setup..."
-    mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval "
     print('Replica set status:');
     printjson(rs.status())"
     
     echo -e "\n${GREEN}✅ MongoDB Replica Set setup completed successfully.${NC}"
     echo "Primary node: $SERVER_IP:$PRIMARY_PORT"
     echo "Arbiter nodes: $SERVER_IP:$ARBITER1_PORT, $SERVER_IP:$ARBITER2_PORT"
-    echo "Admin user: $admin_username"
-    echo "Connection command: mongosh --host $SERVER_IP --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin"
+    echo "Connection command: mongosh --host $SERVER_IP --port $PRIMARY_PORT"
 }
 
 # Setup SECONDARY server
@@ -195,55 +123,28 @@ setup_secondary() {
     local PRIMARY_PORT=27017
     local ARBITER_PORT=27018
     
-    # Get primary server info
-    echo -e "${YELLOW}Setting up SECONDARY server${NC}"
     read -p "Enter PRIMARY server IP: " PRIMARY_IP
     if [ -z "$PRIMARY_IP" ]; then
         echo -e "${RED}❌ PRIMARY server IP is required${NC}"
         return 1
     fi
     
-    read -p "Enter admin username (default: manhg): " admin_username
-    admin_username=${admin_username:-manhg}
-    read -p "Enter admin password (default: manhnk): " admin_password
-    admin_password=${admin_password:-manhnk}
-    
-    # Stop any running MongoDB
     stop_mongodb
-    
-    # Create directories
     create_dirs $PRIMARY_PORT
     create_dirs $ARBITER_PORT
     
-    # Create keyfile
-    create_keyfile
-    
-    # Start without security
-    echo "Starting without security..."
-    setup_node $PRIMARY_PORT "no" || return 1
-    setup_node $ARBITER_PORT "no" || return 1
+    setup_node $PRIMARY_PORT || return 1
+    setup_node $ARBITER_PORT || return 1
     
     sleep 5
     
-    # Add to replica set
-    echo "Adding to replica set..."
-    mongosh --host $PRIMARY_IP --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval "
+    mongosh --host $PRIMARY_IP --port $PRIMARY_PORT --eval "
     rs.add('$SERVER_IP:$PRIMARY_PORT');
     rs.addArb('$SERVER_IP:$ARBITER_PORT')"
     
-    # Restart with security
-    stop_mongodb
     sleep 5
     
-    echo "Restarting with security..."
-    setup_node $PRIMARY_PORT "yes" || return 1
-    setup_node $ARBITER_PORT "yes" || return 1
-    
-    sleep 5
-    
-    # Verify setup
-    echo "Verifying setup..."
-    mongosh --host $PRIMARY_IP --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval "
+    mongosh --host $PRIMARY_IP --port $PRIMARY_PORT --eval "
     print('Replica set status:');
     printjson(rs.status())"
     
@@ -251,7 +152,7 @@ setup_secondary() {
     echo "This server (SECONDARY): $SERVER_IP:$PRIMARY_PORT"
     echo "Arbiter node: $SERVER_IP:$ARBITER_PORT"
     echo "Connected to PRIMARY: $PRIMARY_IP:$PRIMARY_PORT"
-    echo "Connect to this SECONDARY: mongosh --host $SERVER_IP --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin"
+    echo "Connect to this SECONDARY: mongosh --host $SERVER_IP --port $PRIMARY_PORT"
 }
 
 # Main function
