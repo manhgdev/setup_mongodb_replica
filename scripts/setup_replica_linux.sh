@@ -287,6 +287,7 @@ verify_mongodb_connection() {
     local AUTH=$1
     local USERNAME=$2
     local PASSWORD=$3
+    local HOST=${4:-"localhost"}
     
     echo -e "${YELLOW}Kiểm tra kết nối MongoDB...${NC}"
     
@@ -298,7 +299,7 @@ verify_mongodb_connection() {
         cmd="rs.status()"
     fi
     
-    local result=$(mongosh --port $PORT $auth_params --eval "$cmd" --quiet 2>&1)
+    local result=$(mongosh --host $HOST --port $PORT $auth_params --eval "$cmd" --quiet 2>&1)
     
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}✅ Đã kết nối thành công tới MongoDB${NC}"
@@ -337,7 +338,7 @@ setup_primary() {
     fi
     
     # Kiểm tra kết nối
-    if ! verify_mongodb_connection false; then
+    if ! verify_mongodb_connection false "" "" $SERVER_IP; then
         return 1
     fi
     
@@ -345,7 +346,7 @@ setup_primary() {
     echo -e "${YELLOW}Khởi tạo Replica Set...${NC}"
     echo -e "${GREEN}Cấu hình node $SERVER_IP:$PRIMARY_PORT${NC}"
     
-    local init_result=$(mongosh --port $PRIMARY_PORT --eval "
+    local init_result=$(mongosh --host $SERVER_IP --port $PRIMARY_PORT --eval "
     rs.initiate({
         _id: 'rs0',
         members: [
@@ -359,12 +360,12 @@ setup_primary() {
         return 1
     fi
     
-    echo -e "${YELLOW}Đợi bầu chọn PRIMARY...${NC}"
+    echo -e "${YELLOW}Khởi tạo PRIMARY (không phải bầu chọn)...${NC}"
     sleep 10
     
-    # Kiểm tra trạng thái replica set
+    # Kiểm tra trạng thái replica set - Sử dụng IP của server
     echo -e "${YELLOW}Kiểm tra trạng thái replica set...${NC}"
-    local status=$(mongosh --port $PRIMARY_PORT --eval "rs.status()" --quiet)
+    local status=$(mongosh --host $SERVER_IP --port $PRIMARY_PORT --eval "rs.status()" --quiet)
     local primary_state=$(echo "$status" | grep -A 5 "stateStr" | grep "PRIMARY")
     
     if [ -n "$primary_state" ]; then
@@ -386,7 +387,7 @@ setup_primary() {
         
         # Xác minh kết nối với xác thực
         echo -e "${YELLOW}Xác minh kết nối với xác thực...${NC}"
-        if verify_mongodb_connection true $ADMIN_USER $ADMIN_PASS; then
+        if verify_mongodb_connection true $ADMIN_USER $ADMIN_PASS $SERVER_IP; then
             echo -e "\n${GREEN}=== THIẾT LẬP MONGODB PRIMARY HOÀN TẤT ===${NC}"
             echo -e "${GREEN}Lệnh kết nối:${NC}"
             echo "mongosh --host $SERVER_IP --port $PRIMARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
@@ -433,7 +434,7 @@ setup_secondary() {
     fi
     
     # Kiểm tra kết nối
-    if ! verify_mongodb_connection false; then
+    if ! verify_mongodb_connection false "" "" $SERVER_IP; then
         return 1
     fi
     
