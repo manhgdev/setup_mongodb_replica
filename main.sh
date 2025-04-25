@@ -29,6 +29,9 @@ check_status() {
         read -p "Bạn có muốn cài đặt MongoDB không? (y/n): " install_choice
         if [[ "$install_choice" == "y" ]]; then
             install_mongodb
+            echo -e "\n${YELLOW}Đang kiểm tra lại trạng thái sau khi cài đặt...${NC}"
+            sleep 2
+            check_status
             return 0
         fi
         return 1
@@ -45,7 +48,9 @@ check_status() {
                 sudo systemctl start mongod
             fi
             echo -e "${GREEN}✅ Đã khởi động MongoDB${NC}"
+            echo -e "\n${YELLOW}Đang kiểm tra lại trạng thái sau khi khởi động...${NC}"
             sleep 2
+            check_status
             return 0
         fi
         return 1
@@ -72,9 +77,14 @@ check_status() {
         read -p "Bạn có muốn cấu hình Replica Set không? (y/n): " setup_choice
         if [[ "$setup_choice" == "y" ]]; then
             setup_replica
+            echo -e "\n${YELLOW}Đang kiểm tra lại trạng thái sau khi cấu hình...${NC}"
+            sleep 2
+            check_status
             return 0
         fi
     fi
+    
+    echo -e "\n${GREEN}✅ MongoDB đang hoạt động bình thường${NC}"
 }
 
 uninstall_mongodb() {
