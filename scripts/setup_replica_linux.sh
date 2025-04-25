@@ -132,25 +132,37 @@ EOF
 
 # Create keyfile
 create_keyfile() {
-  echo -e "${YELLOW}Tạo keyfile xác thực...${NC}"
+  echo -e "${YELLOW}Bước 1: Tạo/sao chép keyfile xác thực...${NC}"
   local keyfile=${1:-"/etc/mongodb.keyfile"}
-  local primary_ip=${2:-"171.244.21.188"}
+  local primary_ip=${2}
+  
+  # Kiểm tra nếu không có địa chỉ IP
+  if [ -z "$primary_ip" ]; then
+    echo -e "${YELLOW}❌ Không có địa chỉ PRIMARY IP. Vui lòng nhập:${NC}"
+    read -p "Nhập IP của PRIMARY node: " primary_ip
+    if [ -z "$primary_ip" ]; then
+      echo -e "${RED}❌ Không có IP, không thể tiếp tục.${NC}"
+      return 1
+    fi
+  fi
   
   # Kiểm tra nếu đang ở PRIMARY thì tạo keyfile mới
   if [ "$(hostname -I | awk '{print $1}')" = "$primary_ip" ]; then
     if [ ! -f "$keyfile" ]; then
+      echo -e "${YELLOW}PRIMARY node: Đang tạo keyfile mới...${NC}"
       openssl rand -base64 756 | sudo tee $keyfile > /dev/null
       sudo chmod 400 $keyfile
       sudo chown mongodb:mongodb $keyfile
-      echo -e "${GREEN}✅ Đã tạo keyfile tại $keyfile${NC}"
+      echo -e "${GREEN}✅ Đã tạo keyfile mới tại $keyfile${NC}"
     else
+      echo -e "${YELLOW}PRIMARY node: Keyfile đã tồn tại, đang thiết lập lại quyền...${NC}"
       sudo chown mongodb:mongodb $keyfile
       sudo chmod 400 $keyfile
       echo -e "${GREEN}✅ Keyfile đã tồn tại tại $keyfile${NC}"
     fi
   else
     # Nếu không phải PRIMARY thì copy keyfile từ PRIMARY
-    echo -e "${YELLOW}Copy keyfile từ PRIMARY ($primary_ip)...${NC}"
+    echo -e "${YELLOW}SECONDARY node: Đang sao chép keyfile từ PRIMARY ($primary_ip)...${NC}"
     
     # Kiểm tra nếu keyfile tồn tại trên PRIMARY
     ssh -o StrictHostKeyChecking=accept-new root@$primary_ip "test -f $keyfile" 2>/dev/null
@@ -166,11 +178,18 @@ create_keyfile() {
         sudo chmod 400 $keyfile
         sudo chown mongodb:mongodb $keyfile
         echo -e "${YELLOW}⚠️ Keyfile được tạo cục bộ. Cần sao chép thủ công sang PRIMARY${NC}"
-        return 0
+        return 1
       fi
     fi
     
+    # Xóa keyfile cũ nếu tồn tại
+    if [ -f "$keyfile" ]; then
+      echo -e "${YELLOW}Xóa keyfile cũ...${NC}"
+      sudo rm -f $keyfile
+    fi
+    
     # Tiến hành sao chép keyfile
+    echo -e "${YELLOW}Sao chép keyfile từ PRIMARY...${NC}"
     scp -o StrictHostKeyChecking=accept-new root@$primary_ip:$keyfile $keyfile 2>/dev/null
     if [ $? -ne 0 ]; then
       echo -e "${RED}❌ Không thể sao chép keyfile từ PRIMARY. Đang tạo keyfile cục bộ...${NC}"
@@ -179,12 +198,61 @@ create_keyfile() {
       sudo chmod 400 $keyfile
       sudo chown mongodb:mongodb $keyfile
       echo -e "${YELLOW}⚠️ Đã tạo keyfile cục bộ. Cần sao chép thủ công sang PRIMARY${NC}"
+      return 1
     else
+      echo -e "${YELLOW}Bước 2: Thiết lập quyền cho keyfile...${NC}"
       sudo chmod 400 $keyfile
       sudo chown mongodb:mongodb $keyfile
-      echo -e "${GREEN}✅ Đã copy keyfile từ PRIMARY${NC}"
+      echo -e "${GREEN}✅ Đã sao chép và thiết lập quyền keyfile từ PRIMARY${NC}"
+      ls -la $keyfile
     fi
   fi
+  
+  return 0
+}
+
+# Apply keyfile to MongoDB
+apply_keyfile() {
+  local PORT=27017
+  local keyfile=${1:-"/etc/mongodb.keyfile"}
+  local primary_ip=${2}
+  
+  echo -e "${YELLOW}Bước 1: Dừng MongoDB hiện tại...${NC}"
+  sudo systemctl stop mongod_${PORT}
+  sleep 3
+  
+  echo -e "${YELLOW}Bước 2: Kiểm tra keyfile...${NC}"
+  if [ ! -f "$keyfile" ]; then
+    echo -e "${RED}❌ Keyfile không tồn tại tại $keyfile${NC}"
+    echo -e "${YELLOW}Tạo keyfile mới...${NC}"
+    if ! create_keyfile "$keyfile" "$primary_ip"; then
+      echo -e "${RED}❌ Không thể tạo keyfile.${NC}"
+      return 1
+    fi
+  fi
+  
+  # Kiểm tra và sửa quyền
+  echo -e "${YELLOW}Bước 3: Thiết lập quyền keyfile...${NC}"
+  sudo chmod 400 $keyfile
+  sudo chown mongodb:mongodb $keyfile
+  ls -la $keyfile
+  
+  echo -e "${YELLOW}Bước 4: Tạo cấu hình MongoDB với bảo mật...${NC}"
+  create_config true
+  
+  echo -e "${YELLOW}Bước 5: Tạo dịch vụ MongoDB với bảo mật...${NC}"
+  create_systemd_service true
+  
+  echo -e "${YELLOW}Bước 6: Khởi động MongoDB với bảo mật...${NC}"
+  if ! start_mongodb; then
+    echo -e "${RED}❌ Không thể khởi động MongoDB với bảo mật${NC}"
+    echo -e "${YELLOW}Kiểm tra log lỗi:${NC}"
+    sudo tail -n 20 /var/log/mongodb/mongod_${PORT}.log
+    return 1
+  fi
+  
+  echo -e "${GREEN}✅ Đã áp dụng keyfile và khởi động MongoDB với bảo mật${NC}"
+  return 0
 }
 
 # Create admin user
@@ -492,53 +560,54 @@ setup_primary() {
     # Thử vài cách khởi tạo khác nhau
     local success=false
     
-    # Cách 1: Khởi tạo với localhost trước
-    echo "Phương pháp 1: Khởi tạo với localhost"
+    # Cách 1: Khởi tạo với IP server trực tiếp
+    echo "Phương pháp 1: Khởi tạo với IP server trực tiếp"
     local init_result=$(mongosh --host $CONNECT_HOST --port $PRIMARY_PORT --eval "
     rs.initiate({
         _id: 'rs0',
         members: [
-            { _id: 0, host: 'localhost:$PRIMARY_PORT', priority: 10 }
+            { _id: 0, host: '$SERVER_IP:$PRIMARY_PORT', priority: 10 }
         ]
     })" --quiet)
     
     if echo "$init_result" | grep -q "ok" && ! echo "$init_result" | grep -q "NotYetInitialized"; then
-        echo -e "${GREEN}✅ Khởi tạo replica set với localhost thành công${NC}"
+        echo -e "${GREEN}✅ Khởi tạo replica set với IP server thành công${NC}"
         success=true
-        
-        # Chờ một chút cho MongoDB ổn định
-        sleep 10
-        
-        # Cập nhật cấu hình với IP thực
-        echo "Cập nhật cấu hình với IP thực tế..."
-        local update_result=$(mongosh --host localhost --port $PRIMARY_PORT --eval "
-        var config = rs.conf();
-        config.members[0].host = '$SERVER_IP:$PRIMARY_PORT';
-        rs.reconfig(config, {force: true});" --quiet)
-        
-        if echo "$update_result" | grep -q "ok"; then
-            echo -e "${GREEN}✅ Cập nhật cấu hình với IP thực tế thành công${NC}"
-        else
-            echo -e "${YELLOW}⚠️ Không thể cập nhật cấu hình, nhưng replica set đã hoạt động với localhost${NC}"
-            echo "Lỗi: $update_result"
-        fi
     else
         echo -e "${YELLOW}⚠️ Phương pháp 1 thất bại, đang thử phương pháp 2...${NC}"
         echo "Lỗi: $init_result"
         
-        # Cách 2: Khởi tạo đơn giản
+        # Cách 2: Khởi tạo đơn giản với rs.initiate() và sau đó cập nhật cấu hình
         echo "Phương pháp 2: Khởi tạo đơn giản"
         local init_result2=$(mongosh --host $CONNECT_HOST --port $PRIMARY_PORT --eval "rs.initiate()" --quiet)
         
         if echo "$init_result2" | grep -q "ok" && ! echo "$init_result2" | grep -q "NotYetInitialized"; then
             echo -e "${GREEN}✅ Khởi tạo replica set thành công (phương pháp 2)${NC}"
             success=true
+            
+            # Chờ một chút cho MongoDB ổn định
+            echo "Đợi 10 giây cho MongoDB ổn định..."
+            sleep 10
+            
+            # Cập nhật cấu hình với IP thực tế
+            echo "Cập nhật cấu hình với IP thực tế..."
+            local update_result=$(mongosh --host $CONNECT_HOST --port $PRIMARY_PORT --eval "
+            var config = rs.conf();
+            config.members[0].host = '$SERVER_IP:$PRIMARY_PORT';
+            rs.reconfig(config, {force: true});" --quiet)
+            
+            if echo "$update_result" | grep -q "ok"; then
+                echo -e "${GREEN}✅ Cập nhật cấu hình với IP thực tế thành công${NC}"
+            else
+                echo -e "${YELLOW}⚠️ Không thể cập nhật cấu hình, replica set có thể không hoạt động đúng${NC}"
+                echo "Lỗi: $update_result"
+            fi
         else
             echo -e "${YELLOW}⚠️ Phương pháp 2 thất bại, đang thử phương pháp 3...${NC}"
             echo "Lỗi: $init_result2"
             
             # Cách 3: Force khởi tạo
-            echo "Phương pháp 3: Khởi tạo với localhost và force"
+            echo "Phương pháp 3: Khởi tạo với localhost và force, sau đó cập nhật IP"
             local init_result3=$(mongosh --host localhost --port $PRIMARY_PORT --eval "
             rs.initiate({
                 _id: 'rs0',
@@ -550,6 +619,24 @@ setup_primary() {
             if echo "$init_result3" | grep -q "ok" && ! echo "$init_result3" | grep -q "NotYetInitialized"; then
                 echo -e "${GREEN}✅ Khởi tạo replica set với localhost và force thành công${NC}"
                 success=true
+                
+                # Chờ một chút cho MongoDB ổn định
+                echo "Đợi 15 giây cho MongoDB ổn định..."
+                sleep 15
+                
+                # Cập nhật cấu hình với IP thực tế
+                echo "Cập nhật cấu hình với IP thực tế..."
+                local update_result=$(mongosh --host localhost --port $PRIMARY_PORT --eval "
+                var config = rs.conf();
+                config.members[0].host = '$SERVER_IP:$PRIMARY_PORT';
+                rs.reconfig(config, {force: true});" --quiet)
+                
+                if echo "$update_result" | grep -q "ok"; then
+                    echo -e "${GREEN}✅ Cập nhật cấu hình với IP thực tế thành công${NC}"
+                else
+                    echo -e "${YELLOW}⚠️ Không thể cập nhật cấu hình, replica set có thể không hoạt động đúng${NC}"
+                    echo "Lỗi: $update_result"
+                fi
             else
                 echo -e "${RED}❌ Tất cả các phương pháp khởi tạo đều thất bại${NC}"
                 echo "Lỗi cuối cùng: $init_result3"
@@ -578,7 +665,7 @@ setup_primary() {
         create_admin_user $ADMIN_USER $ADMIN_PASS || return 1
         
         # Tạo keyfile
-        create_keyfile "/etc/mongodb.keyfile"
+        create_keyfile "/etc/mongodb.keyfile" $SERVER_IP
         
         # Bật bảo mật và khởi động lại
         echo -e "${YELLOW}Khởi động lại với bảo mật...${NC}"
@@ -816,7 +903,12 @@ setup_secondary() {
     
     # BƯỚC 5: Tạo keyfile và cấu hình bảo mật
     echo -e "${YELLOW}BƯỚC 5: Tạo keyfile và cấu hình bảo mật...${NC}"
-    create_keyfile "/etc/mongodb.keyfile" $PRIMARY_IP
+    
+    # Tạo hoặc sao chép keyfile
+    if ! create_keyfile "/etc/mongodb.keyfile" $PRIMARY_IP; then
+        echo -e "${RED}❌ Có vấn đề khi tạo/sao chép keyfile.${NC}"
+        echo -e "${YELLOW}Tiếp tục quá trình nhưng có thể gặp vấn đề với xác thực.${NC}"
+    fi
     
     # Kiểm tra và đảm bảo quyền keyfile đúng
     echo -e "${YELLOW}Kiểm tra và sửa quyền keyfile...${NC}"
@@ -834,36 +926,42 @@ setup_secondary() {
         echo -e "${YELLOW}⚠️ Đã tạo keyfile cục bộ. Cần sao chép thủ công sang PRIMARY.${NC}"
     fi
     
-    # Bật bảo mật và khởi động lại
-    echo -e "${YELLOW}Khởi động lại với bảo mật...${NC}"
-    create_systemd_service true
-    if ! start_mongodb; then
-        echo -e "${RED}❌ Không thể khởi động MongoDB với bảo mật${NC}"
-        echo -e "${YELLOW}Kiểm tra log lỗi:${NC}"
-        sudo tail -n 20 /var/log/mongodb/mongod_${SECONDARY_PORT}.log
+    # Áp dụng keyfile và khởi động với bảo mật
+    echo -e "${YELLOW}Áp dụng keyfile và khởi động MongoDB với bảo mật...${NC}"
+    if ! apply_keyfile "/etc/mongodb.keyfile" $PRIMARY_IP; then
+        echo -e "${RED}❌ Không thể áp dụng keyfile và khởi động MongoDB với bảo mật.${NC}"
+        echo -e "${YELLOW}Thử khắc phục...${NC}"
         
-        echo -e "${YELLOW}Đang thử khắc phục lỗi keyfile...${NC}"
-        fix_keyfile_and_restart
+        # Thử khắc phục lỗi
+        fix_keyfile_and_restart $PRIMARY_IP
         
+        # Kiểm tra lại
         if ! verify_mongodb_connection true $SEC_USER $SEC_PASS "localhost"; then
-            echo -e "${RED}❌ Vẫn không thể khởi động MongoDB với bảo mật sau khi sửa keyfile.${NC}"
+            echo -e "${RED}❌ Vẫn không thể khởi động MongoDB với bảo mật.${NC}"
             echo -e "${YELLOW}Kiểm tra chi tiết MongoDB...${NC}"
             check_mongodb_status
             
-            echo -e "${YELLOW}Đang thử một lần cuối với cấu hình không bảo mật...${NC}"
-            create_systemd_service false
-            
-            if ! start_mongodb; then
-                echo -e "${RED}❌ MongoDB không thể khởi động được với cả hai cấu hình.${NC}"
-                echo -e "${YELLOW}Vui lòng sử dụng tùy chọn 'Troubleshoot' từ menu chính để khắc phục.${NC}"
-                return 1
+            # Hỏi có muốn tiếp tục với MongoDB không bảo mật
+            read -p "Bạn có muốn tiếp tục với MongoDB không bảo mật? (y/n): " CONTINUE_NO_SECURITY
+            if [[ "$CONTINUE_NO_SECURITY" =~ ^[Yy]$ ]]; then
+                echo -e "${YELLOW}Khởi động MongoDB không bảo mật...${NC}"
+                create_systemd_service false
+                if ! start_mongodb; then
+                    echo -e "${RED}❌ MongoDB không thể khởi động được.${NC}"
+                    return 1
+                else
+                    echo -e "${YELLOW}⚠️ MongoDB đã khởi động nhưng KHÔNG có bảo mật!${NC}"
+                    echo -e "${YELLOW}⚠️ Replica set có thể không hoạt động đúng.${NC}"
+                fi
             else
-                echo -e "${YELLOW}⚠️ MongoDB đã khởi động nhưng KHÔNG có bảo mật!${NC}"
-                echo -e "${YELLOW}⚠️ Cần kiểm tra và sửa lỗi keyfile thủ công.${NC}"
+                echo -e "${RED}❌ Hủy thiết lập.${NC}"
+                return 1
             fi
         else
-            echo -e "${GREEN}✅ Đã sửa lỗi keyfile và MongoDB đã khởi động với bảo mật${NC}"
+            echo -e "${GREEN}✅ Đã sửa lỗi keyfile và MongoDB đã khởi động với bảo mật.${NC}"
         fi
+    else
+        echo -e "${GREEN}✅ MongoDB đã khởi động với bảo mật thành công.${NC}"
     fi
     
     # Kiểm tra trạng thái replica set
@@ -939,16 +1037,8 @@ check_and_restart_mongodb() {
       echo -e "${GREEN}✅ MongoDB đã khởi động lại thành công${NC}"
       return 0
     else
-      echo -e "${RED}❌ Không thể khởi động MongoDB qua systemd. Thử khởi động trực tiếp...${NC}"
-      sudo -u mongodb mongod --config /etc/mongod_${PORT}.conf --fork --logpath /var/log/mongodb/mongod_direct.log
-      if [ $? -eq 0 ]; then
-        echo -e "${GREEN}✅ MongoDB đã khởi động trực tiếp thành công${NC}"
-        return 0
-      else
-        echo -e "${RED}❌ Không thể khởi động MongoDB. Kiểm tra logs để biết thêm chi tiết:${NC}"
-        sudo cat /var/log/mongodb/mongod_direct.log || sudo tail -n 30 /var/log/mongodb/mongod_${PORT}.log
-        return 1
-      fi
+      echo -e "${RED}❌ MongoDB vẫn không khởi động được${NC}"
+      check_mongodb_status
     fi
   else
     echo -e "${GREEN}✅ MongoDB đang chạy bình thường${NC}"
@@ -1067,6 +1157,7 @@ fix_keyfile_and_restart() {
   local KEYFILE="/etc/mongodb.keyfile"
   local PORT=27017
   local SERVICE_NAME="mongod_${PORT}"
+  local PRIMARY_IP=$1
   
   echo -e "${YELLOW}=== SỬA QUYỀN KEYFILE VÀ KHỞI ĐỘNG LẠI MONGODB ===${NC}"
   
@@ -1083,7 +1174,16 @@ fix_keyfile_and_restart() {
   else
     echo -e "${RED}Keyfile không tồn tại!${NC}"
     echo -e "${YELLOW}Tạo keyfile mới...${NC}"
-    openssl rand -base64 756 | sudo tee $KEYFILE > /dev/null
+    if [ -z "$PRIMARY_IP" ]; then
+      echo -e "${YELLOW}Không có PRIMARY IP, tạo keyfile cục bộ...${NC}"
+      openssl rand -base64 756 | sudo tee $KEYFILE > /dev/null
+    else
+      echo -e "${YELLOW}Thử lấy keyfile từ PRIMARY ($PRIMARY_IP)...${NC}"
+      if ! create_keyfile "$KEYFILE" "$PRIMARY_IP"; then
+        echo -e "${YELLOW}Không thể lấy keyfile từ PRIMARY, tạo keyfile cục bộ...${NC}"
+        openssl rand -base64 756 | sudo tee $KEYFILE > /dev/null
+      fi
+    fi
     sudo chmod 400 $KEYFILE
     sudo chown mongodb:mongodb $KEYFILE
   fi
