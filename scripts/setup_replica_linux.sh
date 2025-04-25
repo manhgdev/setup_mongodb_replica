@@ -8,26 +8,34 @@ NC='\033[0m'
 # Stop MongoDB
 stop_mongodb() {
     echo "Stopping all MongoDB processes..."
+    
     # Kill all mongod processes
-    pkill -f mongod || true
+    pkill -9 -f mongod || true
     sleep 2
     
     # Kill any processes using MongoDB ports
     for port in 27017 27018 27019; do
         echo "Killing processes on port $port..."
+        # Kill using lsof
         lsof -ti:$port | xargs kill -9 2>/dev/null || true
-        # Double check and kill again
+        # Kill using fuser
         fuser -k $port/tcp 2>/dev/null || true
+        # Kill using netstat
+        netstat -tulpn 2>/dev/null | grep ":$port" | awk '{print $7}' | cut -d'/' -f1 | xargs kill -9 2>/dev/null || true
     done
     
     # Wait for ports to be free
-    sleep 3
+    sleep 5
     
     # Verify ports are free
     for port in 27017 27018 27019; do
-        if lsof -i:$port &>/dev/null; then
+        if lsof -i:$port &>/dev/null || netstat -tulpn 2>/dev/null | grep -q ":$port"; then
             echo -e "${RED}❌ Port $port is still in use${NC}"
-            return 1
+            echo "Trying to kill again..."
+            pkill -9 -f mongod
+            lsof -ti:$port | xargs kill -9 2>/dev/null || true
+            fuser -k $port/tcp 2>/dev/null || true
+            sleep 2
         fi
     done
     
