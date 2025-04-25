@@ -52,7 +52,7 @@ main() {
                 "./$ARBITER_SCRIPT"
                 ;;
             5)
-                fix_unreachable_node
+                echo "Comming soon"
                 ;;
             6)
                 uninstall_mongodb
