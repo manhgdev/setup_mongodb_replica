@@ -151,40 +151,7 @@ setup_replica_primary_linux() {
     
     sleep 5
     
-    # Khởi tạo replica set trước
-    echo "Đang khởi tạo replica set..."
-    local init_result=$(mongosh --port $PRIMARY_PORT --eval 'rs.initiate({
-        _id: "rs0",
-        members: [
-            { _id: 0, host: "'$SERVER_IP:$PRIMARY_PORT'", priority: 2 },
-            { _id: 1, host: "'$SERVER_IP:$ARBITER1_PORT'", arbiterOnly: true },
-            { _id: 2, host: "'$SERVER_IP:$ARBITER2_PORT'", arbiterOnly: true }
-        ]
-    })' 2>&1)
-    
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}❌ Lỗi khi khởi tạo replica set:${NC}"
-        echo "$init_result"
-        echo "Đang kiểm tra log file..."
-        sudo tail -n 50 /var/log/mongodb/mongod_${PRIMARY_PORT}.log
-        return 1
-    fi
-    
-    # Kiểm tra trạng thái replica set ngay lập tức
-    echo "Đang kiểm tra trạng thái replica set..."
-    local status_result=$(mongosh --port $PRIMARY_PORT --eval 'rs.status()' 2>&1)
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}❌ Lỗi khi kiểm tra trạng thái replica set:${NC}"
-        echo "$status_result"
-        echo "Đang kiểm tra log file..."
-        sudo tail -n 50 /var/log/mongodb/mongod_${PRIMARY_PORT}.log
-        return 1
-    fi
-    
-    echo "Trạng thái replica set:"
-    echo "$status_result"
-    
-    # Tạo user admin
+    # Tạo user admin trước khi khởi tạo replica set
     echo "Đang tạo user admin..."
     local create_user_result=$(mongosh --port $PRIMARY_PORT --eval '
         db = db.getSiblingDB("admin");
@@ -230,16 +197,38 @@ setup_replica_primary_linux() {
         return 1
     fi
     
-    # Kiểm tra trạng thái cuối cùng
-    echo "Đang kiểm tra trạng thái cuối cùng..."
-    local final_status=$(mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.status()' 2>&1)
+    # Khởi tạo replica set sau khi đã có xác thực
+    echo "Đang khởi tạo replica set..."
+    local init_result=$(mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.initiate({
+        _id: "rs0",
+        members: [
+            { _id: 0, host: "'$SERVER_IP:$PRIMARY_PORT'", priority: 2 },
+            { _id: 1, host: "'$SERVER_IP:$ARBITER1_PORT'", arbiterOnly: true },
+            { _id: 2, host: "'$SERVER_IP:$ARBITER2_PORT'", arbiterOnly: true }
+        ]
+    })' 2>&1)
+    
     if [ $? -ne 0 ]; then
-        echo -e "${RED}❌ Lỗi khi kiểm tra trạng thái cuối cùng:${NC}"
-        echo "$final_status"
+        echo -e "${RED}❌ Lỗi khi khởi tạo replica set:${NC}"
+        echo "$init_result"
         echo "Đang kiểm tra log file..."
         sudo tail -n 50 /var/log/mongodb/mongod_${PRIMARY_PORT}.log
         return 1
     fi
+    
+    # Kiểm tra trạng thái replica set
+    echo "Đang kiểm tra trạng thái replica set..."
+    local status_result=$(mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.status()' 2>&1)
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}❌ Lỗi khi kiểm tra trạng thái replica set:${NC}"
+        echo "$status_result"
+        echo "Đang kiểm tra log file..."
+        sudo tail -n 50 /var/log/mongodb/mongod_${PRIMARY_PORT}.log
+        return 1
+    fi
+    
+    echo "Trạng thái replica set:"
+    echo "$status_result"
     
     echo -e "${GREEN}✅ Đã cấu hình MongoDB Replica Set PRIMARY thành công${NC}"
     echo "Thông tin kết nối:"
@@ -248,10 +237,12 @@ setup_replica_primary_linux() {
     echo "Username: $admin_username"
     echo "Password: $admin_password"
     
-    # Tạo file hướng dẫn
+    # Hiển thị hướng dẫn
     if [ -f "$SCRIPT_DIR/generate_guide.sh" ]; then
         source "$SCRIPT_DIR/generate_guide.sh"
         generate_setup_guide $SERVER_IP $PRIMARY_PORT $ARBITER1_PORT $ARBITER2_PORT $admin_username $admin_password
+        echo -e "\n${GREEN}✅ Nội dung hướng dẫn:${NC}"
+        cat mongodb_replica_setup_guide.md
     else
         echo "⚠️ Không tìm thấy file generate_guide.sh"
     fi
