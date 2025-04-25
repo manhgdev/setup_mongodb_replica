@@ -3,14 +3,13 @@
 setup_node_macos() {
     local PORT=$1
     local NODE_TYPE=$2
+    local ENABLE_SECURITY=$3 # "yes" hoặc "no"
     local CONFIG_FILE="/opt/homebrew/etc/mongod_${PORT}.conf"
-    
-    # Tạo thư mục data cho node
+
     mkdir -p "/opt/homebrew/var/mongodb_${PORT}"
     mkdir -p "/opt/homebrew/var/log/mongodb"
-    
-    # Tạo file config cho node
-    cat > "$CONFIG_FILE" << EOL
+
+    cat > "$CONFIG_FILE" <<EOL
 systemLog:
   destination: file
   path: /opt/homebrew/var/log/mongodb/mongod_${PORT}.log
@@ -26,24 +25,25 @@ setParameter:
   allowMultipleArbiters: true
 EOL
 
-    # Khởi động node MongoDB
+    if [ "$ENABLE_SECURITY" = "yes" ]; then
+        cat >> "$CONFIG_FILE" <<EOL
+security:
+  authorization: enabled
+  keyFile: /opt/homebrew/etc/mongodb.key
+EOL
+    fi
+
     mongod --config "$CONFIG_FILE" --fork
-    
-    # Kiểm tra kết nối
-    local max_attempts=30
-    local attempt=1
-    while [ $attempt -le $max_attempts ]; do
-        if mongosh --port $PORT --eval 'db.runCommand({ ping: 1 })' &> /dev/null; then
-            echo "✅ Node MongoDB trên port $PORT đã sẵn sàng"
-            return 0
-        fi
-        echo "Đang chờ node MongoDB trên port $PORT khởi động... ($attempt/$max_attempts)"
-        sleep 2
-        attempt=$((attempt + 1))
-    done
-    
-    echo "❌ Không thể kết nối đến node MongoDB trên port $PORT"
-    return 1
+}
+
+create_keyfile_macos() {
+    local KEY_FILE="/opt/homebrew/etc/mongodb.key"
+    if [ ! -f "$KEY_FILE" ]; then
+        echo "Tạo keyFile cho MongoDB..."
+        openssl rand -base64 756 > "$KEY_FILE"
+        chown $(whoami) "$KEY_FILE"
+        chmod 600 "$KEY_FILE"
+    fi
 }
 
 setup_replica_primary_macos() {
@@ -51,34 +51,22 @@ setup_replica_primary_macos() {
     local ARBITER1_PORT=27018
     local ARBITER2_PORT=27019
     local SERVER_IP=$1
-    
-    # Dừng các instance MongoDB hiện tại
+
+    read -p "Nhập username admin (default: manhg): " admin_username
+    admin_username=${admin_username:-manhg}
+    read -p "Nhập password admin (default: manhnk): " admin_password
+    admin_password=${admin_password:-manhnk}
+
     pkill mongod || true
     sleep 2
-    
-    # Thiết lập các node
-    echo "Đang thiết lập node PRIMARY..."
-    if ! setup_node_macos $PRIMARY_PORT "primary"; then
-        echo -e "${RED}❌ Không thể khởi động node PRIMARY${NC}"
-        return 1
-    fi
-    
-    echo "Đang thiết lập node ARBITER 1..."
-    if ! setup_node_macos $ARBITER1_PORT "arbiter"; then
-        echo -e "${RED}❌ Không thể khởi động node ARBITER 1${NC}"
-        return 1
-    fi
-    
-    echo "Đang thiết lập node ARBITER 2..."
-    if ! setup_node_macos $ARBITER2_PORT "arbiter"; then
-        echo -e "${RED}❌ Không thể khởi động node ARBITER 2${NC}"
-        return 1
-    fi
-    
+
+    # Bước 1: KHÔNG bật security, khởi động các node
+    setup_node_macos $PRIMARY_PORT "primary" "no"
+    setup_node_macos $ARBITER1_PORT "arbiter" "no"
+    setup_node_macos $ARBITER2_PORT "arbiter" "no"
     sleep 5
-    
-    # Khởi tạo replica set
-    echo "Đang khởi tạo replica set..."
+
+    # Bước 2: Khởi tạo replica set
     mongosh --port $PRIMARY_PORT --eval 'rs.initiate({
         _id: "rs0",
         members: [
@@ -87,15 +75,33 @@ setup_replica_primary_macos() {
             { _id: 2, host: "'$SERVER_IP:$ARBITER2_PORT'", arbiterOnly: true }
         ]
     })'
-    
-    # Kiểm tra trạng thái
-    if check_replica_status $PRIMARY_PORT; then
-        echo -e "${GREEN}✅ Đã cấu hình MongoDB Replica Set PRIMARY thành công${NC}"
-        echo "Thông tin kết nối:"
-        echo "IP: $SERVER_IP"
-        echo "Ports: $PRIMARY_PORT (PRIMARY), $ARBITER1_PORT (ARBITER), $ARBITER2_PORT (ARBITER)"
+    sleep 3
+
+    # Bước 3: Tạo user admin
+    mongosh --port $PRIMARY_PORT --eval '
+        db = db.getSiblingDB("admin");
+        if (!db.getUser("'$admin_username'")) {
+            db.createUser({user: "'$admin_username'", pwd: "'$admin_password'", roles: [ { role: "root", db: "admin" }, { role: "clusterAdmin", db: "admin" } ]});
+        }
+    '
+    sleep 2
+
+    # Bước 4: Bật security, restart các node
+    create_keyfile_macos
+    pkill mongod || true
+    sleep 2
+    setup_node_macos $PRIMARY_PORT "primary" "yes"
+    setup_node_macos $ARBITER1_PORT "arbiter" "yes"
+    setup_node_macos $ARBITER2_PORT "arbiter" "yes"
+    sleep 5
+
+    # Bước 5: Kiểm tra đăng nhập
+    mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'db.runCommand({ping:1})'
+    if [ $? -eq 0 ]; then
+        echo "\n✅ Đã cấu hình và đăng nhập thành công PRIMARY node"
+        echo "Kết nối: mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin"
     else
-        echo -e "${RED}❌ Có lỗi xảy ra khi cấu hình PRIMARY${NC}"
+        echo "❌ Đăng nhập thất bại. Kiểm tra lại log."
     fi
 }
 
@@ -178,4 +184,4 @@ setup_replica_secondary_macos() {
     else
         echo -e "${RED}❌ Có lỗi xảy ra khi cấu hình SECONDARY${NC}"
     fi
-} 
+}
