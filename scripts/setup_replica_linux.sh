@@ -147,6 +147,43 @@ start_mongodb() {
     echo -e "${GREEN}✅ All MongoDB nodes started successfully${NC}"
 }
 
+# Create systemd service
+create_systemd_service() {
+    local PORT=$1
+    local SERVICE_NAME="mongod_${PORT}"
+    local SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+    local CONFIG_FILE="/etc/mongod_${PORT}.conf"
+    
+    cat > $SERVICE_FILE <<EOL
+[Unit]
+Description=MongoDB Database Server (Port ${PORT})
+After=network.target
+
+[Service]
+User=mongodb
+Group=mongodb
+ExecStart=/usr/bin/mongod --config ${CONFIG_FILE}
+ExecStop=/usr/bin/mongod --config ${CONFIG_FILE} --shutdown
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOL
+
+    systemctl daemon-reload
+    systemctl enable $SERVICE_NAME
+    systemctl start $SERVICE_NAME
+    
+    if systemctl is-active --quiet $SERVICE_NAME; then
+        echo -e "${GREEN}✅ Service ${SERVICE_NAME} created and started successfully${NC}"
+    else
+        echo -e "${RED}❌ Failed to start service ${SERVICE_NAME}${NC}"
+        systemctl status $SERVICE_NAME
+        return 1
+    fi
+}
+
 # Setup PRIMARY server
 setup_primary() {
     local SERVER_IP=$1
@@ -162,11 +199,13 @@ setup_primary() {
     # Create keyfile
     create_keyfile
     
-    # Update config with keyfile
-    local CONFIG_FILE="/etc/mongod_${PRIMARY_PORT}.conf"
-    echo "security:
+    # Update config with keyfile for all nodes
+    for port in $PRIMARY_PORT $ARBITER1_PORT $ARBITER2_PORT; do
+        local CONFIG_FILE="/etc/mongod_${port}.conf"
+        echo "security:
   keyFile: /etc/mongodb.keyfile
   authorization: enabled" >> $CONFIG_FILE
+    done
     
     start_mongodb || return 1
     
@@ -209,11 +248,19 @@ setup_primary() {
         echo
         create_admin_user $PRIMARY_PORT $ADMIN_USER $ADMIN_PASS || return 1
         
+        # Create systemd services
+        echo "Creating systemd services..."
+        create_systemd_service $PRIMARY_PORT || return 1
+        create_systemd_service $ARBITER1_PORT || return 1
+        create_systemd_service $ARBITER2_PORT || return 1
+        
         # Restart with authentication
         echo "Restarting MongoDB with authentication..."
         stop_mongodb
         sleep 2
-        start_mongodb || return 1
+        systemctl start mongod_${PRIMARY_PORT}
+        systemctl start mongod_${ARBITER1_PORT}
+        systemctl start mongod_${ARBITER2_PORT}
         
         # Verify connection with auth
         echo "Verifying connection with authentication..."
