@@ -2,8 +2,6 @@
 
 # Import các script khác
 source scripts/install_mongodb.sh
-source scripts/setup_replica_macos.sh
-source scripts/setup_replica_linux.sh
 source scripts/setup_replica.sh
 source scripts/check_status.sh
 source scripts/uninstall_mongodb.sh
