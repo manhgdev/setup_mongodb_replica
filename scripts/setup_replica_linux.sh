@@ -63,67 +63,71 @@ create_config() {
     local IS_INITIAL_SETUP=$2
     local IS_ARBITER=$3
     local WITH_SECURITY=$4
-    
     local CONFIG_FILE="/etc/mongod_${PORT}.conf"
+    echo "Tạo file cấu hình $CONFIG_FILE..."
     
-    # Create config file
-    cat > $CONFIG_FILE << EOF
-# mongod.conf
-
-# for documentation of all options, see:
-#   http://docs.mongodb.org/manual/reference/configuration-options/
-
-# Where and how to store data.
-storage:
-  dbPath: /var/lib/mongodb_${PORT}
+    # Storage
+    local STORAGE_CONFIG="storage:
+  dbPath: /var/lib/mongodb_${PORT}"
+    
+    # Nếu là ARBITER, giảm dung lượng RAM sử dụng
+    if [ "$IS_ARBITER" = "true" ]; then
+        STORAGE_CONFIG="${STORAGE_CONFIG}
   wiredTiger:
     engineConfig:
-      cacheSizeGB: 1
-
-# where to write logging data.
-systemLog:
+      cacheSizeGB: 0.1"
+    fi
+    
+    # Network config
+    local NETWORK_CONFIG="net:
+  port: ${PORT}
+  bindIp: 0.0.0.0,127.0.0.1"
+    
+    # Systemlog
+    local SYSTEMLOG_CONFIG="systemLog:
   destination: file
   logAppend: true
-  path: /var/log/mongodb/mongod_${PORT}.log
-
-# network interfaces
-net:
-  port: ${PORT}
-  bindIp: 0.0.0.0
-
-# how the process runs
-processManagement:
-  timeZoneInfo: /usr/share/zoneinfo
-  fork: true
-
-EOF
-
-    # Chỉ thêm security nếu WITH_SECURITY = true
+  path: /var/log/mongodb/mongod_${PORT}.log"
+    
+    # Replication
+    local REPLICATION_CONFIG="replication:
+  replSetName: rs0"
+    
+    # Security (nếu cần)
+    local SECURITY_CONFIG=""
     if [ "$WITH_SECURITY" = "true" ]; then
-        cat >> $CONFIG_FILE << EOF
-# security
-security:
-  keyFile: /etc/mongodb.keyfile
+        SECURITY_CONFIG="security:
   authorization: enabled
-EOF
+  keyFile: /etc/mongodb.keyfile"
     fi
-
-    # Phần replication luôn được thêm
-    cat >> $CONFIG_FILE << EOF
-# replication
-replication:
-  replSetName: rs0
-
-# Cho phép nhiều arbiter
-setParameter:
-  allowMultipleArbiters: true
-EOF
     
-    # Set permissions
-    chown mongodb:mongodb $CONFIG_FILE
-    chmod 644 $CONFIG_FILE
+    # setParameter
+    local SETPARAM_CONFIG="setParameter:
+  allowMultipleArbiters: true"
     
-    echo -e "${GREEN}✅ Config file created: $CONFIG_FILE${NC}"
+    # Lưu file config
+    sudo bash -c "cat > $CONFIG_FILE << EOF
+$STORAGE_CONFIG
+
+$NETWORK_CONFIG
+
+$SYSTEMLOG_CONFIG
+
+$REPLICATION_CONFIG
+
+$SECURITY_CONFIG
+
+$SETPARAM_CONFIG
+EOF"
+    
+    if [ -f "$CONFIG_FILE" ]; then
+        echo -e "${GREEN}✅ Tạo file cấu hình thành công${NC}"
+        sudo chown mongodb:mongodb $CONFIG_FILE
+        sudo chmod 644 $CONFIG_FILE
+    else
+        echo -e "${RED}❌ Không thể tạo file cấu hình${NC}"
+        return 1
+    fi
 }
 
 # Fix MongoDB startup issues
