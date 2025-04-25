@@ -220,6 +220,9 @@ setup_primary() {
     local ARBITER1_PORT=27018
     local ARBITER2_PORT=27019
 
+    echo -e "${GREEN}Thiết lập máy chủ PRIMARY trên port $PRIMARY_PORT${NC}"
+    echo -e "${YELLOW}Lưu ý: Port 27017 luôn được cấu hình làm PRIMARY với priority cao nhất${NC}"
+
     stop_mongodb
     create_dirs $PRIMARY_PORT
     create_dirs $ARBITER1_PORT
@@ -272,6 +275,8 @@ setup_primary() {
     
     # Initialize replica set using private IP
     echo "Initializing replica set..."
+    echo -e "${GREEN}Cấu hình node $SERVER_IP:$PRIMARY_PORT làm PRIMARY với priority=10${NC}"
+    
     local init_result=$(mongosh --port $PRIMARY_PORT --eval "
 rs.initiate({
     _id: 'rs0',
@@ -371,6 +376,8 @@ setup_secondary() {
     local SECONDARY_PORT=27017
 
     echo "Setting up SECONDARY MongoDB server at $SERVER_IP:$SECONDARY_PORT..."
+    echo -e "${YELLOW}Lưu ý: Trong replica set, node chạy trên port 27017 nên là PRIMARY${NC}"
+    echo -e "${YELLOW}Node này sẽ được cấu hình làm SECONDARY tạm thời để tham gia replica set${NC}"
 
     # Dừng tất cả tiến trình MongoDB hiện có
     stop_mongodb
@@ -386,6 +393,17 @@ setup_secondary() {
     read -p "Nhập IP của PRIMARY server: " PRIMARY_IP
     read -p "Nhập port của PRIMARY server (mặc định 27017): " PRIMARY_PORT
     PRIMARY_PORT=${PRIMARY_PORT:-27017}
+    
+    # Kiểm tra xem PRIMARY có chạy trên port 27017 không
+    if [[ "$PRIMARY_PORT" != "27017" ]]; then
+        echo -e "${RED}⚠️ Cảnh báo: PRIMARY không chạy trên port 27017!${NC}"
+        echo -e "${YELLOW}Theo quy tắc, node chạy trên port 27017 nên là PRIMARY${NC}"
+        read -p "Bạn có muốn tiếp tục không? (y/n): " CONTINUE
+        if [[ "$CONTINUE" != "y" ]]; then
+            echo "Hủy thiết lập. Vui lòng đảm bảo PRIMARY chạy trên port 27017."
+            return 1
+        fi
+    fi
     
     # Nhận thông tin xác thực
     read -p "Nhập tên người dùng admin (mặc định $ADMIN_USER): " INPUT_ADMIN_USER
@@ -469,10 +487,20 @@ setup_secondary() {
         fi
     fi
     
+    # Xác định priority dựa trên port
+    local secondary_priority=1
+    if [[ "$SECONDARY_PORT" == "27017" ]]; then
+        # Nếu đây là node 27017 nhưng đang thêm làm SECONDARY,
+        # hãy đặt priority cao hơn các node SECONDARY khác nhưng vẫn thấp hơn PRIMARY
+        secondary_priority=5
+        echo -e "${YELLOW}⚠️ Node này chạy trên port 27017 nhưng sẽ được thêm làm SECONDARY${NC}"
+        echo -e "${YELLOW}Priority sẽ được đặt thành $secondary_priority (cao hơn SECONDARY thông thường nhưng thấp hơn PRIMARY)${NC}"
+    fi
+    
     # Thêm node vào replica set từ PRIMARY
     echo "Kết nối tới PRIMARY và thêm SECONDARY vào replica set..."
     local join_result=$(mongosh --host $PRIMARY_IP --port $PRIMARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
-    rs.add('$SERVER_IP:$SECONDARY_PORT')
+    rs.add({host: '$SERVER_IP:$SECONDARY_PORT', priority: $secondary_priority})
     " --quiet)
     
     if [[ $join_result == *"E11000"* || $join_result == *"error"* ]]; then
@@ -500,7 +528,7 @@ setup_secondary() {
     if [[ $status == *"SECONDARY"* ]]; then
         echo -e "${GREEN}✅ Node hiện đang hoạt động ở chế độ SECONDARY${NC}"
         
-        # Tạo admin user trực tiếp trên SECONDARY
+        # Tạo admin user trên SECONDARY
         echo "Tạo admin user trên SECONDARY..."
         local create_user_result=$(mongosh --port $SECONDARY_PORT --eval "
         db.getSiblingDB('admin').createUser({
@@ -546,6 +574,17 @@ setup_secondary() {
             echo "mongosh --host $SERVER_IP --port $SECONDARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
             echo "2. Kết nối tới Replica Set:"
             echo "mongosh \"mongodb://$ADMIN_USER:$ADMIN_PASS@$PRIMARY_IP:$PRIMARY_PORT,$SERVER_IP:$SECONDARY_PORT/admin?replicaSet=rs0\""
+            
+            # Kiểm tra cấu hình port 27017
+            if [[ "$SECONDARY_PORT" == "27017" && "$PRIMARY_PORT" == "27017" ]]; then
+                echo -e "\n${YELLOW}⚠️ Cảnh báo: Cả PRIMARY và SECONDARY đang chạy trên port 27017${NC}"
+                echo "Điều này có thể gây nhầm lẫn. Vui lòng xem xét cấu hình lại vai trò PRIMARY/SECONDARY."
+                echo "Sử dụng chức năng 'Fix replica set roles' trong menu chính để đảm bảo node đúng là PRIMARY."
+            elif [[ "$SECONDARY_PORT" == "27017" ]]; then
+                echo -e "\n${YELLOW}⚠️ Lưu ý: Node này chạy trên port 27017 nhưng đang là SECONDARY${NC}"
+                echo "Theo quy tắc, node chạy trên port 27017 nên là PRIMARY."
+                echo "Sử dụng chức năng 'Fix replica set roles' trong menu chính để đặt node này làm PRIMARY."
+            fi
         else
             echo -e "${RED}❌ Không thể kết nối với xác thực${NC}"
             echo "Lỗi: $auth_test"
@@ -568,6 +607,212 @@ setup_secondary() {
         echo "Thử kiểm tra trạng thái từ PRIMARY:"
         mongosh --host $PRIMARY_IP --port $PRIMARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet
     fi
+}
+
+# Fix authentication issues on SECONDARY server
+fix_secondary_auth_issues() {
+    local SERVER_IP=$(hostname -I | awk '{print $1}')
+    local SECONDARY_PORT=27017
+    
+    echo -e "${YELLOW}Khắc phục lỗi xác thực trên máy chủ SECONDARY${NC}"
+    echo "=================================================="
+    
+    # 1. Kiểm tra keyfile
+    echo -e "\n${GREEN}Bước 1: Kiểm tra tập tin keyfile${NC}"
+    if [ ! -f "/etc/mongodb.keyfile" ]; then
+        echo -e "${RED}❌ Không tìm thấy keyfile tại /etc/mongodb.keyfile${NC}"
+        
+        echo "Tạo keyfile mới từ máy chủ PRIMARY..."
+        read -p "Nhập IP của PRIMARY server: " PRIMARY_IP
+        read -p "Nhập port của PRIMARY server (mặc định 27017): " PRIMARY_PORT
+        PRIMARY_PORT=${PRIMARY_PORT:-27017}
+        read -p "Nhập đường dẫn keyfile tạm trên PRIMARY (ví dụ: /tmp/mongodb.keyfile): " PRIMARY_KEYFILE_PATH
+        PRIMARY_KEYFILE_PATH=${PRIMARY_KEYFILE_PATH:-"/tmp/mongodb.keyfile"}
+        
+        echo -e "${YELLOW}Thực hiện các lệnh sau trên PRIMARY server:${NC}"
+        echo "sudo cp /etc/mongodb.keyfile $PRIMARY_KEYFILE_PATH"
+        echo "sudo chmod 644 $PRIMARY_KEYFILE_PATH"
+        echo "sudo chown $(whoami):$(whoami) $PRIMARY_KEYFILE_PATH"
+        
+        read -p "Đã thực hiện lệnh trên PRIMARY server? (y/n): " KEYFILE_READY
+        if [[ "$KEYFILE_READY" != "y" ]]; then
+            echo -e "${RED}❌ Cần chuẩn bị keyfile trước khi tiếp tục${NC}"
+            return 1
+        fi
+        
+        echo "Đang sao chép keyfile từ PRIMARY server..."
+        scp ${PRIMARY_IP}:${PRIMARY_KEYFILE_PATH} /tmp/mongodb.keyfile
+        
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}❌ Không thể sao chép keyfile từ PRIMARY server${NC}"
+            echo "Thay vào đó, hãy nhập nội dung keyfile thủ công"
+            read -p "Tạo keyfile thủ công? (y/n): " CREATE_NEW_KEYFILE
+            
+            if [[ "$CREATE_NEW_KEYFILE" == "y" ]]; then
+                echo "Nhập nội dung của keyfile (sao chép từ PRIMARY):"
+                read KEYFILE_CONTENT
+                echo "$KEYFILE_CONTENT" | sudo tee /etc/mongodb.keyfile > /dev/null
+            else
+                echo -e "${RED}❌ Không thể tiếp tục mà không có keyfile${NC}"
+                return 1
+            fi
+        else
+            sudo mv /tmp/mongodb.keyfile /etc/mongodb.keyfile
+        fi
+    else
+        echo -e "${GREEN}✅ Đã tìm thấy keyfile tại /etc/mongodb.keyfile${NC}"
+    fi
+    
+    # 2. Sửa quyền cho keyfile
+    echo -e "\n${GREEN}Bước 2: Sửa quyền cho keyfile${NC}"
+    sudo chmod 400 /etc/mongodb.keyfile
+    sudo chown mongodb:mongodb /etc/mongodb.keyfile
+    echo -e "${GREEN}✅ Đã cập nhật quyền cho keyfile${NC}"
+    
+    # 3. Dừng MongoDB
+    echo -e "\n${GREEN}Bước 3: Dừng dịch vụ MongoDB${NC}"
+    stop_mongodb
+    
+    # 4. Tạo cấu hình tạm thời không có bảo mật
+    echo -e "\n${GREEN}Bước 4: Tạo cấu hình tạm thời không có bảo mật${NC}"
+    create_config $SECONDARY_PORT true false false
+    echo -e "${GREEN}✅ Đã tạo cấu hình tạm thời không có bảo mật${NC}"
+    
+    # 5. Khởi động MongoDB
+    echo -e "\n${GREEN}Bước 5: Khởi động MongoDB với cấu hình không bảo mật${NC}"
+    mongod --config /etc/mongod_${SECONDARY_PORT}.conf --fork
+    sleep 5
+    
+    # Kiểm tra MongoDB đã khởi động chưa
+    if ! mongosh --port $SECONDARY_PORT --eval "db.version()" --quiet &>/dev/null; then
+        echo -e "${RED}❌ Không thể khởi động MongoDB${NC}"
+        fix_mongodb_startup $SECONDARY_PORT
+        mongod --config /etc/mongod_${SECONDARY_PORT}.conf --fork
+        sleep 5
+        
+        if ! mongosh --port $SECONDARY_PORT --eval "db.version()" --quiet &>/dev/null; then
+            echo -e "${RED}❌ Khởi động MongoDB thất bại${NC}"
+            echo "Xem log để biết chi tiết:"
+            tail -n 50 /var/log/mongodb/mongod_${SECONDARY_PORT}.log
+            return 1
+        fi
+    fi
+    
+    # 6. Kiểm tra trạng thái replica set
+    echo -e "\n${GREEN}Bước 6: Kiểm tra trạng thái replica set${NC}"
+    local status=$(mongosh --port $SECONDARY_PORT --eval "rs.status()" --quiet 2>&1)
+    
+    if [[ $status == *"SECONDARY"* ]]; then
+        echo -e "${GREEN}✅ Node hiện đang hoạt động ở chế độ SECONDARY${NC}"
+    else
+        echo -e "${YELLOW}Node không ở trạng thái SECONDARY. Trạng thái hiện tại:${NC}"
+        echo "$status"
+        
+        # Nếu không phải là SECONDARY, hỏi PRIMARY IP để kết nối
+        read -p "Nhập IP của PRIMARY server để kết nối replica set: " PRIMARY_IP
+        read -p "Nhập port của PRIMARY server (mặc định 27017): " PRIMARY_PORT
+        PRIMARY_PORT=${PRIMARY_PORT:-27017}
+        read -p "Nhập tên người dùng admin trên PRIMARY (mặc định $ADMIN_USER): " INPUT_ADMIN_USER
+        ADMIN_USER=${INPUT_ADMIN_USER:-$ADMIN_USER}
+        read -p "Nhập mật khẩu admin trên PRIMARY (mặc định $ADMIN_PASS): " INPUT_ADMIN_PASS
+        ADMIN_PASS=${INPUT_ADMIN_PASS:-$ADMIN_PASS}
+        
+        # Thử thêm lại vào replica set
+        echo "Thêm node vào replica set từ PRIMARY..."
+        local join_result=$(mongosh --host $PRIMARY_IP --port $PRIMARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
+        rs.add('$SERVER_IP:$SECONDARY_PORT')
+        " --quiet)
+        
+        if [[ $join_result == *"error"* ]]; then
+            echo -e "${YELLOW}Có lỗi khi thêm vào replica set: $join_result${NC}"
+        else
+            echo -e "${GREEN}✅ Đã thêm node vào replica set${NC}"
+        fi
+        
+        # Chờ node đồng bộ
+        echo "Đợi node đồng bộ..."
+        sleep 20
+    fi
+    
+    # 7. Tạo admin user
+    echo -e "\n${GREEN}Bước 7: Tạo admin user trên SECONDARY${NC}"
+    
+    # Nếu là SECONDARY, tạo user
+    local create_user_result=$(mongosh --port $SECONDARY_PORT --eval "
+    db.getSiblingDB('admin').createUser({
+        user: '$ADMIN_USER',
+        pwd: '$ADMIN_PASS',
+        roles: [
+            { role: 'root', db: 'admin' },
+            { role: 'clusterAdmin', db: 'admin' }
+        ]
+    })" --quiet 2>&1)
+    
+    if [[ $create_user_result == *"already exists"* ]]; then
+        echo -e "${YELLOW}Admin user đã tồn tại${NC}"
+    elif [[ $create_user_result == *"error"* ]]; then
+        echo -e "${YELLOW}Lỗi khi tạo user: $create_user_result${NC}"
+        echo "Không thể tạo user. User có thể sẽ được đồng bộ từ PRIMARY."
+    else
+        echo -e "${GREEN}✅ Đã tạo admin user thành công${NC}"
+    fi
+    
+    # 8. Dừng MongoDB
+    echo -e "\n${GREEN}Bước 8: Dừng MongoDB để cập nhật cấu hình với bảo mật${NC}"
+    sudo mongod --dbpath /var/lib/mongodb_${SECONDARY_PORT} --port ${SECONDARY_PORT} --shutdown
+    sleep 5
+    
+    # 9. Cập nhật cấu hình với bảo mật
+    echo -e "\n${GREEN}Bước 9: Cập nhật cấu hình với bảo mật${NC}"
+    create_config $SECONDARY_PORT true false true
+    echo -e "${GREEN}✅ Đã cập nhật cấu hình với bảo mật${NC}"
+    
+    # 10. Tạo systemd service nếu chưa có
+    echo -e "\n${GREEN}Bước 10: Đảm bảo có dịch vụ systemd${NC}"
+    if [ ! -f "/etc/systemd/system/mongod_${SECONDARY_PORT}.service" ]; then
+        echo "Tạo systemd service..."
+        create_systemd_service $SECONDARY_PORT || return 1
+    else
+        echo -e "${GREEN}✅ Dịch vụ systemd đã tồn tại${NC}"
+    fi
+    
+    # 11. Khởi động lại với bảo mật
+    echo -e "\n${GREEN}Bước 11: Khởi động lại MongoDB với bảo mật${NC}"
+    sudo systemctl daemon-reload
+    sudo systemctl restart mongod_$SECONDARY_PORT
+    sleep 10
+    
+    # 12. Kiểm tra kết nối với xác thực
+    echo -e "\n${GREEN}Bước 12: Kiểm tra kết nối với xác thực${NC}"
+    local auth_test=$(mongosh --port $SECONDARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db.adminCommand('ping')" --quiet 2>&1)
+    
+    if [[ $auth_test == *"ok"* ]]; then
+        echo -e "${GREEN}✅ Đã kết nối thành công với xác thực!${NC}"
+        echo -e "\n${GREEN}Khắc phục lỗi xác thực thành công!${NC}"
+        echo -e "\n${GREEN}Các lệnh kết nối:${NC}"
+        echo "1. Kết nối tới SECONDARY:"
+        echo "mongosh --host $SERVER_IP --port $SECONDARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
+        
+        # Lấy PRIMARY IP nếu chưa có
+        if [ -z "$PRIMARY_IP" ]; then
+            read -p "Nhập IP của PRIMARY server cho chuỗi kết nối: " PRIMARY_IP
+        fi
+        echo "2. Kết nối tới Replica Set:"
+        echo "mongosh \"mongodb://$ADMIN_USER:$ADMIN_PASS@$PRIMARY_IP:$PRIMARY_PORT,$SERVER_IP:$SECONDARY_PORT/admin?replicaSet=rs0\""
+    else
+        echo -e "${RED}❌ Không thể kết nối với xác thực${NC}"
+        echo "Lỗi: $auth_test"
+        echo -e "\n${YELLOW}Kiểm tra thêm:${NC}"
+        echo "1. Xem quyền của keyfile:"
+        ls -la /etc/mongodb.keyfile
+        echo "2. Kiểm tra cấu hình MongoDB:"
+        cat /etc/mongod_${SECONDARY_PORT}.conf | grep -i security -A 5
+        echo "3. Xem log MongoDB:"
+        tail -n 20 /var/log/mongodb/mongod_${SECONDARY_PORT}.log
+    fi
+    
+    echo -e "\n${GREEN}Quá trình khắc phục hoàn tất.${NC}"
+    echo "Nếu vẫn gặp lỗi, hãy xem xét khởi động lại toàn bộ quá trình hoặc kiểm tra logs."
 }
 
 # Create keyfile
@@ -705,14 +950,244 @@ cleanup_mongodb() {
     echo -e "${GREEN}✅ MongoDB environment cleaned up${NC}"
 }
 
+# Fix replica set roles (PRIMARY/SECONDARY)
+fix_replica_set_roles() {
+    echo -e "${YELLOW}Khắc phục lỗi vai trò PRIMARY/SECONDARY trong Replica Set${NC}"
+    echo "========================================================="
+    echo -e "${GREEN}Lưu ý: Đảm bảo node có port 27017 luôn là PRIMARY${NC}"
+    
+    # Nhận thông tin kết nối
+    read -p "Nhập IP của node hiện tại: " CURRENT_IP
+    read -p "Nhập port của node hiện tại (mặc định 27017): " CURRENT_PORT
+    CURRENT_PORT=${CURRENT_PORT:-27017}
+    
+    # Nhận thông tin xác thực
+    read -p "Nhập tên người dùng admin (mặc định $ADMIN_USER): " INPUT_ADMIN_USER
+    ADMIN_USER=${INPUT_ADMIN_USER:-$ADMIN_USER}
+    read -p "Nhập mật khẩu admin (mặc định $ADMIN_PASS): " INPUT_ADMIN_PASS
+    ADMIN_PASS=${INPUT_ADMIN_PASS:-$ADMIN_PASS}
+    
+    # Kiểm tra nếu có thể kết nối với auth
+    echo -e "\n${GREEN}Bước 1: Kiểm tra kết nối và trạng thái replica set${NC}"
+    
+    local status=$(mongosh --host $CURRENT_IP --port $CURRENT_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet 2>&1)
+    
+    if [[ $status == *"auth fail"* ]]; then
+        echo -e "${RED}❌ Lỗi xác thực. Không thể kết nối với node${NC}"
+        echo "Trước tiên hãy khắc phục vấn đề xác thực sử dụng tùy chọn 'Fix authentication issues'"
+        return 1
+    fi
+    
+    # Hiển thị trạng thái hiện tại
+    echo -e "\n${GREEN}Trạng thái replica set hiện tại:${NC}"
+    mongosh --host $CURRENT_IP --port $CURRENT_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status().members.forEach(function(m) { print(m.name + ' - ' + m.stateStr + ' (priority: ' + m.priority + ')') })" --quiet
+    
+    # Hiển thị cấu hình hiện tại
+    echo -e "\n${GREEN}Cấu hình replica set hiện tại:${NC}"
+    mongosh --host $CURRENT_IP --port $CURRENT_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.conf()" --quiet
+    
+    # Tìm node có port 27017 (sẽ trở thành PRIMARY)
+    echo -e "\n${GREEN}Bước 2: Xác định node PRIMARY (port 27017)${NC}"
+    
+    # Lấy tất cả các node trong replica set
+    local all_nodes=$(mongosh --host $CURRENT_IP --port $CURRENT_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.conf().members.map(m => m.host)" --quiet)
+    echo "Các node hiện có trong replica set:"
+    echo "$all_nodes"
+    
+    # Tìm node có port 27017
+    local primary_nodes=$(echo "$all_nodes" | grep -E ':[0]?27017$' | tr -d '[]"')
+    
+    if [ -z "$primary_nodes" ]; then
+        echo -e "${RED}❌ Không tìm thấy node nào chạy trên port 27017${NC}"
+        echo "Vui lòng đảm bảo có ít nhất một node chạy trên port 27017"
+        return 1
+    fi
+    
+    if [[ $(echo "$primary_nodes" | wc -l) -gt 1 ]]; then
+        echo -e "${YELLOW}Có nhiều node chạy trên port 27017. Vui lòng chọn một node làm PRIMARY:${NC}"
+        echo "$primary_nodes"
+        read -p "Nhập địa chỉ đầy đủ của node sẽ làm PRIMARY: " DESIRED_PRIMARY_HOST
+    else
+        DESIRED_PRIMARY_HOST="$primary_nodes"
+        echo -e "${GREEN}Node sẽ làm PRIMARY: $DESIRED_PRIMARY_HOST${NC}"
+    fi
+    
+    # Kiểm tra xem node đã chọn có trong replica set không
+    local members=$(mongosh --host $CURRENT_IP --port $CURRENT_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.conf().members" --quiet)
+    
+    if [[ $members != *"$DESIRED_PRIMARY_HOST"* ]]; then
+        echo -e "${RED}❌ Node đã chọn không tồn tại trong replica set${NC}"
+        echo "Các node hiện có:"
+        mongosh --host $CURRENT_IP --port $CURRENT_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.conf().members.forEach(function(m) { print(m.host) })" --quiet
+        return 1
+    fi
+    
+    echo -e "\n${GREEN}Bước 3: Cập nhật cấu hình replica set${NC}"
+    echo "Cập nhật priority - đặt node 27017 với priority cao (10) và các node khác thành 1 hoặc 0 (arbiter)..."
+    
+    # Tạo script JavaScript để cập nhật cấu hình
+    local js_script="
+    var conf = rs.conf();
+    conf.members.forEach(function(member) {
+        if (member.host === '$DESIRED_PRIMARY_HOST') {
+            member.priority = 10;
+            print('Đặt ' + member.host + ' với priority 10 (PRIMARY)');
+        } else if (member.arbiterOnly) {
+            member.priority = 0;
+            print('Giữ ' + member.host + ' là arbiter với priority 0');
+        } else {
+            member.priority = 1;
+            print('Đặt ' + member.host + ' với priority 1 (SECONDARY)');
+        }
+    });
+    rs.reconfig(conf);
+    "
+    
+    # Thực thi script
+    echo "Đang cập nhật priority..."
+    local reconfig_result=$(mongosh --host $CURRENT_IP --port $CURRENT_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "$js_script" --quiet)
+    
+    echo "$reconfig_result"
+    
+    if [[ $reconfig_result == *"error"* ]]; then
+        echo -e "${RED}❌ Lỗi khi cập nhật cấu hình: $reconfig_result${NC}"
+        
+        # Kiểm tra xem có cần chạy từ PRIMARY hiện tại
+        if [[ $reconfig_result == *"replSetReconfig should only be run on a writable PRIMARY"* ]]; then
+            echo "Bạn cần thực hiện từ node PRIMARY hiện tại. Đang tìm PRIMARY..."
+            local current_primary=$(mongosh --host $CURRENT_IP --port $CURRENT_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status().members.forEach(function(m) { if (m.stateStr === 'PRIMARY') print(m.name) })" --quiet)
+            
+            if [ -z "$current_primary" ]; then
+                echo -e "${RED}❌ Không tìm thấy PRIMARY hiện tại${NC}"
+                echo "Thử chạy lại từ node khác hoặc thử force election"
+            else
+                echo -e "${YELLOW}PRIMARY hiện tại là: $current_primary${NC}"
+                echo "Hãy kết nối tới node này và chạy lại"
+            fi
+        fi
+        
+        # Hỏi người dùng có muốn thử force election không
+        read -p "Thử force election? (y/n): " TRY_FORCE
+        if [[ "$TRY_FORCE" == "y" ]]; then
+            echo -e "\n${GREEN}Bước 4: Thử force election${NC}"
+            echo "Cảnh báo: Đây là thao tác nâng cao và có thể gây mất ổn định tạm thời."
+            
+            # Lấy ID của node mong muốn làm PRIMARY
+            local desired_id=$(mongosh --host $CURRENT_IP --port $CURRENT_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
+            var conf = rs.conf();
+            for (var i = 0; i < conf.members.length; i++) {
+                if (conf.members[i].host === '$DESIRED_PRIMARY_HOST') {
+                    print(conf.members[i]._id);
+                    break;
+                }
+            }
+            " --quiet)
+            
+            if [ -z "$desired_id" ]; then
+                echo -e "${RED}❌ Không thể xác định ID của node mong muốn${NC}"
+                return 1
+            fi
+            
+            echo "Thực hiện stepDown trên PRIMARY hiện tại (nếu có)..."
+            mongosh --host $CURRENT_IP --port $CURRENT_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "if (rs.status().members.some(m => m.stateStr === 'PRIMARY')) { rs.stepDown(60); }" --quiet
+            
+            sleep 5
+            
+            echo "Thực hiện force cấu hình để đặt node $DESIRED_PRIMARY_HOST làm PRIMARY..."
+            local force_script="
+            var conf = rs.conf();
+            conf.members.forEach(function(member) {
+                if (member.host === '$DESIRED_PRIMARY_HOST') {
+                    member.priority = 10;
+                } else if (!member.arbiterOnly) {
+                    member.priority = 1;
+                }
+            });
+            rs.reconfig(conf, {force: true});
+            "
+            
+            local force_result=$(mongosh --host $CURRENT_IP --port $CURRENT_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "$force_script" --quiet)
+            
+            echo "$force_result"
+            
+            if [[ $force_result == *"error"* ]]; then
+                echo -e "${RED}❌ Force election thất bại${NC}"
+                echo "Vui lòng chờ một thời gian để replica set ổn định, sau đó thử lại."
+            else
+                echo -e "${GREEN}✅ Đã force election thành công${NC}"
+            fi
+        fi
+    else
+        echo -e "${GREEN}✅ Đã cập nhật cấu hình replica set thành công${NC}"
+    fi
+    
+    # Đợi bầu cử mới
+    echo -e "\n${GREEN}Bước 5: Chờ bầu cử vai trò mới (60 giây)${NC}"
+    echo "Đợi để replica set bầu cử PRIMARY mới..."
+    
+    # Hiển thị trạng thái mỗi 10 giây
+    for i in {1..6}; do
+        echo "Kiểm tra trạng thái lần $i..."
+        mongosh --host $CURRENT_IP --port $CURRENT_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status().members.forEach(function(m) { print(m.name + ' - ' + m.stateStr) })" --quiet
+        
+        # Kiểm tra xem node mong muốn đã là PRIMARY chưa
+        local is_primary=$(mongosh --host $CURRENT_IP --port $CURRENT_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
+        var status = rs.status();
+        for (var i = 0; i < status.members.length; i++) {
+            if (status.members[i].name === '$DESIRED_PRIMARY_HOST' && status.members[i].stateStr === 'PRIMARY') {
+                print('PRIMARY_FOUND');
+                break;
+            }
+        }
+        " --quiet)
+        
+        if [[ $is_primary == *"PRIMARY_FOUND"* ]]; then
+            echo -e "${GREEN}✅ Node mong muốn đã trở thành PRIMARY!${NC}"
+            break
+        fi
+        
+        if [ $i -lt 6 ]; then
+            echo "Đợi 10 giây..."
+            sleep 10
+        fi
+    done
+    
+    # Kiểm tra trạng thái cuối cùng
+    echo -e "\n${GREEN}Bước 6: Kiểm tra trạng thái cuối cùng${NC}"
+    echo "Trạng thái replica set sau khi cấu hình:"
+    mongosh --host $CURRENT_IP --port $CURRENT_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status().members.forEach(function(m) { print(m.name + ' - ' + m.stateStr + ' (priority: ' + (rs.conf().members.find(c => c.host === m.name) || {}).priority + ')') })" --quiet
+    
+    # Kiểm tra xem node mong muốn có phải PRIMARY không
+    local final_primary=$(mongosh --host $CURRENT_IP --port $CURRENT_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status().members.find(m => m.stateStr === 'PRIMARY').name" --quiet)
+    
+    if [[ "$final_primary" == "$DESIRED_PRIMARY_HOST" ]]; then
+        echo -e "\n${GREEN}✅ Khắc phục thành công! $DESIRED_PRIMARY_HOST là PRIMARY${NC}"
+    else
+        if [ -z "$final_primary" ]; then
+            echo -e "\n${RED}❌ Không tìm thấy PRIMARY nào trong replica set${NC}"
+            echo "Thử chạy lại quá trình hoặc đợi thêm thời gian để replica set ổn định."
+        else
+            echo -e "\n${YELLOW}⚠️ Lưu ý: PRIMARY hiện tại là $final_primary, không phải $DESIRED_PRIMARY_HOST${NC}"
+            echo "Cần thêm thời gian để replica set ổn định hoặc thử lại quá trình."
+        fi
+    fi
+    
+    echo -e "\n${GREEN}Quá trình khắc phục hoàn tất.${NC}"
+    echo "Các lệnh kết nối:"
+    echo "1. Kết nối tới replica set:"
+    echo "mongosh \"mongodb://$ADMIN_USER:$ADMIN_PASS@$CURRENT_IP:$CURRENT_PORT/admin?replicaSet=rs0\""
+}
+
 # Main function
 setup_replica_linux() {
     echo "MongoDB Replica Set Setup for Linux"
     echo "===================================="
     echo "1. Setup PRIMARY server"
     echo "2. Setup SECONDARY server"
-    echo "3. Return to main menu"
-    read -p "Select option (1-3): " option
+    echo "3. Fix authentication issues on SECONDARY server"
+    echo "4. Fix replica set roles (PRIMARY/SECONDARY)"
+    echo "5. Return to main menu"
+    read -p "Select option (1-5): " option
 
     SERVER_IP=$(hostname -I | awk '{print $1}')
     echo "Using server IP: $SERVER_IP"
@@ -720,7 +1195,9 @@ setup_replica_linux() {
     case $option in
         1) setup_primary $SERVER_IP ;;
         2) setup_secondary $SERVER_IP ;;
-        3) return 0 ;;
+        3) fix_secondary_auth_issues ;;
+        4) fix_replica_set_roles ;;
+        5) return 0 ;;
         *) echo -e "${RED}❌ Invalid option${NC}" && return 1 ;;
     esac
 }
