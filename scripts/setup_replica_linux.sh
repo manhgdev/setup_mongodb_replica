@@ -133,6 +133,20 @@ create_admin_user() {
     echo -e "${GREEN}✅ Admin user created successfully${NC}"
 }
 
+# Start MongoDB
+start_mongodb() {
+    local PRIMARY_PORT=27017
+    local ARBITER1_PORT=27018
+    local ARBITER2_PORT=27019
+    
+    echo "Starting MongoDB nodes..."
+    setup_node $PRIMARY_PORT || return 1
+    setup_node $ARBITER1_PORT || return 1
+    setup_node $ARBITER2_PORT || return 1
+    
+    echo -e "${GREEN}✅ All MongoDB nodes started successfully${NC}"
+}
+
 # Setup PRIMARY server
 setup_primary() {
     local SERVER_IP=$1
@@ -154,9 +168,7 @@ setup_primary() {
   keyFile: /etc/mongodb.keyfile
   authorization: enabled" >> $CONFIG_FILE
     
-    setup_node $PRIMARY_PORT || return 1
-    setup_node $ARBITER1_PORT || return 1
-    setup_node $ARBITER2_PORT || return 1
+    start_mongodb || return 1
     
     sleep 2
     
@@ -201,9 +213,7 @@ setup_primary() {
         echo "Restarting MongoDB with authentication..."
         stop_mongodb
         sleep 2
-        setup_node $PRIMARY_PORT || return 1
-        setup_node $ARBITER1_PORT || return 1
-        setup_node $ARBITER2_PORT || return 1
+        start_mongodb || return 1
         
         # Verify connection with auth
         echo "Verifying connection with authentication..."
