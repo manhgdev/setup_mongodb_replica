@@ -12,6 +12,7 @@ setup_node_linux() {
     local PORT=$1
     local NODE_TYPE=$2
     local CONFIG_FILE="/etc/mongod_${PORT}.conf"
+    local SERVICE_NAME="mongod_${PORT}"
     
     # Tạo thư mục data cho node
     sudo mkdir -p "/var/lib/mongodb_${PORT}"
@@ -48,22 +49,36 @@ setParameter:
   allowMultipleArbiters: true
 EOL
 
-    # Dừng instance MongoDB hiện tại nếu có
-    echo "Đang dừng MongoDB trên port $PORT..."
-    sudo pkill -f "mongod.*${PORT}" || true
-    sleep 5
+    # Tạo service file
+    sudo tee "/etc/systemd/system/${SERVICE_NAME}.service" > /dev/null << EOL
+[Unit]
+Description=MongoDB Database Server (Port ${PORT})
+After=network.target
+
+[Service]
+User=mongodb
+Group=mongodb
+ExecStart=/usr/bin/mongod --config ${CONFIG_FILE}
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOL
+
+    # Dừng và xóa service cũ nếu có
+    echo "Đang dừng service MongoDB trên port $PORT..."
+    sudo systemctl stop ${SERVICE_NAME} || true
+    sudo systemctl disable ${SERVICE_NAME} || true
+    sleep 2
     
-    # Kiểm tra xem MongoDB đã dừng hoàn toàn chưa
-    if pgrep -f "mongod.*${PORT}" > /dev/null; then
-        echo "MongoDB vẫn đang chạy, đang dừng lại..."
-        sudo pkill -9 -f "mongod.*${PORT}" || true
-        sleep 2
-    fi
+    # Reload systemd
+    sudo systemctl daemon-reload
     
-    # Khởi động node MongoDB
-    echo "Đang khởi động MongoDB trên port $PORT..."
-    sudo mongod --config "$CONFIG_FILE" &
-    sleep 5
+    # Khởi động service
+    echo "Đang khởi động service MongoDB trên port $PORT..."
+    sudo systemctl enable ${SERVICE_NAME}
+    sudo systemctl start ${SERVICE_NAME}
     
     # Kiểm tra kết nối
     local max_attempts=3
