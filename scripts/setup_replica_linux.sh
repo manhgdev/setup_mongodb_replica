@@ -512,6 +512,7 @@ setup_secondary() {
     if ! echo "$rs_status" | grep -q "$SERVER_IP:$SECONDARY_PORT"; then
         echo "Adding SECONDARY node to replica set..."
         mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.add('$SERVER_IP:$SECONDARY_PORT')" --quiet
+        sleep 5
     else
         echo "SECONDARY node already exists in replica set"
     fi
@@ -520,6 +521,7 @@ setup_secondary() {
     if ! echo "$rs_status" | grep -q "$SERVER_IP:$ARBITER1_PORT"; then
         echo "Adding ARBITER 1 node to replica set..."
         mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.addArb('$SERVER_IP:$ARBITER1_PORT')" --quiet
+        sleep 5
     else
         echo "ARBITER 1 node already exists in replica set"
     fi
@@ -528,8 +530,28 @@ setup_secondary() {
     if ! echo "$rs_status" | grep -q "$SERVER_IP:$ARBITER2_PORT"; then
         echo "Adding ARBITER 2 node to replica set..."
         mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.addArb('$SERVER_IP:$ARBITER2_PORT')" --quiet
+        sleep 5
     else
         echo "ARBITER 2 node already exists in replica set"
+    fi
+    
+    # Wait for replication to complete
+    echo "Waiting for replication to complete..."
+    sleep 10
+    
+    # Verify SECONDARY node status
+    echo "Verifying SECONDARY node status..."
+    local secondary_status=$(mongosh --host $SERVER_IP --port $SECONDARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}✅ SECONDARY node is properly configured and authenticated${NC}"
+    else
+        echo -e "${RED}❌ SECONDARY node authentication failed${NC}"
+        echo "Please check the following:"
+        echo "1. Keyfile is correctly copied from PRIMARY server"
+        echo "2. Keyfile permissions are correct (chown mongodb:mongodb, chmod 400)"
+        echo "3. MongoDB services are running"
+        echo "4. Firewall allows connections"
+        return 1
     fi
     
     echo -e "\n${GREEN}✅ SECONDARY setup completed successfully${NC}"
