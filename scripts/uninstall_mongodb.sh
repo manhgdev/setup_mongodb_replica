@@ -102,7 +102,7 @@ uninstall_mongodb() {
                         sudo systemctl disable mongod
                         
                         # Xóa MongoDB và các gói phụ thuộc
-                        # sudo apt-get purge -y mongodb-org*
+                        sudo apt-get purge -y mongodb-org*
                         sudo apt-get autoremove -y
                         
                         # Xóa các file cấu hình và data
