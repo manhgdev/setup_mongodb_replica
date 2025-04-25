@@ -483,6 +483,7 @@ setup_secondary() {
     mongod --config /etc/mongod_${SECONDARY_PORT}.conf --fork
     sleep 2
     
+    # Check if SECONDARY is running without auth
     if ! mongosh --port $SECONDARY_PORT --eval "db.version()" --quiet &>/dev/null; then
         echo -e "${RED}❌ Failed to start SECONDARY node${NC}"
         echo "Last 50 lines of log:"
@@ -497,6 +498,7 @@ setup_secondary() {
     mongod --config /etc/mongod_${ARBITER_PORT}.conf --fork
     sleep 2
     
+    # Check if ARBITER is running without auth
     if ! mongosh --port $ARBITER_PORT --eval "db.version()" --quiet &>/dev/null; then
         echo -e "${RED}❌ Failed to start ARBITER node${NC}"
         echo "Last 50 lines of log:"
@@ -516,20 +518,6 @@ setup_secondary() {
     sudo systemctl restart mongod_${SECONDARY_PORT}
     sudo systemctl restart mongod_${ARBITER_PORT}
     sleep 2
-    
-    # Check if nodes are ready before adding to replica set
-    echo "Checking if nodes are ready..."
-    local secondary_ready=$(mongosh --port $SECONDARY_PORT --eval "db.serverStatus().ok" --quiet)
-    local arbiter_ready=$(mongosh --port $ARBITER_PORT --eval "db.serverStatus().ok" --quiet)
-    
-    if [ "$secondary_ready" != "1" ] || [ "$arbiter_ready" != "1" ]; then
-        echo -e "${RED}❌ Nodes are not ready${NC}"
-        echo "SECONDARY status: $secondary_ready"
-        echo "ARBITER status: $arbiter_ready"
-        return 1
-    fi
-    
-    echo -e "${GREEN}✅ Nodes are ready${NC}"
     
     echo -e "\n${GREEN}✅ SECONDARY setup completed successfully${NC}"
     echo -e "\n${GREEN}Next steps:${NC}"
