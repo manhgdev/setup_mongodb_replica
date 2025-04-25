@@ -315,6 +315,109 @@ remove_node() {
     fi
 }
 
+# Xử lý triệt để node không hoạt động
+force_fix_node() {
+    local NODE_IP=$1
+    local NODE_PORT=$2
+    local ADMIN_USER=$3
+    local ADMIN_PASS=$4
+    local PRIMARY_IP=$5
+    
+    echo -e "${YELLOW}Đang xử lý triệt để node $NODE_IP:$NODE_PORT...${NC}"
+    
+    # 1. Xóa node khỏi replica set trước
+    echo -e "${YELLOW}1. Xóa node khỏi replica set...${NC}"
+    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
+    try {
+        rs.remove('$NODE_IP:$NODE_PORT');
+        print('OK');
+    } catch (e) {
+        // Bỏ qua lỗi nếu node không tồn tại
+    }" --quiet
+    
+    # 2. Dừng MongoDB trên node
+    echo -e "${YELLOW}2. Dừng MongoDB trên node...${NC}"
+    ssh $NODE_IP "sudo systemctl stop mongod_$NODE_PORT" || true
+    
+    # 3. Xóa data và log
+    echo -e "${YELLOW}3. Xóa data và log...${NC}"
+    ssh $NODE_IP "sudo rm -rf /var/lib/mongodb_$NODE_PORT/* /var/log/mongodb/mongod_$NODE_PORT.log" || true
+    
+    # 4. Khởi động lại MongoDB
+    echo -e "${YELLOW}4. Khởi động lại MongoDB...${NC}"
+    ssh $NODE_IP "sudo systemctl start mongod_$NODE_PORT"
+    
+    # 5. Đợi MongoDB khởi động
+    echo -e "${YELLOW}5. Đợi MongoDB khởi động (30 giây)...${NC}"
+    sleep 30
+    
+    # 6. Kiểm tra MongoDB có chạy không
+    echo -e "${YELLOW}6. Kiểm tra MongoDB có chạy không...${NC}"
+    if ! nc -z -w 5 $NODE_IP $NODE_PORT; then
+        echo -e "${RED}❌ MongoDB không chạy được${NC}"
+        return 1
+    fi
+    
+    # 7. Thêm lại node vào replica set với priority thấp
+    echo -e "${YELLOW}7. Thêm lại node vào replica set...${NC}"
+    local add_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
+    try {
+        rs.add({
+            host: '$NODE_IP:$NODE_PORT',
+            priority: 0.5
+        });
+        print('OK');
+    } catch (e) {
+        print('ERROR: ' + e.message);
+    }" --quiet)
+    
+    if ! echo "$add_result" | grep -q "OK"; then
+        echo -e "${RED}❌ Không thể thêm lại node${NC}"
+        echo "Lỗi: $add_result"
+        return 1
+    fi
+    
+    # 8. Đợi node đồng bộ
+    echo -e "${YELLOW}8. Đợi node đồng bộ (60 giây)...${NC}"
+    sleep 60
+    
+    # 9. Kiểm tra trạng thái cuối cùng
+    echo -e "${YELLOW}9. Kiểm tra trạng thái cuối cùng...${NC}"
+    local status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
+    let status = rs.status();
+    let member = status.members.find(m => m.name === '$NODE_IP:$NODE_PORT');
+    if (member) {
+        print('STATE: ' + member.stateStr);
+        print('HEALTH: ' + member.health);
+    } else {
+        print('NOT_FOUND');
+    }" --quiet)
+    
+    if echo "$status" | grep -q "SECONDARY" && echo "$status" | grep -q "HEALTH: 1"; then
+        echo -e "${GREEN}✅ Node đã hoạt động bình thường${NC}"
+        
+        # 10. Tăng priority lên bình thường
+        echo -e "${YELLOW}10. Tăng priority lên bình thường...${NC}"
+        mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
+        try {
+            let config = rs.conf();
+            let member = config.members.find(m => m.host === '$NODE_IP:$NODE_PORT');
+            if (member) {
+                member.priority = 1;
+                rs.reconfig(config);
+            }
+        } catch (e) {
+            print('ERROR: ' + e.message);
+        }" --quiet
+        
+        return 0
+    else
+        echo -e "${RED}❌ Node vẫn không hoạt động bình thường${NC}"
+        echo "Trạng thái: $status"
+        return 1
+    fi
+}
+
 # Hàm chính để sửa lỗi node không reachable
 fix_unreachable_node_menu() {
     echo -e "${YELLOW}=== Sửa lỗi node không reachable ===${NC}"
@@ -351,7 +454,8 @@ fix_unreachable_node_menu() {
     echo "3. Khôi phục node bằng cách xóa và thêm lại"
     echo "4. Khôi phục node bằng cách force reconfigure"
     echo "5. Xóa node không hoạt động khỏi replica set"
-    read -p "Lựa chọn (1-5): " action
+    echo "6. Xử lý triệt để (xóa data và cài lại)"
+    read -p "Lựa chọn (1-6): " action
     
     case $action in
         1)
@@ -368,6 +472,9 @@ fix_unreachable_node_menu() {
             ;;
         5)
             remove_node "$NODE_IP" "$NODE_PORT" "$ADMIN_USER" "$ADMIN_PASS" "$PRIMARY_IP"
+            ;;
+        6)
+            force_fix_node "$NODE_IP" "$NODE_PORT" "$ADMIN_USER" "$ADMIN_PASS" "$PRIMARY_IP"
             ;;
         *)
             echo -e "${RED}❌ Lựa chọn không hợp lệ${NC}"
