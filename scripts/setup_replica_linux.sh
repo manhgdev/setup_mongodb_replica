@@ -67,8 +67,6 @@ create_config() {
     cat > $CONFIG_FILE << EOF
 storage:
   dbPath: $DB_PATH
-  journal:
-    enabled: true
 systemLog:
   destination: file
   logAppend: true
@@ -242,7 +240,7 @@ setup_primary() {
     
     # Start PRIMARY first
     echo "Starting PRIMARY node..."
-    mongod --config /etc/mongod_27017.conf --fork --logpath /var/log/mongodb/mongod_27017.log
+    mongod --dbpath /var/lib/mongodb_27017 --port 27017 --fork --logpath /var/log/mongodb/mongod_27017.log
     sleep 10
     
     # Check if PRIMARY is running
