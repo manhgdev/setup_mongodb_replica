@@ -719,12 +719,49 @@ setup_secondary() {
     PRIMARY_PASS=${PRIMARY_PASS:-$ADMIN_PASS}
     echo ""
     
-    local add_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "
-    rs.add('$SERVER_IP:$SECONDARY_PORT')")
+    # Kiểm tra xem node đã tồn tại trong replica set chưa
+    if check_node_in_replicaset $PRIMARY_IP $SERVER_IP $SECONDARY_PORT $PRIMARY_USER $PRIMARY_PASS; then
+        echo -e "${YELLOW}Node đã tồn tại trong replica set. Đang thử cập nhật cấu hình...${NC}"
+        
+        # Xóa node khỏi replica set (nếu đang không healthy)
+        local remove_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "
+        try {
+            rs.remove('$SERVER_IP:$SECONDARY_PORT');
+            print('✅ Đã xóa node khỏi replica set');
+        } catch (err) {
+            print('❌ Lỗi: ' + err.message);
+        }" --quiet)
+        
+        echo "$remove_result"
+        echo -e "${YELLOW}Đợi 10 giây sau khi xóa node...${NC}"
+        sleep 10
+        
+        # Thêm lại node
+        local add_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "
+        try {
+            rs.add('$SERVER_IP:$SECONDARY_PORT');
+            print('✅ Đã thêm lại node vào replica set');
+        } catch (err) {
+            print('❌ Lỗi: ' + err.message);
+        }" --quiet)
+        
+        echo "$add_result"
+    else
+        # Thêm node mới
+        local add_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "
+        try {
+            rs.add('$SERVER_IP:$SECONDARY_PORT');
+            print('✅ Đã thêm node vào replica set');
+        } catch (err) {
+            print('❌ Lỗi: ' + err.message);
+        }" --quiet)
+        
+        echo "$add_result"
+    fi
     
-    if [ $? -ne 0 ]; then
+    # Kiểm tra kết quả
+    if [[ "$add_result" == *"❌ Lỗi"* ]]; then
         echo -e "${RED}❌ Không thể thêm node vào Replica Set${NC}"
-        echo "Lỗi: $add_result"
         echo -e "${YELLOW}Kiểm tra kết nối với PRIMARY...${NC}"
         if ! ping -c 1 -W 2 $PRIMARY_IP > /dev/null; then
             echo -e "${RED}❌ Không thể ping tới PRIMARY server $PRIMARY_IP${NC}"
@@ -735,7 +772,14 @@ setup_secondary() {
         if [ $? -ne 0 ]; then
             echo -e "${RED}❌ Không thể kết nối tới PRIMARY server $PRIMARY_IP:27017${NC}"
         fi
-        return 1
+        
+        # Hỏi người dùng có muốn tiếp tục
+        read -p "Thêm node thất bại. Bạn có muốn tiếp tục bước tiếp theo? (y/n): " CONTINUE
+        if [[ ! "$CONTINUE" =~ ^[Yy]$ ]]; then
+            return 1
+        fi
+    else
+        echo -e "${GREEN}✅ Đã thêm node vào replica set${NC}"
     fi
     
     echo -e "${YELLOW}Đợi node được thêm vào...${NC}"
@@ -774,16 +818,51 @@ setup_secondary() {
     echo -e "${YELLOW}BƯỚC 5: Tạo keyfile và cấu hình bảo mật...${NC}"
     create_keyfile "/etc/mongodb.keyfile" $PRIMARY_IP
     
+    # Kiểm tra và đảm bảo quyền keyfile đúng
+    echo -e "${YELLOW}Kiểm tra và sửa quyền keyfile...${NC}"
+    if [ -f "/etc/mongodb.keyfile" ]; then
+        sudo chmod 400 /etc/mongodb.keyfile
+        sudo chown mongodb:mongodb /etc/mongodb.keyfile
+        ls -la /etc/mongodb.keyfile
+    else
+        echo -e "${RED}❌ Không tìm thấy keyfile sau khi tạo/copy!${NC}"
+        echo -e "${YELLOW}Đang tạo keyfile mới cục bộ...${NC}"
+        openssl rand -base64 756 | sudo tee /etc/mongodb.keyfile > /dev/null
+        sudo chmod 400 /etc/mongodb.keyfile 
+        sudo chown mongodb:mongodb /etc/mongodb.keyfile
+        ls -la /etc/mongodb.keyfile
+        echo -e "${YELLOW}⚠️ Đã tạo keyfile cục bộ. Cần sao chép thủ công sang PRIMARY.${NC}"
+    fi
+    
     # Bật bảo mật và khởi động lại
     echo -e "${YELLOW}Khởi động lại với bảo mật...${NC}"
     create_systemd_service true
     if ! start_mongodb; then
         echo -e "${RED}❌ Không thể khởi động MongoDB với bảo mật${NC}"
-        check_and_restart_mongodb true
+        echo -e "${YELLOW}Kiểm tra log lỗi:${NC}"
+        sudo tail -n 20 /var/log/mongodb/mongod_${SECONDARY_PORT}.log
+        
+        echo -e "${YELLOW}Đang thử khắc phục lỗi keyfile...${NC}"
+        fix_keyfile_and_restart
+        
         if ! verify_mongodb_connection true $SEC_USER $SEC_PASS "localhost"; then
-            echo -e "${RED}❌ Vẫn không thể khởi động MongoDB với bảo mật. Vui lòng kiểm tra logs.${NC}"
-            sudo tail -n 30 /var/log/mongodb/mongod_${SECONDARY_PORT}.log
-            return 1
+            echo -e "${RED}❌ Vẫn không thể khởi động MongoDB với bảo mật sau khi sửa keyfile.${NC}"
+            echo -e "${YELLOW}Kiểm tra chi tiết MongoDB...${NC}"
+            check_mongodb_status
+            
+            echo -e "${YELLOW}Đang thử một lần cuối với cấu hình không bảo mật...${NC}"
+            create_systemd_service false
+            
+            if ! start_mongodb; then
+                echo -e "${RED}❌ MongoDB không thể khởi động được với cả hai cấu hình.${NC}"
+                echo -e "${YELLOW}Vui lòng sử dụng tùy chọn 'Troubleshoot' từ menu chính để khắc phục.${NC}"
+                return 1
+            else
+                echo -e "${YELLOW}⚠️ MongoDB đã khởi động nhưng KHÔNG có bảo mật!${NC}"
+                echo -e "${YELLOW}⚠️ Cần kiểm tra và sửa lỗi keyfile thủ công.${NC}"
+            fi
+        else
+            echo -e "${GREEN}✅ Đã sửa lỗi keyfile và MongoDB đã khởi động với bảo mật${NC}"
         fi
     fi
     
@@ -923,28 +1002,137 @@ troubleshoot_mongodb() {
   echo -e "${YELLOW}Cấu hình MongoDB:${NC}"
   grep -v "^#" /etc/mongod_${PORT}.conf | grep -v "^$"
   
-  # Hướng dẫn khắc phục
-  echo -e "\n${YELLOW}=== HƯỚNG DẪN KHẮC PHỤC ===${NC}"
-  echo "1. Kiểm tra log lỗi:"
-  echo "   sudo tail -f /var/log/mongodb/mongod_${PORT}.log"
-  echo "2. Kiểm tra trạng thái dịch vụ:"
-  echo "   sudo systemctl status mongod_${PORT}"
-  echo "3. Khởi động lại dịch vụ:"
-  echo "   sudo systemctl restart mongod_${PORT}"
-  echo "4. Nếu lỗi quyền truy cập:"
-  echo "   sudo chown -R mongodb:mongodb /var/lib/mongodb_${PORT} /var/log/mongodb"
-  echo "   sudo chmod 400 /etc/mongodb.keyfile"
-  echo "   sudo chown mongodb:mongodb /etc/mongodb.keyfile"
+  # Hiển thị menu để người dùng chọn
+  echo -e "\n${YELLOW}=== TÙY CHỌN KHẮC PHỤC ===${NC}"
+  echo "1. Kiểm tra chi tiết trạng thái MongoDB"
+  echo "2. Sửa quyền keyfile và khởi động lại MongoDB"
+  echo "3. Cài đặt lại MongoDB (không có replica set)"
+  echo "4. Quay lại menu chính"
+  read -p "Chọn tùy chọn (1-4): " TROUBLESHOOT_OPTION
   
-  echo -e "\n${YELLOW}Bạn có muốn chạy cài đặt lại từ đầu không? (y/n)${NC} "
-  read -p "> " RESET_MONGO
-  if [[ "$RESET_MONGO" =~ ^[Yy]$ ]]; then
-    stop_mongodb
-    create_dirs
-    create_config false "no_repl"
-    create_systemd_service false "no_repl"
-    start_mongodb
-    echo -e "${GREEN}✅ Đã khởi động lại MongoDB với cấu hình cơ bản${NC}"
+  case $TROUBLESHOOT_OPTION in
+    1) check_mongodb_status ;;
+    2) fix_keyfile_and_restart ;;
+    3)
+      stop_mongodb
+      create_dirs
+      create_config false "no_repl"
+      create_systemd_service false "no_repl"
+      start_mongodb
+      echo -e "${GREEN}✅ Đã khởi động lại MongoDB với cấu hình cơ bản${NC}"
+      ;;
+    4) return 0 ;;
+    *) echo -e "${RED}❌ Tùy chọn không hợp lệ${NC}" ;;
+  esac
+}
+
+# Check MongoDB status in detail
+check_mongodb_status() {
+  local PORT=27017
+  local SERVICE_NAME="mongod_${PORT}"
+  
+  echo -e "${YELLOW}=== KIỂM TRA CHI TIẾT MONGODB ===${NC}"
+  
+  # Kiểm tra trạng thái dịch vụ
+  echo -e "${YELLOW}Trạng thái dịch vụ:${NC}"
+  sudo systemctl status $SERVICE_NAME
+  
+  # Kiểm tra log
+  echo -e "${YELLOW}Log MongoDB (30 dòng cuối):${NC}"
+  sudo tail -n 30 /var/log/mongodb/mongod_${PORT}.log
+  
+  # Kiểm tra quyền file và thư mục
+  echo -e "${YELLOW}Quyền thư mục dữ liệu:${NC}"
+  ls -la /var/lib/mongodb_${PORT}/
+  
+  echo -e "${YELLOW}Quyền thư mục log:${NC}"
+  ls -la /var/log/mongodb/
+  
+  echo -e "${YELLOW}Quyền file keyfile:${NC}"
+  sudo ls -la /etc/mongodb.keyfile 2>/dev/null || echo "Keyfile không tồn tại"
+  
+  # Kiểm tra port 
+  echo -e "${YELLOW}Kiểm tra port:${NC}"
+  sudo lsof -i :${PORT} || echo "Không có process nào đang sử dụng port ${PORT}"
+  
+  # Kiểm tra cấu hình
+  echo -e "${YELLOW}File cấu hình:${NC}"
+  cat /etc/mongod_${PORT}.conf
+  
+  echo -e "${YELLOW}=== KẾT THÚC KIỂM TRA ===${NC}"
+}
+
+# Fix keyfile permissions and restart MongoDB
+fix_keyfile_and_restart() {
+  local KEYFILE="/etc/mongodb.keyfile"
+  local PORT=27017
+  local SERVICE_NAME="mongod_${PORT}"
+  
+  echo -e "${YELLOW}=== SỬA QUYỀN KEYFILE VÀ KHỞI ĐỘNG LẠI MONGODB ===${NC}"
+  
+  # Dừng MongoDB
+  sudo systemctl stop $SERVICE_NAME
+  sleep 2
+  
+  # Sửa quyền keyfile
+  if [ -f "$KEYFILE" ]; then
+    echo -e "${YELLOW}Sửa quyền keyfile...${NC}"
+    sudo chmod 400 $KEYFILE
+    sudo chown mongodb:mongodb $KEYFILE
+    ls -la $KEYFILE
+  else
+    echo -e "${RED}Keyfile không tồn tại!${NC}"
+    echo -e "${YELLOW}Tạo keyfile mới...${NC}"
+    openssl rand -base64 756 | sudo tee $KEYFILE > /dev/null
+    sudo chmod 400 $KEYFILE
+    sudo chown mongodb:mongodb $KEYFILE
+  fi
+  
+  # Xóa lock file nếu có
+  if [ -f "/var/lib/mongodb_${PORT}/mongod.lock" ]; then
+    echo -e "${YELLOW}Xóa file lock...${NC}"
+    sudo rm -f /var/lib/mongodb_${PORT}/mongod.lock
+  fi
+  
+  # Sửa quyền thư mục dữ liệu
+  echo -e "${YELLOW}Sửa quyền thư mục dữ liệu...${NC}"
+  sudo chown -R mongodb:mongodb /var/lib/mongodb_${PORT}
+  sudo chown -R mongodb:mongodb /var/log/mongodb
+  
+  # Khởi động lại
+  echo -e "${YELLOW}Khởi động lại MongoDB...${NC}"
+  sudo systemctl daemon-reload
+  sudo systemctl restart $SERVICE_NAME
+  sleep 5
+  
+  # Kiểm tra trạng thái
+  if sudo systemctl is-active --quiet $SERVICE_NAME; then
+    echo -e "${GREEN}✅ MongoDB đã khởi động lại thành công${NC}"
+  else
+    echo -e "${RED}❌ MongoDB vẫn không khởi động được${NC}"
+    check_mongodb_status
+  fi
+}
+
+# Check if node is already in replica set before adding
+check_node_in_replicaset() {
+  local PRIMARY_IP=$1
+  local NODE_IP=$2
+  local NODE_PORT=$3
+  local USERNAME=$4
+  local PASSWORD=$5
+  
+  echo -e "${YELLOW}Kiểm tra xem node đã tồn tại trong replica set chưa...${NC}"
+  
+  local result=$(mongosh --host $PRIMARY_IP --port 27017 -u $USERNAME -p $PASSWORD --authenticationDatabase admin --eval "
+  rs.conf().members.some(m => m.host === '$NODE_IP:$NODE_PORT')" --quiet)
+  
+  if [ "$result" = "true" ]; then
+    echo -e "${YELLOW}⚠️ Node $NODE_IP:$NODE_PORT đã tồn tại trong replica set${NC}"
+    return 0
+  else
+    echo -e "${GREEN}✅ Node $NODE_IP:$NODE_PORT chưa tồn tại trong replica set${NC}"
+    return 1
   fi
 }
 
