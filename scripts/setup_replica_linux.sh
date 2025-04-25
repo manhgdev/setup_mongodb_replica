@@ -75,8 +75,6 @@ create_config() {
 # Where and how to store data.
 storage:
   dbPath: /var/lib/mongodb_${PORT}
-#  engine:
-#  wiredTiger:
 
 # where to write logging data.
 systemLog:
@@ -88,21 +86,18 @@ systemLog:
 net:
   port: ${PORT}
   bindIp: 0.0.0.0
-  ipv6: false
 
 # how the process runs
 processManagement:
   timeZoneInfo: /usr/share/zoneinfo
   fork: true
 
-#security:
+# security
 security:
-  authorization: enabled
   keyFile: /etc/mongodb.keyfile
+  authorization: enabled
 
-#operationProfiling:
-
-#replication:
+# replication
 replication:
   replSetName: rs0
 EOF
@@ -114,206 +109,90 @@ EOF
     echo -e "${GREEN}✅ Config file created: $CONFIG_FILE${NC}"
 }
 
-# Setup MongoDB node
-setup_node() {
+# Fix MongoDB startup issues
+fix_mongodb_startup() {
     local PORT=$1
-    local CONFIG_FILE="/etc/mongod_${PORT}.conf"
+    
+    echo "Attempting to fix MongoDB startup for port $PORT..."
+    
+    # Check if process is already running
+    if pgrep -f "mongod.*$PORT" > /dev/null; then
+        echo "MongoDB process for port $PORT is already running"
+        return 0
+    fi
+    
+    # Check logs
+    echo "Checking MongoDB logs..."
+    if [ -f "/var/log/mongodb/mongod_${PORT}.log" ]; then
+        local auth_errors=$(grep -i "auth" /var/log/mongodb/mongod_${PORT}.log | grep -i "error" | tail -n 5)
+        local perm_errors=$(grep -i "permission" /var/log/mongodb/mongod_${PORT}.log | grep -i "error" | tail -n 5)
+        local keyfile_errors=$(grep -i "keyfile" /var/log/mongodb/mongod_${PORT}.log | grep -i "error" | tail -n 5)
+        
+        if [ ! -z "$auth_errors" ]; then
+            echo "Authentication errors found:"
+            echo "$auth_errors"
+        fi
+        
+        if [ ! -z "$perm_errors" ]; then
+            echo "Permission errors found:"
+            echo "$perm_errors"
+            
+            # Fix data directory permissions
+            local DB_PATH="/var/lib/mongodb_${PORT}"
+            echo "Fixing data directory permissions..."
+            sudo mkdir -p $DB_PATH
+            sudo chown -R mongodb:mongodb $DB_PATH
+            sudo chmod -R 755 $DB_PATH
+        fi
+        
+        if [ ! -z "$keyfile_errors" ]; then
+            echo "Keyfile errors found:"
+            echo "$keyfile_errors"
+            
+            # Fix keyfile permissions
+            echo "Fixing keyfile permissions..."
+            sudo chown mongodb:mongodb /etc/mongodb.keyfile
+            sudo chmod 400 /etc/mongodb.keyfile
+        fi
+    fi
+    
+    # Try starting mongod manually first to see errors
+    echo "Starting MongoDB manually to check for errors..."
+    sudo -u mongodb mongod --config /etc/mongod_${PORT}.conf
+    sleep 5
+    
+    # Check if process started
+    if pgrep -f "mongod.*$PORT" > /dev/null; then
+        echo -e "${GREEN}✅ MongoDB started successfully using manual command${NC}"
+        return 0
+    fi
+    
+    echo "Failed to start MongoDB manually. Starting without config to check for basic startup issues..."
     local DB_PATH="/var/lib/mongodb_${PORT}"
-    local LOG_PATH="/var/log/mongodb"
+    local LOG_PATH="/var/log/mongodb/mongod_${PORT}.log"
     
-    # Create config
-    create_config $PORT
+    # Try starting with minimal options
+    sudo -u mongodb mongod --dbpath $DB_PATH --port $PORT --fork --logpath $LOG_PATH
+    sleep 5
     
-    # Start MongoDB
-    echo "Starting MongoDB on port $PORT..."
-    mongod --config "$CONFIG_FILE" > "$LOG_PATH/mongod_${PORT}.log" 2>&1 &
-    local mongod_pid=$!
+    # Check if process started
+    if pgrep -f "mongod.*$PORT" > /dev/null; then
+        echo -e "${GREEN}✅ MongoDB started with minimal options${NC}"
+        # Stop it
+        sudo mongod --dbpath $DB_PATH --port $PORT --shutdown
+        sleep 5
+        echo "Issue might be with the config file. Check above for specific errors."
+    else
+        echo -e "${RED}❌ Could not start MongoDB even with minimal options${NC}"
+        echo "This might indicate a deeper issue with MongoDB installation or system configuration."
+        echo "Checking system resources..."
+        echo "Disk space:"
+        df -h
+        echo "Memory:"
+        free -m
+    fi
     
-    # Wait for MongoDB to start
-    local attempt=1
-    while [ $attempt -le 30 ]; do
-        sleep 1
-        if mongosh --port $PORT --eval "db.version()" --quiet &>/dev/null; then
-            echo -e "${GREEN}✅ MongoDB started successfully on port $PORT${NC}"
-            return 0
-        fi
-        attempt=$((attempt + 1))
-    done
-    
-    echo -e "${RED}❌ Failed to connect to MongoDB on port $PORT${NC}"
-    echo "Last 50 lines of log file:"
-    tail -n 50 "$LOG_PATH/mongod_${PORT}.log"
     return 1
-}
-
-# Create keyfile
-create_keyfile() {
-    local KEYFILE="/etc/mongodb.keyfile"
-    openssl rand -base64 756 > $KEYFILE
-    chown mongodb:mongodb $KEYFILE
-    chmod 400 $KEYFILE
-    echo -e "${GREEN}✅ Keyfile created successfully${NC}"
-}
-
-# Create admin user
-create_admin_user() {
-    local PORT=$1
-    local USERNAME=$2
-    local PASSWORD=$3
-    
-    echo "Creating admin user..."
-    local result=$(mongosh --port $PORT --eval "
-    db.getSiblingDB('admin').createUser({
-        user: '$USERNAME',
-        pwd: '$PASSWORD',
-        roles: [
-            { role: 'root', db: 'admin' },
-            { role: 'clusterAdmin', db: 'admin' }
-        ]
-    })")
-    
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}❌ Failed to create admin user${NC}"
-        echo "Error: $result"
-        return 1
-    fi
-    echo -e "${GREEN}✅ Admin user created successfully${NC}"
-}
-
-# Start MongoDB
-start_mongodb() {
-    local PRIMARY_PORT=27017
-    local ARBITER1_PORT=27018
-    local ARBITER2_PORT=27019
-    
-    echo "Starting MongoDB nodes..."
-    setup_node $PRIMARY_PORT || return 1
-    setup_node $ARBITER1_PORT || return 1
-    setup_node $ARBITER2_PORT || return 1
-    
-    echo -e "${GREEN}✅ All MongoDB nodes started successfully${NC}"
-}
-
-# Create systemd service
-create_systemd_service() {
-    local PORT=$1
-    local SERVICE_NAME="mongod_${PORT}"
-    local SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
-    local CONFIG_FILE="/etc/mongod_${PORT}.conf"
-    
-    cat > $SERVICE_FILE <<EOL
-[Unit]
-Description=MongoDB Database Server (Port ${PORT})
-After=network.target
-Wants=network.target
-
-[Service]
-User=mongodb
-Group=mongodb
-ExecStart=/usr/bin/mongod --config ${CONFIG_FILE}
-ExecStop=/usr/bin/mongod --config ${CONFIG_FILE} --shutdown
-Restart=always
-RestartSec=3
-StartLimitInterval=60
-StartLimitBurst=3
-TimeoutStartSec=60
-TimeoutStopSec=60
-
-[Install]
-WantedBy=multi-user.target
-EOL
-
-    sudo systemctl daemon-reload
-    sudo systemctl enable $SERVICE_NAME
-    sudo systemctl start $SERVICE_NAME
-    
-    if sudo systemctl is-active --quiet $SERVICE_NAME; then
-        echo -e "${GREEN}✅ Service ${SERVICE_NAME} created and started successfully${NC}"
-        echo "Service will auto-start on system boot"
-    else
-        echo -e "${RED}❌ Failed to start service ${SERVICE_NAME}${NC}"
-        sudo systemctl status $SERVICE_NAME
-        return 1
-    fi
-}
-
-# Configure firewall
-configure_firewall() {
-    echo "Configuring firewall..."
-    if command -v ufw &> /dev/null; then
-        echo "UFW is installed, configuring ports..."
-        sudo ufw allow 27017/tcp
-        sudo ufw allow 27018/tcp
-        sudo ufw allow 27019/tcp
-        echo -e "${GREEN}✅ Firewall configured successfully${NC}"
-    else
-        echo "UFW is not installed, skipping firewall configuration"
-    fi
-}
-
-# Check and fix keyfile
-check_fix_keyfile() {
-    local PRIMARY_IP=$1
-    local KEYFILE="/etc/mongodb.keyfile"
-    
-    echo "Checking keyfile..."
-    
-    # Check if keyfile exists
-    if [ ! -f "$KEYFILE" ]; then
-        echo -e "${RED}❌ Keyfile not found${NC}"
-        echo "Downloading keyfile from PRIMARY server..."
-        scp root@$PRIMARY_IP:$KEYFILE $KEYFILE
-        if [ ! -f "$KEYFILE" ]; then
-            echo -e "${RED}❌ Failed to download keyfile${NC}"
-            return 1
-        fi
-    fi
-    
-    # Verify keyfile content with PRIMARY
-    echo "Verifying keyfile content..."
-    local PRIMARY_KEYFILE_MD5=$(ssh root@$PRIMARY_IP "md5sum $KEYFILE" | awk '{print $1}')
-    local SECONDARY_KEYFILE_MD5=$(md5sum $KEYFILE | awk '{print $1}')
-    
-    if [ "$PRIMARY_KEYFILE_MD5" != "$SECONDARY_KEYFILE_MD5" ]; then
-        echo -e "${RED}❌ Keyfile content does not match PRIMARY server${NC}"
-        echo "Replacing keyfile with PRIMARY server's keyfile..."
-        rm -f $KEYFILE
-        scp root@$PRIMARY_IP:$KEYFILE $KEYFILE
-    fi
-    
-    # Fix keyfile permissions
-    echo "Setting correct permissions for keyfile..."
-    sudo chown mongodb:mongodb $KEYFILE
-    sudo chmod 400 $KEYFILE
-    
-    local keyfile_owner=$(stat -c %U $KEYFILE)
-    local keyfile_group=$(stat -c %G $KEYFILE)
-    local keyfile_perms=$(stat -c %a $KEYFILE)
-    
-    if [ "$keyfile_owner" != "mongodb" ] || [ "$keyfile_group" != "mongodb" ] || [ "$keyfile_perms" != "400" ]; then
-        echo -e "${RED}❌ Failed to set correct permissions${NC}"
-        echo "Current permissions:"
-        echo "Owner: $keyfile_owner"
-        echo "Group: $keyfile_group"
-        echo "Permissions: $keyfile_perms"
-        
-        # Try as root
-        echo "Trying with sudo..."
-        sudo chown mongodb:mongodb $KEYFILE
-        sudo chmod 400 $KEYFILE
-        
-        keyfile_owner=$(stat -c %U $KEYFILE)
-        keyfile_group=$(stat -c %G $KEYFILE)
-        keyfile_perms=$(stat -c %a $KEYFILE)
-        
-        if [ "$keyfile_owner" != "mongodb" ] || [ "$keyfile_group" != "mongodb" ] || [ "$keyfile_perms" != "400" ]; then
-            echo -e "${RED}❌ Still failed to set correct permissions${NC}"
-            return 1
-        fi
-    fi
-    
-    echo -e "${GREEN}✅ Keyfile verified and permissions set correctly${NC}"
-    return 0
 }
 
 # Setup PRIMARY server
@@ -516,7 +395,7 @@ setup_secondary() {
     done
     
     # Check and fix keyfile
-    check_fix_keyfile $PRIMARY_IP || return 1
+    # check_fix_keyfile $PRIMARY_IP || return 1
     
     # Create configs with security
     echo "Creating configs with security..."
@@ -524,14 +403,42 @@ setup_secondary() {
     create_config $ARBITER1_PORT true true false
     create_config $ARBITER2_PORT true true false
     
-    # Start services with systemd
+    # Start MongoDB manually first for diagnosis
+    echo "Starting MongoDB manually for the SECONDARY node..."
+    sudo -u mongodb mongod --config /etc/mongod_${SECONDARY_PORT}.conf
+    sleep 5
+    
+    if ! pgrep -f "mongod.*$SECONDARY_PORT" > /dev/null; then
+        echo -e "${RED}❌ Failed to start MongoDB for SECONDARY node${NC}"
+        echo "Trying to fix MongoDB startup..."
+        fix_mongodb_startup $SECONDARY_PORT
+        
+        if ! pgrep -f "mongod.*$SECONDARY_PORT" > /dev/null; then
+            echo -e "${RED}❌ Still cannot start MongoDB for SECONDARY node. Please check logs for details.${NC}"
+            sudo tail -n 50 /var/log/mongodb/mongod_${SECONDARY_PORT}.log
+            return 1
+        fi
+    else
+        echo -e "${GREEN}✅ MongoDB started successfully for SECONDARY node${NC}"
+    fi
+    
+    # Start ARBITER nodes
+    echo "Starting MongoDB for ARBITER 1 node..."
+    sudo -u mongodb mongod --config /etc/mongod_${ARBITER1_PORT}.conf
+    sleep 5
+    
+    echo "Starting MongoDB for ARBITER 2 node..."
+    sudo -u mongodb mongod --config /etc/mongod_${ARBITER2_PORT}.conf
+    sleep 5
+    
+    # Create systemd services and restart
     echo "Creating systemd services..."
     create_systemd_service $SECONDARY_PORT || return 1
     create_systemd_service $ARBITER1_PORT || return 1
     create_systemd_service $ARBITER2_PORT || return 1
     
     # Restart services
-    echo "Starting/restarting services..."
+    echo "Restarting services via systemd..."
     sudo systemctl restart mongod_${SECONDARY_PORT}
     sudo systemctl restart mongod_${ARBITER1_PORT}
     sudo systemctl restart mongod_${ARBITER2_PORT}
@@ -544,7 +451,11 @@ setup_secondary() {
             echo -e "${RED}❌ MongoDB process for port $port is not running${NC}"
             echo "Checking logs:"
             sudo tail -n 50 /var/log/mongodb/mongod_${port}.log
-            return 1
+            fix_mongodb_startup $port
+            if ! pgrep -f "mongod.*$port" > /dev/null; then
+                echo -e "${RED}❌ Still cannot start MongoDB for port $port${NC}"
+                return 1
+            fi
         fi
     done
     echo -e "${GREEN}✅ All MongoDB processes are running${NC}"
@@ -570,11 +481,19 @@ setup_secondary() {
         fi
     done
     
-    # Add nodes to replica set
-    echo "Adding SECONDARY node to replica set..."
-    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.add({host: '$SERVER_IP:$SECONDARY_PORT', priority: 0})" --quiet
+    # Add nodes to replica set - starting with a clean SECONDARY
+    echo "Stopping SECONDARY node before adding to replica set..."
+    sudo systemctl stop mongod_${SECONDARY_PORT}
+    sudo rm -rf /var/lib/mongodb_${SECONDARY_PORT}/*
+    sudo systemctl start mongod_${SECONDARY_PORT}
     sleep 10
     
+    # Add SECONDARY node
+    echo "Adding SECONDARY node to replica set..."
+    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.add({host: '$SERVER_IP:$SECONDARY_PORT', priority: 0})" --quiet
+    sleep 20
+    
+    # Add ARBITER nodes
     echo "Adding ARBITER 1 node to replica set..."
     mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.addArb('$SERVER_IP:$ARBITER1_PORT')" --quiet
     sleep 5
@@ -587,28 +506,41 @@ setup_secondary() {
     echo "Waiting for replication to complete..."
     sleep 30
     
-    # Add admin user to SECONDARY if it doesn't have one yet
-    echo "Adding admin user to SECONDARY for direct access..."
-    # Use primary's user to add admin to secondary
-    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
-    db = db.getSiblingDB('admin');
-    rs.secondaryOk();
-    db.getMongo().setReadPref('primary');
-    if(!db.system.users.findOne({user: '$ADMIN_USER', db: 'admin'})) {
-        db.createUser({
-            user: '$ADMIN_USER',
-            pwd: '$ADMIN_PASS',
-            roles: ['root']
-        });
-    }" --quiet
-    
     # Show replica set status
     echo "Current replica set status:"
     mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet
     
-    # Show replica set config 
-    echo "Current replica set config:"
-    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.conf()" --quiet
+    # Sync admin credentials to SECONDARY - IMPORTANT FIX
+    echo "Creating admin user on SECONDARY for direct access..."
+    
+    # Stop SECONDARY node
+    echo "Stopping SECONDARY node to prepare for user sync..."
+    sudo systemctl stop mongod_${SECONDARY_PORT}
+    
+    # Start SECONDARY with localhost exception
+    echo "Starting SECONDARY node with localhost exception..."
+    sudo -u mongodb mongod --dbpath /var/lib/mongodb_${SECONDARY_PORT} --port ${SECONDARY_PORT} --bind_ip localhost,127.0.0.1,$SERVER_IP
+    sleep 5
+    
+    # Create admin user on SECONDARY
+    echo "Creating admin user on SECONDARY node..."
+    mongosh --host localhost --port ${SECONDARY_PORT} --eval "
+    use admin;
+    db.createUser({
+        user: '$ADMIN_USER',
+        pwd: '$ADMIN_PASS',
+        roles: ['root']
+    })" --quiet
+    
+    # Stop SECONDARY again
+    echo "Stopping SECONDARY node..."
+    mongod --dbpath /var/lib/mongodb_${SECONDARY_PORT} --port ${SECONDARY_PORT} --shutdown
+    sleep 5
+    
+    # Restart with normal config
+    echo "Restarting SECONDARY node with normal config..."
+    sudo systemctl start mongod_${SECONDARY_PORT}
+    sleep 10
     
     # Try to connect to SECONDARY directly
     echo "Testing connection to SECONDARY node..."
@@ -673,6 +605,176 @@ setup_secondary() {
     echo "If authentication fails now, please wait a few minutes and try again."
     echo "You can also restart MongoDB on the SECONDARY node after waiting:"
     echo "sudo systemctl restart mongod_27017"
+}
+
+# Create keyfile
+create_keyfile() {
+    local KEYFILE="/etc/mongodb.keyfile"
+    openssl rand -base64 756 > $KEYFILE
+    chown mongodb:mongodb $KEYFILE
+    chmod 400 $KEYFILE
+    echo -e "${GREEN}✅ Keyfile created successfully${NC}"
+}
+
+# Create admin user
+create_admin_user() {
+    local PORT=$1
+    local USERNAME=$2
+    local PASSWORD=$3
+    
+    echo "Creating admin user..."
+    local result=$(mongosh --port $PORT --eval "
+    db.getSiblingDB('admin').createUser({
+        user: '$USERNAME',
+        pwd: '$PASSWORD',
+        roles: [
+            { role: 'root', db: 'admin' },
+            { role: 'clusterAdmin', db: 'admin' }
+        ]
+    })")
+    
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}❌ Failed to create admin user${NC}"
+        echo "Error: $result"
+        return 1
+    fi
+    echo -e "${GREEN}✅ Admin user created successfully${NC}"
+}
+
+# Start MongoDB
+start_mongodb() {
+    local PRIMARY_PORT=27017
+    local ARBITER1_PORT=27018
+    local ARBITER2_PORT=27019
+    
+    echo "Starting MongoDB nodes..."
+    setup_node $PRIMARY_PORT || return 1
+    setup_node $ARBITER1_PORT || return 1
+    setup_node $ARBITER2_PORT || return 1
+    
+    echo -e "${GREEN}✅ All MongoDB nodes started successfully${NC}"
+}
+
+# Create systemd service
+create_systemd_service() {
+    local PORT=$1
+    local SERVICE_NAME="mongod_${PORT}"
+    local SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+    local CONFIG_FILE="/etc/mongod_${PORT}.conf"
+    
+    cat > $SERVICE_FILE <<EOL
+[Unit]
+Description=MongoDB Database Server (Port ${PORT})
+After=network.target
+Wants=network.target
+
+[Service]
+User=mongodb
+Group=mongodb
+ExecStart=/usr/bin/mongod --config ${CONFIG_FILE}
+ExecStop=/usr/bin/mongod --config ${CONFIG_FILE} --shutdown
+Restart=always
+RestartSec=3
+StartLimitInterval=60
+StartLimitBurst=3
+TimeoutStartSec=60
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target
+EOL
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable $SERVICE_NAME
+    sudo systemctl start $SERVICE_NAME
+    
+    if sudo systemctl is-active --quiet $SERVICE_NAME; then
+        echo -e "${GREEN}✅ Service ${SERVICE_NAME} created and started successfully${NC}"
+        echo "Service will auto-start on system boot"
+    else
+        echo -e "${RED}❌ Failed to start service ${SERVICE_NAME}${NC}"
+        sudo systemctl status $SERVICE_NAME
+        return 1
+    fi
+}
+
+# Configure firewall
+configure_firewall() {
+    echo "Configuring firewall..."
+    if command -v ufw &> /dev/null; then
+        echo "UFW is installed, configuring ports..."
+        sudo ufw allow 27017/tcp
+        sudo ufw allow 27018/tcp
+        sudo ufw allow 27019/tcp
+        echo -e "${GREEN}✅ Firewall configured successfully${NC}"
+    else
+        echo "UFW is not installed, skipping firewall configuration"
+    fi
+}
+
+# Check and fix keyfile
+check_fix_keyfile() {
+    local PRIMARY_IP=$1
+    local KEYFILE="/etc/mongodb.keyfile"
+    
+    echo "Checking keyfile..."
+    
+    # Check if keyfile exists
+    if [ ! -f "$KEYFILE" ]; then
+        echo -e "${RED}❌ Keyfile not found${NC}"
+        echo "Downloading keyfile from PRIMARY server..."
+        scp root@$PRIMARY_IP:$KEYFILE $KEYFILE
+        if [ ! -f "$KEYFILE" ]; then
+            echo -e "${RED}❌ Failed to download keyfile${NC}"
+            return 1
+        fi
+    fi
+    
+    # Verify keyfile content with PRIMARY
+    echo "Verifying keyfile content..."
+    local PRIMARY_KEYFILE_MD5=$(ssh root@$PRIMARY_IP "md5sum $KEYFILE" | awk '{print $1}')
+    local SECONDARY_KEYFILE_MD5=$(md5sum $KEYFILE | awk '{print $1}')
+    
+    if [ "$PRIMARY_KEYFILE_MD5" != "$SECONDARY_KEYFILE_MD5" ]; then
+        echo -e "${RED}❌ Keyfile content does not match PRIMARY server${NC}"
+        echo "Replacing keyfile with PRIMARY server's keyfile..."
+        rm -f $KEYFILE
+        scp root@$PRIMARY_IP:$KEYFILE $KEYFILE
+    fi
+    
+    # Fix keyfile permissions
+    echo "Setting correct permissions for keyfile..."
+    sudo chown mongodb:mongodb $KEYFILE
+    sudo chmod 400 $KEYFILE
+    
+    local keyfile_owner=$(stat -c %U $KEYFILE)
+    local keyfile_group=$(stat -c %G $KEYFILE)
+    local keyfile_perms=$(stat -c %a $KEYFILE)
+    
+    if [ "$keyfile_owner" != "mongodb" ] || [ "$keyfile_group" != "mongodb" ] || [ "$keyfile_perms" != "400" ]; then
+        echo -e "${RED}❌ Failed to set correct permissions${NC}"
+        echo "Current permissions:"
+        echo "Owner: $keyfile_owner"
+        echo "Group: $keyfile_group"
+        echo "Permissions: $keyfile_perms"
+        
+        # Try as root
+        echo "Trying with sudo..."
+        sudo chown mongodb:mongodb $KEYFILE
+        sudo chmod 400 $KEYFILE
+        
+        keyfile_owner=$(stat -c %U $KEYFILE)
+        keyfile_group=$(stat -c %G $KEYFILE)
+        keyfile_perms=$(stat -c %a $KEYFILE)
+        
+        if [ "$keyfile_owner" != "mongodb" ] || [ "$keyfile_group" != "mongodb" ] || [ "$keyfile_perms" != "400" ]; then
+            echo -e "${RED}❌ Still failed to set correct permissions${NC}"
+            return 1
+        fi
+    fi
+    
+    echo -e "${GREEN}✅ Keyfile verified and permissions set correctly${NC}"
+    return 0
 }
 
 # Main function
