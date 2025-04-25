@@ -838,14 +838,18 @@ EOL
     
     # Kiểm tra PRIMARY có đang hoạt động không
     echo -e "${YELLOW}14. Kiểm tra PRIMARY có đang hoạt động không...${NC}"
-    if ! mongosh --host "$PRIMARY_IP" --port 27017 --eval "rs.status()" > /dev/null 2>&1; then
-        echo -e "${RED}❌ Không thể kết nối tới PRIMARY${NC}"
+    local rs_status=$(mongosh --host "$PRIMARY_IP" --port 27017 --eval "rs.status()" --quiet 2>&1)
+    
+    if echo "$rs_status" | grep -q "MongoNetworkError\|failed\|error"; then
+        echo -e "${RED}❌ Không thể kết nối tới PRIMARY. Lỗi:${NC}"
+        echo "$rs_status"
         return 1
     fi
+    
     echo -e "${GREEN}✅ Kết nối tới PRIMARY thành công${NC}"
-
+    
     # Kiểm tra trạng thái của PRIMARY
-    primary_status=$(mongosh --host "$PRIMARY_IP" --port 27017 --eval "rs.status().members[0].stateStr" --quiet)
+    local primary_status=$(mongosh --host "$PRIMARY_IP" --port 27017 --eval "rs.status().members[0].stateStr" --quiet)
     if [ "$primary_status" != "PRIMARY" ]; then
         echo -e "${RED}❌ Node $PRIMARY_IP không phải là PRIMARY! Trạng thái hiện tại:${NC}"
         echo -e "      stateStr: '$primary_status',"
