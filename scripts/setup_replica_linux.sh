@@ -49,15 +49,18 @@ processManagement:
 EOL
 
     # Start MongoDB
-    if ! mongod --config "$CONFIG_FILE" --fork &>/dev/null; then
+    echo "Starting MongoDB on port $PORT..."
+    if ! mongod --config "$CONFIG_FILE" --fork; then
         echo -e "${RED}❌ Failed to start MongoDB on port $PORT${NC}"
+        echo "Last 50 lines of log file:"
+        tail -n 50 "$LOG_PATH/mongod_${PORT}.log"
         return 1
     fi
     
     # Wait for MongoDB to start
     local attempt=1
-    while [ $attempt -le 3 ]; do
-        sleep 3
+    while [ $attempt -le 30 ]; do
+        sleep 1
         if mongosh --port $PORT --eval "db.version()" --quiet &>/dev/null; then
             echo -e "${GREEN}✅ MongoDB started successfully on port $PORT${NC}"
             return 0
@@ -66,6 +69,8 @@ EOL
     done
     
     echo -e "${RED}❌ Failed to connect to MongoDB on port $PORT${NC}"
+    echo "Last 50 lines of log file:"
+    tail -n 50 "$LOG_PATH/mongod_${PORT}.log"
     return 1
 }
 
