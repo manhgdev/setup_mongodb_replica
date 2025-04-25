@@ -189,7 +189,7 @@ if [[ "$IS_PRIMARY" == "y" ]]; then
     
     MEMBERS_JSON+="]"
     
-    # Khởi tạo replica set
+    # Khởi tạo replica set (không cần xác thực)
     mongosh "mongodb://localhost:$BASE_PORT" --eval "
     rs.initiate({
         _id: '$REPLICA_SET',
@@ -200,7 +200,7 @@ if [[ "$IS_PRIMARY" == "y" ]]; then
     echo -e "${YELLOW}Đợi PRIMARY được bầu (5 giây)...${NC}"
     sleep 5
 
-    # Tạo user admin
+    # Tạo user admin (không cần xác thực)
     echo -e "${YELLOW}Tạo user admin...${NC}"
     mongosh "mongodb://localhost:$BASE_PORT" --eval "
     db.getSiblingDB('admin').createUser({
@@ -208,10 +208,50 @@ if [[ "$IS_PRIMARY" == "y" ]]; then
         pwd: '$PASSWORD',
         roles: ['root']
     })"
+
+    # Đợi user được tạo
+    echo -e "${YELLOW}Đợi user được tạo (5 giây)...${NC}"
+    sleep 5
+
+    # Khởi động lại service với xác thực
+    echo -e "${YELLOW}Khởi động lại service với xác thực...${NC}"
+    systemctl restart mongod
+    for i in {1..2}; do
+        systemctl restart "mongod-arbiter$i"
+    done
+
+    # Đợi các service khởi động lại
+    echo -e "${YELLOW}Đợi các service khởi động lại (5 giây)...${NC}"
+    sleep 5
+
+    # Kiểm tra kết nối với xác thực
+    echo -e "${YELLOW}Kiểm tra kết nối với xác thực...${NC}"
+    if ! mongosh "mongodb://$USERNAME:$PASSWORD@localhost:$BASE_PORT/admin" --eval "db.runCommand({ping: 1})" --quiet > /dev/null; then
+        echo -e "${RED}Lỗi: Không thể kết nối với xác thực${NC}"
+        exit 1
+    fi
 else
     # Nếu là SECONDARY, đợi PRIMARY khởi tạo xong
     echo -e "${YELLOW}Đợi PRIMARY khởi tạo replica set (10 giây)...${NC}"
     sleep 10
+
+    # Khởi động lại service với xác thực
+    echo -e "${YELLOW}Khởi động lại service với xác thực...${NC}"
+    systemctl restart mongod
+    for i in {1..2}; do
+        systemctl restart "mongod-arbiter$i"
+    done
+
+    # Đợi các service khởi động lại
+    echo -e "${YELLOW}Đợi các service khởi động lại (5 giây)...${NC}"
+    sleep 5
+
+    # Kiểm tra kết nối với xác thực
+    echo -e "${YELLOW}Kiểm tra kết nối với xác thực...${NC}"
+    if ! mongosh "mongodb://$USERNAME:$PASSWORD@localhost:$BASE_PORT/admin" --eval "db.runCommand({ping: 1})" --quiet > /dev/null; then
+        echo -e "${RED}Lỗi: Không thể kết nối với xác thực${NC}"
+        exit 1
+    fi
 fi
 
 # 6. Kiểm tra trạng thái cuối cùng
