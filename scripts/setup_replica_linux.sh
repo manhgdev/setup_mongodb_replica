@@ -838,33 +838,25 @@ EOL
     
     # Kiểm tra PRIMARY có đang hoạt động không
     echo -e "${YELLOW}14. Kiểm tra PRIMARY có đang hoạt động không...${NC}"
-    local rs_status=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "rs.status()" --quiet 2>&1)
-    
-    if echo "$rs_status" | grep -q "MongoNetworkError\|failed\|error"; then
-        echo -e "${RED}❌ Không thể kết nối tới PRIMARY. Lỗi:${NC}"
-        echo "$rs_status"
-        
-        # Kiểm tra chi tiết hơn
-        echo -e "${YELLOW}Thử kết nối trực tiếp tới PRIMARY:${NC}"
-        mongosh --host $PRIMARY_IP --port 27017 --eval "db.version()" --quiet
+    if ! mongosh --host "$PRIMARY_IP" --port 27017 --eval "rs.status()" > /dev/null 2>&1; then
+        echo -e "${RED}❌ Không thể kết nối tới PRIMARY${NC}"
         return 1
-    else
-        echo -e "${GREEN}✅ Kết nối tới PRIMARY thành công${NC}"
     fi
-    
-    # Kiểm tra xem PRIMARY có phải là PRIMARY không
-    if ! echo "$rs_status" | grep -q "\"stateStr\" : \"PRIMARY\""; then
+    echo -e "${GREEN}✅ Kết nối tới PRIMARY thành công${NC}"
+
+    # Kiểm tra trạng thái của PRIMARY
+    primary_status=$(mongosh --host "$PRIMARY_IP" --port 27017 --eval "rs.status().members[0].stateStr" --quiet)
+    if [ "$primary_status" != "PRIMARY" ]; then
         echo -e "${RED}❌ Node $PRIMARY_IP không phải là PRIMARY! Trạng thái hiện tại:${NC}"
-        echo "$rs_status" | grep "stateStr"
+        echo -e "      stateStr: '$primary_status',"
         echo -e "${YELLOW}Vui lòng chạy 'initialize_primary' trên node $PRIMARY_IP trước.${NC}"
         return 1
-    else
-        echo -e "${GREEN}✅ Node $PRIMARY_IP là PRIMARY${NC}"
     fi
+    echo -e "${GREEN}✅ Node $PRIMARY_IP đã là PRIMARY node${NC}"
     
     # Kiểm tra node có đã trong replica set không
     echo -e "${YELLOW}15. Kiểm tra node trong replica set...${NC}"
-    if echo "$rs_status" | grep -q "$SERVER_IP:27017"; then
+    if echo "$primary_status" | grep -q "$SERVER_IP:27017"; then
         echo -e "${YELLOW}Node đã tồn tại trong replica set, xóa và thêm lại...${NC}"
         local remove_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "
         try {
