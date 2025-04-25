@@ -701,294 +701,214 @@ setup_secondary() {
     PRIMARY_PASS=${PRIMARY_PASS:-$ADMIN_PASS}
     echo ""
     
-    # Thông tin đăng nhập cho SECONDARY
-    echo "Nhập thông tin đăng nhập admin cho SECONDARY:"
-    read -p "Tên người dùng [$ADMIN_USER]: " SEC_USER
-    SEC_USER=${SEC_USER:-$ADMIN_USER}
-    read -sp "Mật khẩu [$ADMIN_PASS]: " SEC_PASS
-    SEC_PASS=${SEC_PASS:-$ADMIN_PASS}
-    echo ""
-    
-    # Tạo keyfile ngay từ đầu
-    echo -e "${YELLOW}Lấy keyfile từ PRIMARY node...${NC}"
-    if ! create_keyfile "/etc/mongodb.keyfile" $PRIMARY_IP; then
-        echo -e "${RED}❌ Lỗi khi lấy keyfile từ PRIMARY.${NC}"
-        echo -e "${YELLOW}Thử tạo keyfile mới...${NC}"
-        openssl rand -base64 756 | sudo tee /etc/mongodb.keyfile > /dev/null
-        sudo chmod 400 /etc/mongodb.keyfile
-        sudo chown mongodb:mongodb /etc/mongodb.keyfile
-        echo -e "${YELLOW}⚠️ Đã tạo keyfile cục bộ. Cần sao chép thủ công sang PRIMARY.${NC}"
-    fi
+    # Tạo keyfile
+    echo -e "${YELLOW}1. Tạo keyfile...${NC}"
+    create_keyfile "/etc/mongodb.keyfile" $PRIMARY_IP
     
     # Xác nhận thông tin
-    echo -e "${YELLOW}=== THÔNG TIN ĐÃ NHẬP ===${NC}"
-    echo "Server IP: $SERVER_IP"
-    echo "PRIMARY IP: $PRIMARY_IP"
-    echo "PRIMARY User: $PRIMARY_USER"
-    echo "SECONDARY User: $SEC_USER"
-    echo "Keyfile: /etc/mongodb.keyfile"
-    echo -e "${YELLOW}=========================${NC}"
-    read -p "Xác nhận thông tin trên? (y/n): " CONFIRM
+    echo -e "\n${YELLOW}=== XÁC NHẬN THÔNG TIN ===${NC}"
+    echo -e "Server IP: ${GREEN}$SERVER_IP${NC}"
+    echo -e "PRIMARY IP: ${GREEN}$PRIMARY_IP${NC}"
+    echo -e "Tài khoản admin: ${GREEN}$PRIMARY_USER${NC}"
+    echo -e "Keyfile: ${GREEN}/etc/mongodb.keyfile${NC}"
+    read -p "Xác nhận thông tin trên là chính xác? (y/n): " CONFIRM
     if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
-        echo -e "${RED}Hủy thiết lập.${NC}"
+        echo -e "${RED}❌ Hủy thiết lập SECONDARY${NC}"
         return 1
     fi
+    
+    # Unmask dịch vụ nếu đang bị masked
+    echo -e "${YELLOW}2. Kiểm tra và unmask dịch vụ MongoDB...${NC}"
+    if sudo systemctl is-enabled mongod 2>&1 | grep -q "masked"; then
+        echo -e "${YELLOW}Dịch vụ đang bị masked, đang unmask...${NC}"
+        sudo systemctl unmask mongod
+        sudo systemctl daemon-reload
+    fi
+    
+    # Dừng MongoDB hiện tại nếu đang chạy
+    echo -e "${YELLOW}3. Dừng MongoDB hiện tại...${NC}"
+    sudo systemctl stop mongod
+    sleep 3
+    
+    # Tạo thư mục nếu chưa tồn tại
+    echo -e "${YELLOW}4. Tạo thư mục cần thiết...${NC}"
+    sudo mkdir -p /var/lib/mongodb /var/log/mongodb
+    sudo chown -R mongodb:mongodb /var/lib/mongodb /var/log/mongodb
+    
+    # Tạo cấu hình MongoDB với replica set
+    echo -e "${YELLOW}5. Tạo cấu hình MongoDB...${NC}"
+    sudo tee /etc/mongod.conf > /dev/null <<EOL
+# mongod.conf
+storage:
+  dbPath: /var/lib/mongodb
+  
+systemLog:
+  destination: file
+  logAppend: true
+  path: /var/log/mongodb/mongod.log
 
-    echo -e "${YELLOW}Khởi tạo MongoDB SECONDARY trên port $SECONDARY_PORT...${NC}"
+net:
+  port: 27017
+  bindIp: 0.0.0.0
 
-    # Dừng và xóa dữ liệu cũ
-    stop_mongodb
+replication:
+  replSetName: rs0
+
+security:
+  keyFile: /etc/mongodb.keyfile
+  authorization: enabled
+EOL
     
-    # Tạo thư mục dữ liệu và log
-    create_dirs
+    # Đảm bảo keyfile có quyền đúng
+    echo -e "${YELLOW}6. Đảm bảo keyfile có quyền đúng...${NC}"
+    sudo chmod 400 /etc/mongodb.keyfile
+    sudo chown mongodb:mongodb /etc/mongodb.keyfile
     
-    # Cấu hình tường lửa
-    configure_firewall
-    
-    # BƯỚC 1: Khởi động MongoDB không bảo mật và không replica set
-    echo -e "${YELLOW}BƯỚC 1: Khởi động MongoDB không bảo mật và không replica set...${NC}"
-    create_config false "no_repl"
-    create_systemd_service false "no_repl"
-    
-    if ! start_mongodb; then
-        echo -e "${RED}❌ Không thể khởi động MongoDB không bảo mật${NC}"
-        echo -e "${YELLOW}Đang thử khắc phục sự cố...${NC}"
-        if ! check_and_restart_mongodb false; then
-            echo -e "${RED}❌ Không thể khởi động MongoDB. Vui lòng chạy tùy chọn 'Troubleshoot' từ menu chính${NC}"
-            return 1
-        fi
-    fi
-    
-    # Kiểm tra kết nối
-    if ! verify_mongodb_connection false "" "" $SERVER_IP; then
-        echo -e "${RED}❌ Không thể kết nối đến MongoDB${NC}"
-        echo -e "${YELLOW}Thử kết nối với localhost...${NC}"
-        if ! verify_mongodb_connection false "" "" "localhost"; then
-            echo -e "${RED}❌ Không thể kết nối đến MongoDB ngay cả với localhost${NC}"
-            echo -e "${YELLOW}Đang thử khắc phục sự cố...${NC}"
-            check_and_restart_mongodb false
-            if ! verify_mongodb_connection false "" "" "localhost"; then
-                echo -e "${RED}❌ Vẫn không thể kết nối. Vui lòng chạy tùy chọn 'Troubleshoot' từ menu chính${NC}"
-                return 1
-            fi
-        fi
-    fi
-    
-    # BƯỚC 2: Tạo user admin
-    echo -e "${YELLOW}BƯỚC 2: Tạo user admin trên node SECONDARY...${NC}"
-    if ! create_admin_user $SEC_USER $SEC_PASS; then
-        echo -e "${RED}❌ Không thể tạo user admin trên SECONDARY${NC}"
-        echo -e "${YELLOW}Đang thử lại sau khi khởi động lại MongoDB...${NC}"
-        check_and_restart_mongodb false
-        if ! create_admin_user $SEC_USER $SEC_PASS; then
-            echo -e "${RED}❌ Vẫn không thể tạo user admin. Vui lòng kiểm tra logs.${NC}"
-            return 1
-        fi
-    fi
-    
-    # BƯỚC 3: Dừng MongoDB và cấu hình lại với replica set (nhưng chưa có bảo mật)
-    echo -e "${YELLOW}BƯỚC 3: Cấu hình lại với replica set...${NC}"
-    stop_mongodb
-    
-    create_config false
-    create_systemd_service false
-    
-    if ! start_mongodb; then
-        echo -e "${RED}❌ Không thể khởi động MongoDB với cấu hình replica set${NC}"
-        check_and_restart_mongodb false
-        if ! verify_mongodb_connection false "" "" "localhost"; then
-            echo -e "${RED}❌ Vẫn không thể khởi động MongoDB. Vui lòng kiểm tra logs.${NC}"
-            return 1
-        fi
-    fi
-    
-    # Kiểm tra kết nối
-    if ! verify_mongodb_connection false "" "" $SERVER_IP; then
-        echo -e "${RED}❌ Không thể kết nối đến MongoDB sau khi cấu hình replica set${NC}"
-        echo -e "${YELLOW}Thử kết nối với localhost...${NC}"
-        if ! verify_mongodb_connection false "" "" "localhost"; then
-            echo -e "${RED}❌ Không thể kết nối đến MongoDB ngay cả với localhost${NC}"
-            echo -e "${YELLOW}Đang thử khắc phục sự cố...${NC}"
-            check_and_restart_mongodb false
-            if ! verify_mongodb_connection false "" "" "localhost"; then
-                echo -e "${RED}❌ Vẫn không thể kết nối. Vui lòng chạy tùy chọn 'Troubleshoot' từ menu chính${NC}"
-                return 1
-            fi
-        fi
-    fi
-    
-    # BƯỚC 4: Kết nối tới PRIMARY và thêm node này
-    echo -e "${YELLOW}BƯỚC 4: Thêm node vào Replica Set...${NC}"
-    echo -e "${GREEN}Kết nối tới PRIMARY $PRIMARY_IP và thêm node $SERVER_IP:$SECONDARY_PORT${NC}"
-    
-    # Kiểm tra xem node đã tồn tại trong replica set chưa
-    if check_node_in_replicaset $PRIMARY_IP $SERVER_IP $SECONDARY_PORT $PRIMARY_USER $PRIMARY_PASS; then
-        echo -e "${YELLOW}Node đã tồn tại trong replica set. Đang thử cập nhật cấu hình...${NC}"
-        
-        # Xóa node khỏi replica set (nếu đang không healthy)
-        local remove_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "
-        try {
-            rs.remove('$SERVER_IP:$SECONDARY_PORT');
-            print('✅ Đã xóa node khỏi replica set');
-        } catch (err) {
-            print('❌ Lỗi: ' + err.message);
-        }" --quiet)
-        
-        echo "$remove_result"
-        echo -e "${YELLOW}Đợi 3 giây sau khi xóa node...${NC}"
-        sleep 3
-        
-        # Thêm lại node
-        local add_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "
-        try {
-            rs.add('$SERVER_IP:$SECONDARY_PORT');
-            print('✅ Đã thêm lại node vào replica set');
-        } catch (err) {
-            print('❌ Lỗi: ' + err.message);
-        }" --quiet)
-        
-        echo "$add_result"
-    else
-        # Thêm node mới
-        local add_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "
-        try {
-            rs.add('$SERVER_IP:$SECONDARY_PORT');
-            print('✅ Đã thêm node vào replica set');
-        } catch (err) {
-            print('❌ Lỗi: ' + err.message);
-        }" --quiet)
-        
-        echo "$add_result"
-    fi
-    
-    # Kiểm tra kết quả
-    if [[ "$add_result" == *"❌ Lỗi"* ]]; then
-        echo -e "${RED}❌ Không thể thêm node vào Replica Set${NC}"
-        echo -e "${YELLOW}Kiểm tra kết nối với PRIMARY...${NC}"
-        if ! ping -c 1 -W 2 $PRIMARY_IP > /dev/null; then
-            echo -e "${RED}❌ Không thể ping tới PRIMARY server $PRIMARY_IP${NC}"
-            echo -e "${YELLOW}Kiểm tra kết nối mạng và firewall.${NC}"
-        fi
-        echo -e "${YELLOW}Kiểm tra nếu PRIMARY đang chạy...${NC}"
-        nc -z -v -w 5 $PRIMARY_IP 27017 2>/dev/null
-        if [ $? -ne 0 ]; then
-            echo -e "${RED}❌ Không thể kết nối tới PRIMARY server $PRIMARY_IP:27017${NC}"
-        fi
-        
-        # Hỏi người dùng có muốn tiếp tục
-        read -p "Thêm node thất bại. Bạn có muốn tiếp tục bước tiếp theo? (y/n): " CONTINUE
-        if [[ ! "$CONTINUE" =~ ^[Yy]$ ]]; then
-            return 1
-        fi
-    else
-        echo -e "${GREEN}✅ Đã thêm node vào replica set${NC}"
-    fi
-    
-    echo -e "${YELLOW}Đợi node được thêm vào...${NC}"
+    # Khởi động MongoDB
+    echo -e "${YELLOW}7. Khởi động MongoDB...${NC}"
+    sudo systemctl daemon-reload
+    sudo systemctl enable mongod
+    sudo systemctl start mongod
     sleep 10
     
-    # Kiểm tra trạng thái node sau khi thêm
-    echo -e "${YELLOW}Kiểm tra trạng thái node sau khi thêm...${NC}"
-    local status=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
+    # Kiểm tra MongoDB có đang chạy không
+    if ! sudo systemctl is-active --quiet mongod; then
+        echo -e "${RED}❌ MongoDB không thể khởi động. Kiểm tra lỗi:${NC}"
+        sudo systemctl status mongod --no-pager
+        sudo tail -n 20 /var/log/mongodb/mongod.log
+        return 1
+    else
+        echo -e "${GREEN}✅ MongoDB đã khởi động thành công${NC}"
+    fi
     
-    # Kiểm tra xem node có UNREACHABLE hoặc không healthy không
-    if echo "$status" | grep -q "$SERVER_IP:$SECONDARY_PORT.*UNREACHABLE" || echo "$status" | grep -q "$SERVER_IP:$SECONDARY_PORT.*SECONDARY.*health.*false"; then
-        echo -e "${RED}❌ Node $SERVER_IP:$SECONDARY_PORT không reachable hoặc không healthy${NC}"
-        echo -e "${YELLOW}Đang kiểm tra và khắc phục...${NC}"
+    # Kiểm tra kết nối với PRIMARY
+    echo -e "${YELLOW}8. Kiểm tra kết nối với PRIMARY...${NC}"
+    if ! ping -c 1 -W 2 $PRIMARY_IP > /dev/null; then
+        echo -e "${RED}❌ Không thể ping tới PRIMARY. Kiểm tra kết nối mạng.${NC}"
+        return 1
+    fi
+    
+    if ! nc -z -v -w 5 $PRIMARY_IP 27017 2>/dev/null; then
+        echo -e "${RED}❌ Không thể kết nối tới PRIMARY:27017. Kiểm tra firewall trên PRIMARY.${NC}"
+        return 1
+    fi
+    
+    # Kiểm tra PRIMARY có đang sống không
+    echo -e "${YELLOW}9. Kiểm tra PRIMARY có đang hoạt động không...${NC}"
+    local rs_status=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "rs.status()" --quiet 2>&1)
+    
+    if echo "$rs_status" | grep -q "MongoNetworkError\|failed\|error"; then
+        echo -e "${RED}❌ Không thể kết nối tới PRIMARY. Lỗi:${NC}"
+        echo "$rs_status"
+        return 1
+    else
+        echo -e "${GREEN}✅ Kết nối tới PRIMARY thành công${NC}"
+    fi
+    
+    # Kiểm tra node có đã trong replica set không
+    echo -e "${YELLOW}10. Kiểm tra node trong replica set...${NC}"
+    if echo "$rs_status" | grep -q "$SERVER_IP:27017"; then
+        echo -e "${YELLOW}Node đã tồn tại trong replica set, xóa và thêm lại...${NC}"
+        local remove_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "
+        try {
+            rs.remove('$SERVER_IP:27017');
+            print('✅ Đã xóa node khỏi replica set');
+        } catch (err) {
+            print('⚠️ Lỗi khi xóa: ' + err.message);
+        }
+        " --quiet)
+        echo "$remove_result"
+        sleep 5
+    fi
+    
+    # Thêm node vào replica set với priority thấp
+    echo -e "${YELLOW}11. Thêm node vào replica set...${NC}"
+    local add_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "
+    try {
+        rs.add({host:'$SERVER_IP:27017', priority:0.5});
+        print('✅ Đã thêm node vào replica set với priority 0.5');
+    } catch (err) {
+        print('❌ Lỗi khi thêm: ' + err.message);
+    }
+    " --quiet)
+    echo "$add_result"
+    
+    if echo "$add_result" | grep -q "❌"; then
+        echo -e "${RED}❌ Không thể thêm node vào replica set.${NC}"
+        return 1
+    fi
+    
+    # Đợi node đồng bộ
+    echo -e "${YELLOW}12. Đợi node đồng bộ (60 giây)...${NC}"
+    echo -e "Đây là thời gian cần thiết để node đồng bộ dữ liệu với PRIMARY."
+    local seconds=60
+    while [ $seconds -gt 0 ]; do
+        echo -ne "${YELLOW}Còn lại: ${seconds}s${NC}\r"
+        sleep 5
+        seconds=$((seconds-5))
         
-        # Kiểm tra và khắc phục lỗi
-        if ! check_and_restart_mongodb false; then
-            echo -e "${RED}❌ Không thể khắc phục lỗi node không reachable/healthy${NC}"
-            echo -e "${YELLOW}Vui lòng kiểm tra thủ công:${NC}"
-            echo "1. Kiểm tra tường lửa: sudo ufw status"
-            echo "2. Kiểm tra log MongoDB: sudo tail -n 50 /var/log/mongodb/mongod_${SECONDARY_PORT}.log"
-            echo "3. Kiểm tra kết nối mạng: ping $SERVER_IP"
-            echo "4. Kiểm tra port: nc -zv $SERVER_IP $SECONDARY_PORT"
-            echo "5. Kiểm tra cấu hình MongoDB: cat /etc/mongod_${SECONDARY_PORT}.conf"
+        # Kiểm tra nhanh sau 30 giây để xem node đã lên SECONDARY chưa
+        if [ $seconds -eq 30 ]; then
+            local current_status=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "
+            rs.status().members.forEach(function(m) {
+                if(m.name == '$SERVER_IP:27017') {
+                    print('Trạng thái: ' + m.stateStr);
+                }
+            })
+            " --quiet)
+            echo -e "\n${YELLOW}Trạng thái hiện tại: $current_status${NC}"
             
-            # Hỏi người dùng có muốn tiếp tục không
-            read -p "Bạn có muốn tiếp tục thiết lập bảo mật không? (y/n): " CONTINUE
-            if [[ ! "$CONTINUE" =~ ^[Yy]$ ]]; then
-                return 1
+            if echo "$current_status" | grep -q "SECONDARY"; then
+                echo -e "${GREEN}✅ Node đã lên SECONDARY!${NC}"
+                seconds=0
             fi
-        else
-            echo -e "${GREEN}✅ Đã khắc phục lỗi node không reachable/healthy${NC}"
         fi
-    fi
+    done
     
-    # BƯỚC 5: Tạo keyfile và cấu hình bảo mật
-    echo -e "${YELLOW}BƯỚC 5: Áp dụng bảo mật với keyfile...${NC}"
+    # Kiểm tra trạng thái cuối cùng
+    echo -e "${YELLOW}13. Kiểm tra trạng thái cuối cùng...${NC}"
+    local final_status=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "
+    var found = false;
+    rs.status().members.forEach(function(m) {
+        if(m.name == '$SERVER_IP:27017') {
+            found = true;
+            print('Trạng thái: ' + m.stateStr);
+        }
+    });
+    if(!found) print('❌ Node không tìm thấy trong replica set');
+    " --quiet)
+    echo "$final_status"
     
-    # Kiểm tra và đảm bảo quyền keyfile đúng
-    echo -e "${YELLOW}Kiểm tra và sửa quyền keyfile...${NC}"
-    if [ -f "/etc/mongodb.keyfile" ]; then
-        sudo chmod 400 /etc/mongodb.keyfile
-        sudo chown mongodb:mongodb /etc/mongodb.keyfile
-        ls -la /etc/mongodb.keyfile
-    else
-        echo -e "${RED}❌ Không tìm thấy keyfile sau khi tạo/copy!${NC}"
-        echo -e "${YELLOW}Đang tạo keyfile mới cục bộ...${NC}"
-        openssl rand -base64 756 | sudo tee /etc/mongodb.keyfile > /dev/null
-        sudo chmod 400 /etc/mongodb.keyfile 
-        sudo chown mongodb:mongodb /etc/mongodb.keyfile
-        ls -la /etc/mongodb.keyfile
-        echo -e "${YELLOW}⚠️ Đã tạo keyfile cục bộ. Cần sao chép thủ công sang PRIMARY.${NC}"
-    fi
-    
-    # Áp dụng keyfile và khởi động với bảo mật
-    echo -e "${YELLOW}Áp dụng keyfile và khởi động MongoDB với bảo mật...${NC}"
-    if ! apply_keyfile "/etc/mongodb.keyfile" $PRIMARY_IP; then
-        echo -e "${RED}❌ Không thể áp dụng keyfile và khởi động MongoDB với bảo mật.${NC}"
-        echo -e "${YELLOW}Thử khắc phục...${NC}"
+    if echo "$final_status" | grep -q "SECONDARY"; then
+        echo -e "${GREEN}✅ Node đã lên SECONDARY thành công!${NC}"
         
-        # Thử khắc phục lỗi
-        fix_keyfile_and_restart $PRIMARY_IP
+        # Tăng priority lên 1
+        echo -e "${YELLOW}14. Tăng priority lên 1...${NC}"
+        local update_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "
+        var conf = rs.conf();
+        for(var i = 0; i < conf.members.length; i++) {
+            if(conf.members[i].host == '$SERVER_IP:27017') {
+                conf.members[i].priority = 1;
+                print('✅ Đã cập nhật priority thành 1');
+            }
+        }
+        rs.reconfig(conf);
+        " --quiet)
+        echo "$update_result"
         
-        # Kiểm tra lại
-        if ! verify_mongodb_connection true $SEC_USER $SEC_PASS "localhost"; then
-            echo -e "${RED}❌ Vẫn không thể khởi động MongoDB với bảo mật.${NC}"
-            echo -e "${YELLOW}Kiểm tra chi tiết MongoDB...${NC}"
-            check_mongodb_status
-            
-            # Hỏi có muốn tiếp tục với MongoDB không bảo mật
-            read -p "Bạn có muốn tiếp tục với MongoDB không bảo mật? (y/n): " CONTINUE_NO_SECURITY
-            if [[ "$CONTINUE_NO_SECURITY" =~ ^[Yy]$ ]]; then
-                echo -e "${YELLOW}Khởi động MongoDB không bảo mật...${NC}"
-                create_systemd_service false
-                if ! start_mongodb; then
-                    echo -e "${RED}❌ MongoDB không thể khởi động được.${NC}"
-                    return 1
-                else
-                    echo -e "${YELLOW}⚠️ MongoDB đã khởi động nhưng KHÔNG có bảo mật!${NC}"
-                    echo -e "${YELLOW}⚠️ Replica set có thể không hoạt động đúng.${NC}"
-                fi
-            else
-                echo -e "${RED}❌ Hủy thiết lập.${NC}"
-                return 1
-            fi
-        else
-            echo -e "${GREEN}✅ Đã sửa lỗi keyfile và MongoDB đã khởi động với bảo mật.${NC}"
-        fi
+        echo -e "${GREEN}====================================${NC}"
+        echo -e "${GREEN}✅ THIẾT LẬP SECONDARY THÀNH CÔNG${NC}"
+        echo -e "${GREEN}====================================${NC}"
+        return 0
     else
-        echo -e "${GREEN}✅ MongoDB đã khởi động với bảo mật thành công.${NC}"
-    fi
-    
-    # Kiểm tra trạng thái replica set
-    echo -e "${YELLOW}Kiểm tra trạng thái Replica Set...${NC}"
-    local status=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
-    
-    # Kiểm tra xem node mới có trong rs.status() không
-    if echo "$status" | grep -q "$SERVER_IP:$SECONDARY_PORT"; then
-        echo -e "\n${GREEN}=== THIẾT LẬP MONGODB SECONDARY HOÀN TẤT ===${NC}"
-        echo -e "${GREEN}Lệnh kết nối:${NC}"
-        echo "mongosh --host $SERVER_IP --port $SECONDARY_PORT -u $SEC_USER -p $SEC_PASS --authenticationDatabase admin"
+        echo -e "${RED}❌ Node chưa lên SECONDARY sau khi thiết lập${NC}"
+        echo -e "${YELLOW}Kiểm tra log MongoDB:${NC}"
+        sudo tail -n 30 /var/log/mongodb/mongod.log
         
-        # Hiển thị trạng thái chi tiết của node
-        echo -e "${YELLOW}Trạng thái chi tiết của node $SERVER_IP:$SECONDARY_PORT:${NC}"
-        echo "$status" | grep -A 10 "$SERVER_IP:$SECONDARY_PORT"
-    else
-        echo -e "${RED}❌ Node không xuất hiện trong Replica Set${NC}"
-        echo "$status"
+        echo -e "${YELLOW}Gợi ý: ${NC}"
+        echo "1. Kiểm tra port 27017 đã mở giữa hai server chưa"
+        echo "2. Kiểm tra keyfile có giống nhau giữa các node không"
+        echo "3. Xem log để tìm chi tiết lỗi"
         return 1
     fi
 }
