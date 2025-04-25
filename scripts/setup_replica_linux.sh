@@ -19,8 +19,8 @@ stop_mongodb() {
     
     # Kill any processes using MongoDB port
     echo "Killing processes on port 27017..."
-    lsof -ti:27017 | xargs kill -9 2>/dev/null || true
-    fuser -k 27017/tcp 2>/dev/null || true
+    sudo lsof -ti:27017 | xargs sudo kill -9 2>/dev/null || true
+    sudo fuser -k 27017/tcp 2>/dev/null || true
     
     # Wait for port to be free
     sleep 3
@@ -34,9 +34,15 @@ create_dirs() {
     local DB_PATH="/var/lib/mongodb_${PORT}"
     local LOG_PATH="/var/log/mongodb"
     
-    mkdir -p $DB_PATH $LOG_PATH
-    chown -R mongodb:mongodb $DB_PATH $LOG_PATH
-    chmod 755 $DB_PATH
+    echo "Creating MongoDB directories..."
+    sudo mkdir -p $DB_PATH $LOG_PATH
+    sudo chown -R mongodb:mongodb $DB_PATH $LOG_PATH
+    sudo chmod 755 $DB_PATH
+    
+    # Remove lock file if exists
+    sudo rm -rf $DB_PATH/mongod.lock 2>/dev/null || true
+    
+    echo -e "${GREEN}✅ MongoDB directories prepared${NC}"
 }
 
 # Create MongoDB config
@@ -46,8 +52,9 @@ create_config() {
     
     local CONFIG_FILE="/etc/mongod_${PORT}.conf"
     
+    echo "Creating MongoDB configuration file..."
     # Create config file
-    cat > $CONFIG_FILE << EOF
+    sudo cat > $CONFIG_FILE << EOF
 # mongod.conf
 storage:
   dbPath: /var/lib/mongodb_${PORT}
@@ -73,7 +80,7 @@ EOF
 
     # Chỉ thêm security nếu WITH_SECURITY = true
     if [ "$WITH_SECURITY" = "true" ]; then
-        cat >> $CONFIG_FILE << EOF
+        sudo cat >> $CONFIG_FILE << EOF
 # security
 security:
   keyFile: /etc/mongodb.keyfile
@@ -82,22 +89,22 @@ EOF
     fi
 
     # Phần replication luôn được thêm
-    cat >> $CONFIG_FILE << EOF
+    sudo cat >> $CONFIG_FILE << EOF
 # replication
 replication:
   replSetName: rs0
 EOF
     
     # Set permissions
-    chown mongodb:mongodb $CONFIG_FILE
-    chmod 644 $CONFIG_FILE
+    sudo chown mongodb:mongodb $CONFIG_FILE
+    sudo chmod 644 $CONFIG_FILE
     
     echo -e "${GREEN}✅ Config file created: $CONFIG_FILE${NC}"
 }
 
 # Create keyfile
 create_keyfile() {
-  echo -e "${GREEN}Tạo keyfile xác thực...${NC}"
+  echo -e "${YELLOW}Tạo keyfile xác thực...${NC}"
   local keyfile=${1:-"/etc/mongodb.keyfile"}
   
   if [ ! -f "$keyfile" ]; then
@@ -118,7 +125,7 @@ create_admin_user() {
     local USERNAME=$1
     local PASSWORD=$2
     
-    echo "Creating admin user..."
+    echo -e "${YELLOW}Tạo người dùng admin...${NC}"
     local result=$(mongosh --port $PORT --eval "
     db.getSiblingDB('admin').createUser({
         user: '$USERNAME',
@@ -130,21 +137,28 @@ create_admin_user() {
     })")
     
     if [ $? -ne 0 ]; then
-        echo -e "${RED}❌ Failed to create admin user${NC}"
-        echo "Error: $result"
+        echo -e "${RED}❌ Không thể tạo người dùng admin${NC}"
+        echo "Lỗi: $result"
         return 1
     fi
-    echo -e "${GREEN}✅ Admin user created successfully${NC}"
+    echo -e "${GREEN}✅ Đã tạo người dùng admin thành công${NC}"
 }
 
 # Create systemd service
 create_systemd_service() {
     local PORT=27017
+    local WITH_SECURITY=$1
     local SERVICE_NAME="mongod_${PORT}"
     local SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
     local CONFIG_FILE="/etc/mongod_${PORT}.conf"
     
-    cat > $SERVICE_FILE <<EOL
+    echo -e "${YELLOW}Tạo dịch vụ systemd...${NC}"
+    
+    # Cập nhật cấu hình với tham số security nếu cần
+    create_config $WITH_SECURITY
+    
+    # Tạo file dịch vụ
+    sudo cat > $SERVICE_FILE <<EOL
 [Unit]
 Description=MongoDB Database Server (Port ${PORT})
 After=network.target
@@ -154,6 +168,8 @@ User=mongodb
 Group=mongodb
 ExecStart=/usr/bin/mongod --config ${CONFIG_FILE}
 ExecStop=/usr/bin/mongod --config ${CONFIG_FILE} --shutdown
+Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
@@ -161,27 +177,79 @@ EOL
 
     sudo systemctl daemon-reload
     sudo systemctl enable $SERVICE_NAME
+    
+    echo -e "${GREEN}✅ Dịch vụ ${SERVICE_NAME} đã được tạo${NC}"
+}
+
+# Start MongoDB and check status
+start_mongodb() {
+    local PORT=27017
+    local SERVICE_NAME="mongod_${PORT}"
+    
+    echo -e "${YELLOW}Khởi động MongoDB...${NC}"
+    
+    # Kiểm tra và dừng MongoDB nếu đang chạy
+    if sudo systemctl is-active --quiet $SERVICE_NAME; then
+        sudo systemctl stop $SERVICE_NAME
+        sleep 2
+    fi
+    
+    # Khởi động MongoDB
     sudo systemctl start $SERVICE_NAME
     
+    # Kiểm tra trạng thái
+    sleep 5
     if sudo systemctl is-active --quiet $SERVICE_NAME; then
-        echo -e "${GREEN}✅ Service ${SERVICE_NAME} created and started successfully${NC}"
-        echo "Service will auto-start on system boot"
+        echo -e "${GREEN}✓ MongoDB đã khởi động thành công${NC}"
+        return 0
     else
-        echo -e "${RED}❌ Failed to start service ${SERVICE_NAME}${NC}"
+        echo -e "${RED}✗ Không thể khởi động MongoDB${NC}"
+        echo "Trạng thái dịch vụ:"
         sudo systemctl status $SERVICE_NAME
+        echo "Kiểm tra log:"
+        sudo tail -n 20 /var/log/mongodb/mongod_${PORT}.log
         return 1
     fi
 }
 
 # Configure firewall
 configure_firewall() {
-    echo "Configuring firewall..."
+    echo -e "${YELLOW}Cấu hình tường lửa...${NC}"
     if command -v ufw &> /dev/null; then
-        echo "UFW is installed, configuring ports..."
+        echo "UFW đã được cài đặt, cấu hình port 27017..."
         sudo ufw allow 27017/tcp
-        echo -e "${GREEN}✅ Firewall configured successfully${NC}"
+        echo -e "${GREEN}✅ Tường lửa đã được cấu hình${NC}"
     else
-        echo "UFW is not installed, skipping firewall configuration"
+        echo "UFW chưa được cài đặt, bỏ qua cấu hình tường lửa"
+    fi
+}
+
+# Verify MongoDB connection
+verify_mongodb_connection() {
+    local PORT=27017
+    local AUTH=$1
+    local USERNAME=$2
+    local PASSWORD=$3
+    
+    echo -e "${YELLOW}Kiểm tra kết nối MongoDB...${NC}"
+    
+    local cmd="db.version()"
+    local auth_params=""
+    
+    if [ "$AUTH" = "true" ]; then
+        auth_params="--authenticationDatabase admin -u $USERNAME -p $PASSWORD"
+        cmd="rs.status()"
+    fi
+    
+    local result=$(mongosh --port $PORT $auth_params --eval "$cmd" --quiet 2>&1)
+    
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}✅ Đã kết nối thành công tới MongoDB${NC}"
+        return 0
+    else
+        echo -e "${RED}❌ Không thể kết nối tới MongoDB${NC}"
+        echo "Lỗi: $result"
+        return 1
     fi
 }
 
@@ -190,61 +258,34 @@ setup_primary() {
     local SERVER_IP=$1
     local PRIMARY_PORT=27017
 
-    echo -e "${GREEN}Thiết lập MongoDB Replica Set trên port $PRIMARY_PORT${NC}"
+    echo -e "${GREEN}=== THIẾT LẬP MONGODB PRIMARY NODE ===${NC}"
+    echo -e "${YELLOW}Khởi tạo MongoDB PRIMARY trên port $PRIMARY_PORT...${NC}"
 
+    # Dừng và xóa dữ liệu cũ
     stop_mongodb
+    
+    # Tạo thư mục dữ liệu và log
     create_dirs
     
-    # Configure firewall
+    # Cấu hình tường lửa
     configure_firewall
     
-    # Create initial config WITHOUT security
+    # Tạo cấu hình không có bảo mật
     create_config false
     
-    # Start MongoDB
-    echo "Starting MongoDB node..."
-    # Khởi động MongoDB sử dụng systemctl
-    if systemctl is-active --quiet mongod_27017; then
-      sudo systemctl stop mongod_27017
-      sleep 2
-    fi
-    
-    # Đảm bảo thư mục và quyền
-    sudo mkdir -p /var/lib/mongodb_27017 /var/log/mongodb 2>/dev/null
-    sudo chown -R mongodb:mongodb /var/lib/mongodb_27017 /var/log/mongodb
-    sudo chmod 755 /var/lib/mongodb_27017
-    sudo rm -rf /var/lib/mongodb_27017/mongod.lock 2>/dev/null || true
-    
-    # Tạo service trước khi khởi động
-    create_systemd_service
-    
-    # Khởi động MongoDB
-    sudo systemctl daemon-reload
-    sudo systemctl enable mongod_27017
-    sudo systemctl start mongod_27017
-    
-    # Kiểm tra kết quả
-    sleep 5
-    if sudo systemctl is-active mongod_27017 &>/dev/null; then
-      echo -e "${GREEN}✓ MongoDB đã khởi động thành công${NC}"
-    else
-      echo -e "${RED}✗ Không thể khởi động MongoDB${NC}"
-      sudo systemctl status mongod_27017
-      echo "Kiểm tra log:"
-      sudo tail -n 20 /var/log/mongodb/mongod_27017.log
-      return 1
-    fi
-    
-    # Check if MongoDB is running
-    if ! mongosh --port $PRIMARY_PORT --eval "db.version()" --quiet &>/dev/null; then
-        echo -e "${RED}❌ Failed to start MongoDB node${NC}"
-        echo "Last 50 lines of log:"
-        tail -n 50 /var/log/mongodb/mongod_27017.log
+    # Tạo và khởi động dịch vụ
+    create_systemd_service false
+    if ! start_mongodb; then
         return 1
     fi
     
-    # Initialize replica set using private IP
-    echo "Initializing replica set..."
+    # Kiểm tra kết nối
+    if ! verify_mongodb_connection false; then
+        return 1
+    fi
+    
+    # Khởi tạo replica set
+    echo -e "${YELLOW}Khởi tạo Replica Set...${NC}"
     echo -e "${GREEN}Cấu hình node $SERVER_IP:$PRIMARY_PORT${NC}"
     
     local init_result=$(mongosh --port $PRIMARY_PORT --eval "
@@ -256,57 +297,48 @@ setup_primary() {
     })")
     
     if [ $? -ne 0 ]; then
-        echo -e "${RED}❌ Failed to initialize replica set${NC}"
-        echo "Error: $init_result"
+        echo -e "${RED}❌ Không thể khởi tạo Replica Set${NC}"
+        echo "Lỗi: $init_result"
         return 1
     fi
     
-    echo "Waiting for PRIMARY election..."
+    echo -e "${YELLOW}Đợi bầu chọn PRIMARY...${NC}"
     sleep 10
     
-    # Check replica set status
-    echo "Checking replica set status..."
+    # Kiểm tra trạng thái replica set
+    echo -e "${YELLOW}Kiểm tra trạng thái replica set...${NC}"
     local status=$(mongosh --port $PRIMARY_PORT --eval "rs.status()" --quiet)
     local primary_state=$(echo "$status" | grep -A 5 "stateStr" | grep "PRIMARY")
     
     if [ -n "$primary_state" ]; then
-        echo -e "\n${GREEN}✅ MongoDB Replica Set setup completed successfully.${NC}"
-        echo "Primary node: $SERVER_IP:$PRIMARY_PORT"
+        echo -e "${GREEN}✅ Replica Set đã được khởi tạo thành công${NC}"
+        echo "Node PRIMARY: $SERVER_IP:$PRIMARY_PORT"
         
-        # Create admin user with default values
+        # Tạo người dùng admin
         create_admin_user $ADMIN_USER $ADMIN_PASS || return 1
         
-        # Create keyfile and update config WITH security
+        # Tạo keyfile
         create_keyfile "/etc/mongodb.keyfile"
-        create_config true
         
-        # Create systemd service
-        echo "Creating systemd service..."
-        create_systemd_service || return 1
+        # Bật bảo mật và khởi động lại
+        echo -e "${YELLOW}Khởi động lại với bảo mật...${NC}"
+        create_systemd_service true
+        if ! start_mongodb; then
+            return 1
+        fi
         
-        # Restart service with security
-        echo "Restarting service with security..."
-        sudo systemctl restart mongod_27017
-        sleep 5
-        
-        # Verify connection with auth
-        echo "Verifying connection with authentication..."
-        local auth_result=$(mongosh --port $PRIMARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet 2>&1)
-        
-        if [ $? -eq 0 ]; then
-            echo -e "${GREEN}✅ Authentication verified successfully${NC}"
-            echo -e "\n${GREEN}Connection Command:${NC}"
+        # Xác minh kết nối với xác thực
+        echo -e "${YELLOW}Xác minh kết nối với xác thực...${NC}"
+        if verify_mongodb_connection true $ADMIN_USER $ADMIN_PASS; then
+            echo -e "\n${GREEN}=== THIẾT LẬP MONGODB PRIMARY HOÀN TẤT ===${NC}"
+            echo -e "${GREEN}Lệnh kết nối:${NC}"
             echo "mongosh --host $SERVER_IP --port $PRIMARY_PORT -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin"
         else
-            echo -e "${RED}❌ Authentication verification failed${NC}"
-            echo "Error details:"
-            echo "$auth_result"
-            sudo systemctl status mongod_27017
             return 1
         fi
     else
-        echo -e "${RED}❌ Replica set initialization failed - Node not promoted to PRIMARY${NC}"
-        echo "Current status:"
+        echo -e "${RED}❌ Khởi tạo Replica Set thất bại - Node không được bầu làm PRIMARY${NC}"
+        echo "Trạng thái hiện tại:"
         echo "$status"
         return 1
     fi
@@ -319,70 +351,43 @@ setup_secondary() {
     local SECONDARY_PORT=27017
 
     if [ -z "$PRIMARY_IP" ]; then
-        read -p "Enter PRIMARY server IP: " PRIMARY_IP
+        read -p "Nhập địa chỉ IP của PRIMARY: " PRIMARY_IP
     fi
 
-    echo -e "${GREEN}Thiết lập MongoDB SECONDARY node trên port $SECONDARY_PORT${NC}"
+    echo -e "${GREEN}=== THIẾT LẬP MONGODB SECONDARY NODE ===${NC}"
+    echo -e "${YELLOW}Khởi tạo MongoDB SECONDARY trên port $SECONDARY_PORT...${NC}"
 
+    # Dừng và xóa dữ liệu cũ
     stop_mongodb
+    
+    # Tạo thư mục dữ liệu và log
     create_dirs
     
-    # Configure firewall
+    # Cấu hình tường lửa
     configure_firewall
     
-    # Create initial config WITHOUT security first
+    # Tạo cấu hình không có bảo mật
     create_config false
     
-    # Start MongoDB
-    echo "Starting MongoDB node..."
-    # Khởi động MongoDB sử dụng systemctl
-    if systemctl is-active --quiet mongod_27017; then
-      sudo systemctl stop mongod_27017
-      sleep 2
-    fi
-    
-    # Đảm bảo thư mục và quyền
-    sudo mkdir -p /var/lib/mongodb_27017 /var/log/mongodb 2>/dev/null
-    sudo chown -R mongodb:mongodb /var/lib/mongodb_27017 /var/log/mongodb
-    sudo chmod 755 /var/lib/mongodb_27017
-    sudo rm -rf /var/lib/mongodb_27017/mongod.lock 2>/dev/null || true
-    
-    # Tạo service trước khi khởi động
-    create_systemd_service
-    
-    # Khởi động MongoDB
-    sudo systemctl daemon-reload
-    sudo systemctl enable mongod_27017
-    sudo systemctl start mongod_27017
-    
-    # Kiểm tra kết quả
-    sleep 5
-    if sudo systemctl is-active mongod_27017 &>/dev/null; then
-      echo -e "${GREEN}✓ MongoDB đã khởi động thành công${NC}"
-    else
-      echo -e "${RED}✗ Không thể khởi động MongoDB${NC}"
-      sudo systemctl status mongod_27017
-      echo "Kiểm tra log:"
-      sudo tail -n 20 /var/log/mongodb/mongod_27017.log
-      return 1
-    fi
-    
-    # Check if MongoDB is running
-    if ! mongosh --port $SECONDARY_PORT --eval "db.version()" --quiet &>/dev/null; then
-        echo -e "${RED}❌ Failed to start MongoDB node${NC}"
-        echo "Last 50 lines of log:"
-        tail -n 50 /var/log/mongodb/mongod_27017.log
+    # Tạo và khởi động dịch vụ
+    create_systemd_service false
+    if ! start_mongodb; then
         return 1
     fi
     
-    # Connect to Primary and add this node
-    echo "Adding node to replica set..."
+    # Kiểm tra kết nối
+    if ! verify_mongodb_connection false; then
+        return 1
+    fi
+    
+    # Kết nối tới PRIMARY và thêm node này
+    echo -e "${YELLOW}Thêm node vào Replica Set...${NC}"
     echo -e "${GREEN}Kết nối tới PRIMARY $PRIMARY_IP và thêm node $SERVER_IP:$SECONDARY_PORT${NC}"
     
-    echo "Please enter PRIMARY server credentials:"
-    read -p "Username [$ADMIN_USER]: " PRIMARY_USER
+    echo "Nhập thông tin đăng nhập PRIMARY:"
+    read -p "Tên người dùng [$ADMIN_USER]: " PRIMARY_USER
     PRIMARY_USER=${PRIMARY_USER:-$ADMIN_USER}
-    read -sp "Password [$ADMIN_PASS]: " PRIMARY_PASS
+    read -sp "Mật khẩu [$ADMIN_PASS]: " PRIMARY_PASS
     PRIMARY_PASS=${PRIMARY_PASS:-$ADMIN_PASS}
     echo ""
     
@@ -390,34 +395,38 @@ setup_secondary() {
     rs.add('$SERVER_IP:$SECONDARY_PORT')")
     
     if [ $? -ne 0 ]; then
-        echo -e "${RED}❌ Failed to add node to replica set${NC}"
-        echo "Error: $add_result"
+        echo -e "${RED}❌ Không thể thêm node vào Replica Set${NC}"
+        echo "Lỗi: $add_result"
         return 1
     fi
     
-    echo "Waiting for node to be added..."
+    echo -e "${YELLOW}Đợi node được thêm vào...${NC}"
     sleep 10
     
-    # Create keyfile and update config WITH security
+    # Tạo keyfile
     create_keyfile "/etc/mongodb.keyfile"
-    create_config true
     
-    # Create systemd service
-    echo "Creating systemd service..."
-    create_systemd_service || return 1
+    # Bật bảo mật và khởi động lại
+    echo -e "${YELLOW}Khởi động lại với bảo mật...${NC}"
+    create_systemd_service true
+    if ! start_mongodb; then
+        return 1
+    fi
     
-    # Restart service with security
-    echo "Restarting service with security..."
-    sudo systemctl restart mongod_27017
-    sleep 5
-    
-    # Check replica set status
-    echo "Checking replica set status..."
+    # Kiểm tra trạng thái replica set
+    echo -e "${YELLOW}Kiểm tra trạng thái Replica Set...${NC}"
     local status=$(mongosh --host $PRIMARY_IP --port 27017 -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
     
-    echo -e "\n${GREEN}✅ MongoDB SECONDARY node setup completed.${NC}"
-    echo "Connection Command:"
-    echo "mongosh --host $SERVER_IP --port $SECONDARY_PORT -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin"
+    # Kiểm tra xem node mới có trong rs.status() không
+    if echo "$status" | grep -q "$SERVER_IP:$SECONDARY_PORT"; then
+        echo -e "\n${GREEN}=== THIẾT LẬP MONGODB SECONDARY HOÀN TẤT ===${NC}"
+        echo -e "${GREEN}Lệnh kết nối:${NC}"
+        echo "mongosh --host $SERVER_IP --port $SECONDARY_PORT -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase admin"
+    else
+        echo -e "${RED}❌ Node không xuất hiện trong Replica Set${NC}"
+        echo "$status"
+        return 1
+    fi
 }
 
 # Main function
