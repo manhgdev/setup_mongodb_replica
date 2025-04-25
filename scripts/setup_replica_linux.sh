@@ -85,9 +85,11 @@ setup_primary() {
     setup_node $ARBITER1_PORT || return 1
     setup_node $ARBITER2_PORT || return 1
     
-    sleep 5
+    sleep 2
     
-    mongosh --port $PRIMARY_PORT --eval "
+    # Initialize replica set
+    echo "Initializing replica set..."
+    local init_result=$(mongosh --port $PRIMARY_PORT --eval "
     rs.initiate({
         _id: 'rs0',
         members: [
@@ -95,14 +97,31 @@ setup_primary() {
             { _id: 1, host: '$SERVER_IP:$ARBITER1_PORT', arbiterOnly: true, priority: 0 },
             { _id: 2, host: '$SERVER_IP:$ARBITER2_PORT', arbiterOnly: true, priority: 0 }
         ]
-    })" &>/dev/null
+    })")
     
-    sleep 5
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}❌ Failed to initialize replica set${NC}"
+        echo "Error: $init_result"
+        return 1
+    fi
     
-    echo -e "\n${GREEN}✅ MongoDB Replica Set setup completed successfully.${NC}"
-    echo "Primary node: $SERVER_IP:$PRIMARY_PORT"
-    echo "Arbiter nodes: $SERVER_IP:$ARBITER1_PORT, $SERVER_IP:$ARBITER2_PORT"
-    echo "Connection command: mongosh --host $SERVER_IP --port $PRIMARY_PORT"
+    sleep 2
+    
+    # Check replica set status
+    echo "Checking replica set status..."
+    local status=$(mongosh --port $PRIMARY_PORT --eval "rs.status()" --quiet)
+    
+    if echo "$status" | grep -q "PRIMARY"; then
+        echo -e "\n${GREEN}✅ MongoDB Replica Set setup completed successfully.${NC}"
+        echo "Primary node: $SERVER_IP:$PRIMARY_PORT"
+        echo "Arbiter nodes: $SERVER_IP:$ARBITER1_PORT, $SERVER_IP:$ARBITER2_PORT"
+        echo "Connection command: mongosh --host $SERVER_IP --port $PRIMARY_PORT"
+    else
+        echo -e "${RED}❌ Replica set initialization failed${NC}"
+        echo "Current status:"
+        echo "$status"
+        return 1
+    fi
 }
 
 # Setup SECONDARY server
@@ -124,19 +143,26 @@ setup_secondary() {
     setup_node $PRIMARY_PORT || return 1
     setup_node $ARBITER_PORT || return 1
     
-    sleep 5
+    sleep 2
     
     mongosh --host $PRIMARY_IP --port $PRIMARY_PORT --eval "
     rs.add('$SERVER_IP:$PRIMARY_PORT');
     rs.addArb('$SERVER_IP:$ARBITER_PORT')" &>/dev/null
     
-    sleep 5
+    sleep 2
     
-    echo -e "\n${GREEN}✅ SECONDARY setup completed${NC}"
-    echo "This server (SECONDARY): $SERVER_IP:$PRIMARY_PORT"
-    echo "Arbiter node: $SERVER_IP:$ARBITER_PORT"
-    echo "Connected to PRIMARY: $PRIMARY_IP:$PRIMARY_PORT"
-    echo "Connect to this SECONDARY: mongosh --host $SERVER_IP --port $PRIMARY_PORT"
+    # Check replica set status
+    local status=$(mongosh --host $PRIMARY_IP --port $PRIMARY_PORT --eval "rs.status()" --quiet)
+    if echo "$status" | grep -q "SECONDARY"; then
+        echo -e "\n${GREEN}✅ SECONDARY setup completed${NC}"
+        echo "This server (SECONDARY): $SERVER_IP:$PRIMARY_PORT"
+        echo "Arbiter node: $SERVER_IP:$ARBITER_PORT"
+        echo "Connected to PRIMARY: $PRIMARY_IP:$PRIMARY_PORT"
+        echo "Connect to this SECONDARY: mongosh --host $SERVER_IP --port $PRIMARY_PORT"
+    else
+        echo -e "${RED}❌ Secondary setup failed${NC}"
+        return 1
+    fi
 }
 
 # Main function
