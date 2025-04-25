@@ -384,7 +384,10 @@ setup_secondary() {
     # Tắt dịch vụ và xóa tiến trình - không hiển thị output
     {
         sudo systemctl stop mongod_27017 mongod_27018 mongod_27019 || true
-
+        sleep 1
+        sudo pkill -f mongod || true
+        sleep 1
+        sudo pkill -9 -f mongod || true
         sleep 1
         sudo fuser -k 27017/tcp || true
         sudo fuser -k 27018/tcp || true
@@ -398,6 +401,28 @@ setup_secondary() {
     } &>/dev/null
     echo "  ✓ Đã dọn dẹp xong"
     
+    # Kiểm tra và sao chép keyfile từ PRIMARY nếu cần
+    echo -n "→ Kiểm tra keyfile... "
+    if [ "$SERVER_IP" != "$PRIMARY_IP" ]; then
+        echo ""
+        echo "  + Lấy keyfile từ PRIMARY server..."
+        scp root@$PRIMARY_IP:/etc/mongodb.keyfile /tmp/mongodb.keyfile.remote
+        if [ -f "/tmp/mongodb.keyfile.remote" ]; then
+            sudo cp /tmp/mongodb.keyfile.remote /etc/mongodb.keyfile
+            sudo chmod 400 /etc/mongodb.keyfile
+            sudo chown mongodb:mongodb /etc/mongodb.keyfile
+            rm -f /tmp/mongodb.keyfile.remote
+            echo "  ✓ Đã sao chép keyfile từ PRIMARY"
+        else
+            echo -e "${YELLOW}  ⚠️ Không lấy được keyfile từ PRIMARY, tạo keyfile mới${NC}"
+            sudo bash -c "openssl rand -base64 756 > /etc/mongodb.keyfile"
+            sudo chmod 400 /etc/mongodb.keyfile
+            sudo chown mongodb:mongodb /etc/mongodb.keyfile
+        fi
+    else
+        echo -e "${GREEN}OK${NC} (Đây là PRIMARY server)"
+    fi
+    
     # Tạo thư mục - gộp thông báo
     echo "→ Chuẩn bị môi trường..."
     {
@@ -408,11 +433,6 @@ setup_secondary() {
             sudo chown -R mongodb:mongodb /var/lib/mongodb_${port}
             sudo chown -R mongodb:mongodb /var/log/mongodb
         done
-        
-        # Tạo keyfile
-        sudo bash -c "openssl rand -base64 756 > /etc/mongodb.keyfile"
-        sudo chmod 400 /etc/mongodb.keyfile
-        sudo chown mongodb:mongodb /etc/mongodb.keyfile
         
         # Tạo file cấu hình
         sudo bash -c "cat > /etc/mongod_27017.conf << EOF
@@ -425,6 +445,9 @@ systemLog:
 net:
   port: 27017
   bindIp: 0.0.0.0
+security:
+  keyFile: /etc/mongodb.keyfile
+  authorization: enabled
 replication:
   replSetName: rs0
 setParameter:
@@ -480,7 +503,7 @@ EOF"
     
     # Kiểm tra kết nối đến PRIMARY
     echo -n "→ Kiểm tra kết nối đến PRIMARY... "
-    if ! mongosh --host $PRIMARY_IP --port 27017 --eval "db.version()" --quiet &>/dev/null; then
+    if ! mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "db.version()" --quiet &>/dev/null; then
         echo -e "${RED}LỖI${NC}"
         return 1
     else
@@ -491,13 +514,13 @@ EOF"
     echo "→ Thêm các node vào replica set..."
     {
         echo "  + Thêm SECONDARY node: $SERVER_IP:27017"
-        mongosh --host $PRIMARY_IP --port 27017 --eval "rs.add('$SERVER_IP:27017')"
+        mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.add('$SERVER_IP:27017')"
         sleep 2
         echo "  + Thêm ARBITER node 1: $SERVER_IP:27018"
-        mongosh --host $PRIMARY_IP --port 27017 --eval "rs.addArb('$SERVER_IP:27018')"
+        mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.addArb('$SERVER_IP:27018')"
         sleep 2
         echo "  + Thêm ARBITER node 2: $SERVER_IP:27019"
-        mongosh --host $PRIMARY_IP --port 27017 --eval "rs.addArb('$SERVER_IP:27019')"
+        mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.addArb('$SERVER_IP:27019')"
         sleep 2
     }
     echo "  ✓ Đã thêm các node vào replica set"
@@ -507,12 +530,12 @@ EOF"
     echo -e "${GREEN}=== THIẾT LẬP THÀNH CÔNG ===${NC}"
     echo ""
     echo -e "${GREEN}Connection string:${NC}"
-    echo "mongodb://$PRIMARY_IP:27017,$SERVER_IP:27017/admin?replicaSet=rs0&readPreference=primary&retryWrites=true&w=majority"
-    echo -e "${YELLOW}CHÚ Ý: MongoDB đang chạy ở chế độ không xác thực (No Authentication)${NC}"
+    echo "mongodb://$ADMIN_USER:$ADMIN_PASS@$PRIMARY_IP:27017,$SERVER_IP:27017/admin?replicaSet=rs0&readPreference=primary&retryWrites=true&w=majority"
+    echo -e "${YELLOW}CHÚ Ý: MongoDB đang chạy với xác thực bật. Sử dụng username: $ADMIN_USER, password: $ADMIN_PASS${NC}"
 
     echo ""
     echo -e "${GREEN}Lệnh kiểm tra replica set:${NC}"
-    echo "mongosh --host $PRIMARY_IP --port 27017 --eval \"rs.status()\""
+    echo "mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval \"rs.status()\""
 }
 
 # Create keyfile
