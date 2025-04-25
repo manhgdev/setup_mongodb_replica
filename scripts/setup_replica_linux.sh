@@ -240,7 +240,7 @@ setup_primary() {
     
     # Start PRIMARY first
     echo "Starting PRIMARY node..."
-    mongod --dbpath /var/lib/mongodb_27017 --port 27017 --fork --logpath /var/log/mongodb/mongod_27017.log
+    mongod --dbpath /var/lib/mongodb_27017 --port 27017 --fork --logpath /var/log/mongodb/mongod_27017.log --replSet rs0
     sleep 10
     
     # Check if PRIMARY is running
