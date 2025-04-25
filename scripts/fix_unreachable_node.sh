@@ -196,8 +196,8 @@ force_recover_node() {
     fi
     
     # Đợi node được thêm vào
-    echo -e "${YELLOW}Đợi node được thêm vào (30 giây)...${NC}"
-    sleep 30
+    echo -e "${YELLOW}Đợi node được thêm vào (5 giây)...${NC}"
+    sleep 5
     
     # Kiểm tra trạng thái node
     local status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
@@ -288,8 +288,8 @@ force_reconfigure_node() {
     fi
     
     # Đợi replica set ổn định
-    echo -e "${YELLOW}Đợi replica set ổn định (30 giây)...${NC}"
-    sleep 30
+    echo -e "${YELLOW}Đợi replica set ổn định (5 giây)...${NC}"
+    sleep 5
     
     # Kiểm tra trạng thái node
     local status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
