@@ -167,33 +167,36 @@ setup_replica_secondary_linux() {
         return 1
     fi
     
-    # Xóa các node cũ nếu tồn tại
-    echo "Đang kiểm tra và xóa các node cũ..."
+    # Kiểm tra và thêm các node vào replica set
+    echo "Đang kiểm tra và thêm các node vào replica set..."
     local rs_status=$(mongosh --host $primary_server_ip --port $PRIMARY_PORT --eval 'rs.status()' --quiet)
-    if echo "$rs_status" | grep -q "$SERVER_IP"; then
-        echo "Đang xóa các node cũ..."
-        # Lấy danh sách các node cần xóa
-        local nodes_to_remove=$(echo "$rs_status" | grep -o "$SERVER_IP:[0-9]*" | sort -u)
-        for node in $nodes_to_remove; do
-            echo "Đang xóa node $node..."
-            mongosh --host $primary_server_ip --port $PRIMARY_PORT --eval "rs.remove('$node')"
-            sleep 2
-        done
-        sleep 5
+    
+    # Thêm node SECONDARY nếu chưa tồn tại
+    if ! echo "$rs_status" | grep -q "$SERVER_IP:$PRIMARY_PORT"; then
+        echo "Đang thêm node SECONDARY vào replica set..."
+        mongosh --host $primary_server_ip --port $PRIMARY_PORT --eval 'rs.add("'$SERVER_IP:$PRIMARY_PORT'")'
+        sleep 2
+    else
+        echo "✅ Node SECONDARY đã tồn tại trong replica set"
     fi
     
-    # Thêm các node vào replica set
-    echo "Đang thêm node SECONDARY vào replica set..."
-    mongosh --host $primary_server_ip --port $PRIMARY_PORT --eval 'rs.add("'$SERVER_IP:$PRIMARY_PORT'")'
-    sleep 2
+    # Thêm node ARBITER 1 nếu chưa tồn tại
+    if ! echo "$rs_status" | grep -q "$SERVER_IP:$ARBITER1_PORT"; then
+        echo "Đang thêm node ARBITER 1 vào replica set..."
+        mongosh --host $primary_server_ip --port $PRIMARY_PORT --eval 'rs.addArb("'$SERVER_IP:$ARBITER1_PORT'")'
+        sleep 2
+    else
+        echo "✅ Node ARBITER 1 đã tồn tại trong replica set"
+    fi
     
-    echo "Đang thêm node ARBITER 1 vào replica set..."
-    mongosh --host $primary_server_ip --port $PRIMARY_PORT --eval 'rs.addArb("'$SERVER_IP:$ARBITER1_PORT'")'
-    sleep 2
-    
-    echo "Đang thêm node ARBITER 2 vào replica set..."
-    mongosh --host $primary_server_ip --port $PRIMARY_PORT --eval 'rs.addArb("'$SERVER_IP:$ARBITER2_PORT'")'
-    sleep 2
+    # Thêm node ARBITER 2 nếu chưa tồn tại
+    if ! echo "$rs_status" | grep -q "$SERVER_IP:$ARBITER2_PORT"; then
+        echo "Đang thêm node ARBITER 2 vào replica set..."
+        mongosh --host $primary_server_ip --port $PRIMARY_PORT --eval 'rs.addArb("'$SERVER_IP:$ARBITER2_PORT'")'
+        sleep 2
+    else
+        echo "✅ Node ARBITER 2 đã tồn tại trong replica set"
+    fi
     
     # Kiểm tra trạng thái
     if check_replica_status $PRIMARY_PORT; then
