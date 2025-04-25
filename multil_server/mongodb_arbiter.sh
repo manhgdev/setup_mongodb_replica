@@ -27,6 +27,14 @@ if [ "$(id -u)" -ne 0 ]; then
     fi
 fi
 
+# Hỏi người dùng muốn làm gì
+echo -e "${YELLOW}=== CHỌN CHỨC NĂNG ===${NC}"
+echo "1. Thêm arbiter mới vào replica set"
+echo "2. Sửa lỗi arbiter đã tồn tại"
+echo "3. Gỡ bỏ arbiter khỏi replica set"
+read -p "Chọn chức năng [1]: " FUNCTION_CHOICE
+FUNCTION_CHOICE=${FUNCTION_CHOICE:-1}
+
 # Tham số mặc định
 MONGODB_PORT="27017"
 ARBITER_PORT="27018"
@@ -60,29 +68,53 @@ if [ -z "$SERVER_IP" ]; then
     echo -e "${YELLOW}Sử dụng địa chỉ IP: $SERVER_IP${NC}"
 fi
 
-# Hỏi người dùng muốn làm gì
-echo -e "${YELLOW}=== CHỌN CHỨC NĂNG ===${NC}"
-echo "1. Thêm arbiter mới vào replica set"
-echo "2. Sửa lỗi arbiter đã tồn tại"
-echo "3. Gỡ bỏ arbiter khỏi replica set"
-read -p "Chọn chức năng [1]: " FUNCTION_CHOICE
-FUNCTION_CHOICE=${FUNCTION_CHOICE:-1}
+# Kiểm tra trạng thái replica set trước
+echo -e "${YELLOW}Kiểm tra trạng thái replica set...${NC}"
+RS_STATUS=$(mongosh --host 127.0.0.1:$MONGODB_PORT -u $USERNAME -p $PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "
+try {
+  status = rs.status();
+  config = rs.conf();
+  print('TOTAL_MEMBERS: ' + config.members.length);
+  for (var i = 0; i < status.members.length; i++) {
+    print('MEMBER:' + status.members[i].name + ':' + status.members[i].stateStr + ':' + (status.members[i].arbiterOnly || false));
+  }
+  print('MASTER:' + (rs.isMaster().primary || 'NONE'));
+} catch (e) {
+  print('ERROR:' + e.message);
+}
+")
 
-echo -e "${YELLOW}=== KIỂM TRA THÀNH PHẦN CẦN THIẾT ===${NC}"
-
-# Kiểm tra MongoDB chính
-echo -e "${YELLOW}Kiểm tra MongoDB chính...${NC}"
-if ! systemctl is-active --quiet mongod; then
-    echo -e "${RED}MongoDB không đang chạy. Khởi động...${NC}"
-    systemctl start mongod
-    sleep 5
-    
-    if ! systemctl is-active --quiet mongod; then
-        echo -e "${RED}Không thể khởi động MongoDB. Kiểm tra trạng thái và thử lại.${NC}"
+# Kiểm tra xem đã có arbiter chưa
+EXISTING_ARBITER=$(echo "$RS_STATUS" | grep "MEMBER:.*:true" | cut -d':' -f2)
+if [ -n "$EXISTING_ARBITER" ]; then
+    echo -e "${YELLOW}Đã phát hiện arbiter hiện tại: $EXISTING_ARBITER${NC}"
+    if [[ "$FUNCTION_CHOICE" == "1" ]]; then
+        echo -e "${RED}Không thể thêm arbiter mới khi đã có arbiter tồn tại.${NC}"
+        echo -e "${YELLOW}Vui lòng chọn chức năng 2 để sửa lỗi arbiter hiện tại hoặc 3 để gỡ bỏ.${NC}"
         exit 1
     fi
 fi
-echo -e "${GREEN}✓ MongoDB chính đang chạy${NC}"
+
+# Kiểm tra port arbiter
+echo -e "${YELLOW}Kiểm tra port $ARBITER_PORT...${NC}"
+if lsof -i :$ARBITER_PORT | grep LISTEN; then
+    echo -e "${RED}Port $ARBITER_PORT đang được sử dụng.${NC}"
+    if [[ "$FUNCTION_CHOICE" == "1" ]]; then
+        echo -e "${YELLOW}Đang kiểm tra arbiter hiện tại...${NC}"
+        ARBITER_STATUS=$(echo "$RS_STATUS" | grep "MEMBER:.*$ARBITER_PORT")
+        if [ -n "$ARBITER_STATUS" ]; then
+            echo -e "${YELLOW}Port $ARBITER_PORT đang được sử dụng bởi arbiter hiện tại.${NC}"
+            echo -e "${YELLOW}Vui lòng chọn chức năng 2 để sửa lỗi arbiter hiện tại hoặc 3 để gỡ bỏ.${NC}"
+            exit 1
+        else
+            echo -e "${RED}Port $ARBITER_PORT đang được sử dụng bởi một process khác.${NC}"
+            echo -e "${YELLOW}Vui lòng dừng process đó hoặc chọn port khác.${NC}"
+            exit 1
+        fi
+    fi
+else
+    echo -e "${GREEN}✓ Port $ARBITER_PORT khả dụng${NC}"
+fi
 
 # 1. Kiểm tra và tạo thư mục log
 echo -e "${YELLOW}Kiểm tra thư mục log...${NC}"
