@@ -222,78 +222,35 @@ force_reconfigure_node() {
     
     echo -e "${YELLOW}Đang khôi phục node $NODE_IP:$NODE_PORT bằng cách force reconfigure...${NC}"
     
-    # Kiểm tra trạng thái replica set
-    echo -e "${YELLOW}Kiểm tra trạng thái replica set...${NC}"
-    local status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
-    
-    # Lấy danh sách các node trong replica set
-    echo -e "${YELLOW}Lấy danh sách các node trong replica set...${NC}"
-    local members=$(echo "$status" | grep -A 100 "members" | grep "name" | awk -F'"' '{print $4}')
-    
-    # Tạo cấu hình mới cho replica set
-    echo -e "${YELLOW}Tạo cấu hình mới cho replica set...${NC}"
-    
-    # Tạo file tạm để lưu cấu hình
-    local temp_config="/tmp/mongodb_reconfig_$$.js"
-    
-    # Tạo cấu hình JSON trực tiếp
-    echo "config = {" > $temp_config
-    echo "  _id: 'rs0'," >> $temp_config
-    echo "  members: [" >> $temp_config
-    
-    # Thêm các node vào cấu hình
-    local first=true
-    for member in $members; do
-        if [ "$first" = true ]; then
-            first=false
-        else
-            echo "    ," >> $temp_config
-        fi
-        
-        # Kiểm tra node có phải là node cần khôi phục không
-        if [ "$member" = "$NODE_IP:$NODE_PORT" ]; then
-            # Đặt priority cao hơn để node này trở thành PRIMARY
-            local member_id=$(echo "$status" | grep -A 10 "$member" | grep "_id" | awk '{print $2}' | tr -d ',')
-            echo "    { _id: $member_id, host: '$member', priority: 10 }" >> $temp_config
-        else
-            # Các node khác giữ nguyên priority
-            local member_id=$(echo "$status" | grep -A 10 "$member" | grep "_id" | awk '{print $2}' | tr -d ',')
-            echo "    { _id: $member_id, host: '$member' }" >> $temp_config
-        fi
-    done
-    
-    # Thêm node cần khôi phục nếu chưa có trong danh sách
-    if ! echo "$members" | grep -q "$NODE_IP:$NODE_PORT"; then
-        if [ "$first" = true ]; then
-            first=false
-        else
-            echo "    ," >> $temp_config
-        fi
-        
-        # Tìm ID cao nhất và tăng thêm 1
-        local max_id=$(echo "$status" | grep "_id" | awk '{print $2}' | sort -n | tail -1)
-        local new_id=$((max_id + 1))
-        
-        echo "    { _id: $new_id, host: '$NODE_IP:$NODE_PORT', priority: 10 }" >> $temp_config
-    fi
-    
-    echo "  ]" >> $temp_config
-    echo "}" >> $temp_config
-    
-    # In ra cấu hình mới
-    echo -e "${YELLOW}Cấu hình mới:${NC}"
-    cat $temp_config
-    
     # Force reconfigure replica set
     echo -e "${YELLOW}Force reconfigure replica set...${NC}"
-    
-    # Sử dụng file cấu hình trực tiếp
     local reconfigure_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
-    load('$temp_config');
-    rs.reconfig(config, {force: true})" --quiet)
-    
-    # Xóa file tạm
-    rm -f $temp_config
+    try {
+        let config = rs.conf();
+        let members = config.members;
+        
+        // Tìm node cần khôi phục
+        let targetNode = members.find(m => m.host === '$NODE_IP:$NODE_PORT');
+        
+        if (targetNode) {
+            // Nếu node đã tồn tại, cập nhật priority
+            targetNode.priority = 10;
+        } else {
+            // Nếu node chưa tồn tại, thêm mới
+            let maxId = Math.max(...members.map(m => m._id));
+            members.push({
+                _id: maxId + 1,
+                host: '$NODE_IP:$NODE_PORT',
+                priority: 10
+            });
+        }
+        
+        // Cập nhật cấu hình
+        config.members = members;
+        rs.reconfig(config, {force: true});
+    } catch (e) {
+        print('ERROR: ' + e.message);
+    }" --quiet)
     
     if echo "$reconfigure_result" | grep -q "ok"; then
         echo -e "${GREEN}✅ Đã force reconfigure replica set thành công${NC}"
@@ -316,6 +273,44 @@ force_reconfigure_node() {
     else
         echo -e "${RED}❌ Node $NODE_IP:$NODE_PORT vẫn không hoạt động bình thường${NC}"
         echo "Trạng thái: $status"
+        return 1
+    fi
+}
+
+# Xóa node không hoạt động khỏi replica set
+remove_node() {
+    local NODE_IP=$1
+    local NODE_PORT=$2
+    local ADMIN_USER=$3
+    local ADMIN_PASS=$4
+    local PRIMARY_IP=$5
+    
+    echo -e "${YELLOW}Đang xóa node $NODE_IP:$NODE_PORT khỏi replica set...${NC}"
+    
+    # Kiểm tra trạng thái replica set
+    local status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
+    
+    # Kiểm tra node có trong replica set không
+    if ! echo "$status" | grep -q "$NODE_IP:$NODE_PORT"; then
+        echo -e "${RED}❌ Node $NODE_IP:$NODE_PORT không có trong replica set${NC}"
+        return 1
+    fi
+    
+    # Xóa node khỏi replica set
+    local remove_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
+    try {
+        rs.remove('$NODE_IP:$NODE_PORT');
+        print('OK');
+    } catch (e) {
+        print('ERROR: ' + e.message);
+    }" --quiet)
+    
+    if echo "$remove_result" | grep -q "OK"; then
+        echo -e "${GREEN}✅ Đã xóa node $NODE_IP:$NODE_PORT khỏi replica set${NC}"
+        return 0
+    else
+        echo -e "${RED}❌ Không thể xóa node $NODE_IP:$NODE_PORT khỏi replica set${NC}"
+        echo "Lỗi: $remove_result"
         return 1
     fi
 }
@@ -355,7 +350,8 @@ fix_unreachable_node_menu() {
     echo "2. Sửa lỗi và thêm lại vào replica set"
     echo "3. Khôi phục node bằng cách xóa và thêm lại"
     echo "4. Khôi phục node bằng cách force reconfigure"
-    read -p "Lựa chọn (1-4): " action
+    echo "5. Xóa node không hoạt động khỏi replica set"
+    read -p "Lựa chọn (1-5): " action
     
     case $action in
         1)
@@ -369,6 +365,9 @@ fix_unreachable_node_menu() {
             ;;
         4)
             force_reconfigure_node "$NODE_IP" "$NODE_PORT" "$ADMIN_USER" "$ADMIN_PASS" "$PRIMARY_IP"
+            ;;
+        5)
+            remove_node "$NODE_IP" "$NODE_PORT" "$ADMIN_USER" "$ADMIN_PASS" "$PRIMARY_IP"
             ;;
         *)
             echo -e "${RED}❌ Lựa chọn không hợp lệ${NC}"
