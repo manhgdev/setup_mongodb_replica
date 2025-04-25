@@ -185,3 +185,33 @@ setup_replica_secondary_macos() {
         echo -e "${RED}❌ Có lỗi xảy ra khi cấu hình SECONDARY${NC}"
     fi
 }
+
+# Function to be called from main.sh
+setup_replica_macos() {
+    echo "MongoDB Replica Set Setup for macOS"
+    echo "===================================="
+    echo "1. Setup PRIMARY server"
+    echo "2. Setup SECONDARY server"
+    echo "3. Return to main menu"
+    read -p "Select option (1-3): " option
+
+    SERVER_IP=$(ipconfig getifaddr en0)
+    echo "Using server IP: $SERVER_IP"
+
+    case $option in
+        1)
+            setup_replica_primary_macos $SERVER_IP
+            ;;
+        2)
+            setup_replica_secondary_macos $SERVER_IP
+            ;;
+        3)
+            echo "Returning to main menu..."
+            return 0
+            ;;
+        *)
+            echo -e "${RED}❌ Invalid option${NC}"
+            return 1
+            ;;
+    esac
+}

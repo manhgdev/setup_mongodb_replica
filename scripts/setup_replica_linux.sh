@@ -6,10 +6,14 @@ setup_node_linux() {
     local ENABLE_SECURITY=$3 # "yes" or "no"
     local CONFIG_FILE="/etc/mongod_${PORT}.conf"
 
+    # Kill any existing MongoDB process on this port
+    pkill -f "mongod.*--port ${PORT}" || true
+    sleep 2
+
     mkdir -p "/var/lib/mongodb_${PORT}"
     mkdir -p "/var/log/mongodb"
-    chown -R mongodb:mongodb "/var/lib/mongodb_${PORT}"
-    chown -R mongodb:mongodb "/var/log/mongodb"
+    chown -R mongodb:mongodb "/var/lib/mongodb_${PORT}" 2>/dev/null || true
+    chown -R mongodb:mongodb "/var/log/mongodb" 2>/dev/null || true
 
     cat > "$CONFIG_FILE" <<EOL
 systemLog:
@@ -35,7 +39,17 @@ security:
 EOL
     fi
 
-    mongod --config "$CONFIG_FILE" --fork
+    # Try to start MongoDB, with more error handling
+    echo "Starting MongoDB on port $PORT..."
+    if ! mongod --config "$CONFIG_FILE" --fork; then
+        echo -e "${RED}❌ Failed to start MongoDB on port $PORT. Checking logs...${NC}"
+        tail -n 20 /var/log/mongodb/mongod_${PORT}.log
+        return 1
+    fi
+    
+    # Give the server a moment to stabilize
+    sleep 3
+    return 0
 }
 
 create_keyfile_linux() {
@@ -43,20 +57,54 @@ create_keyfile_linux() {
     if [ ! -f "$KEY_FILE" ]; then
         echo "Creating keyFile for MongoDB..."
         openssl rand -base64 756 > "$KEY_FILE"
-        chown mongodb:mongodb "$KEY_FILE"
+        chown mongodb:mongodb "$KEY_FILE" 2>/dev/null || true
         chmod 600 "$KEY_FILE"
     fi
 }
 
 check_replica_status() {
     local PORT=$1
-    local status=$(mongosh --port $PORT --eval "rs.status().ok" --quiet)
+    local status=$(mongosh --port $PORT --eval "rs.status().ok" --quiet 2>/dev/null)
     
     if [[ "$status" == "1" ]]; then
         return 0
     else
         return 1
     fi
+}
+
+wait_for_mongodb_ready() {
+    local HOST=$1
+    local PORT=$2
+    local AUTH=$3  # "yes" or "no"
+    local USERNAME=$4
+    local PASSWORD=$5
+    
+    local max_attempts=30
+    local attempt=1
+    
+    echo "Waiting for MongoDB on $HOST:$PORT to be ready..."
+    
+    while [ $attempt -le $max_attempts ]; do
+        if [ "$AUTH" = "yes" ]; then
+            if mongosh --host $HOST --port $PORT -u "$USERNAME" -p "$PASSWORD" --authenticationDatabase admin --eval "db.runCommand({ping:1})" --quiet &>/dev/null; then
+                echo -e "${GREEN}✅ MongoDB on $HOST:$PORT is ready (authenticated)${NC}"
+                return 0
+            fi
+        else
+            if mongosh --host $HOST --port $PORT --eval "db.runCommand({ping:1})" --quiet &>/dev/null; then
+                echo -e "${GREEN}✅ MongoDB on $HOST:$PORT is ready${NC}"
+                return 0
+            fi
+        fi
+        
+        echo "Attempt $attempt/$max_attempts: MongoDB on $HOST:$PORT not ready yet, waiting..."
+        sleep 2
+        attempt=$((attempt + 1))
+    done
+    
+    echo -e "${RED}❌ MongoDB on $HOST:$PORT failed to become ready after $max_attempts attempts${NC}"
+    return 1
 }
 
 setup_replica_primary_linux() {
@@ -70,16 +118,38 @@ setup_replica_primary_linux() {
     read -p "Enter admin password (default: manhnk): " admin_password
     admin_password=${admin_password:-manhnk}
 
-    pkill mongod || true
-    sleep 2
+    # Stop all MongoDB instances
+    echo "Stopping any running MongoDB instances..."
+    pkill -f mongod || true
+    sleep 3
 
     # Step 1: Start nodes WITHOUT security
-    setup_node_linux $PRIMARY_PORT "primary" "no"
-    setup_node_linux $ARBITER1_PORT "arbiter" "no"
-    setup_node_linux $ARBITER2_PORT "arbiter" "no"
-    sleep 5
+    echo "Starting PRIMARY node without security..."
+    if ! setup_node_linux $PRIMARY_PORT "primary" "no"; then
+        echo -e "${RED}❌ Failed to start PRIMARY node${NC}"
+        return 1
+    fi
+    
+    # Wait for primary to be ready
+    if ! wait_for_mongodb_ready "localhost" $PRIMARY_PORT "no"; then
+        echo -e "${RED}❌ PRIMARY node failed to start properly${NC}"
+        return 1
+    fi
+    
+    echo "Starting ARBITER 1 node without security..."
+    if ! setup_node_linux $ARBITER1_PORT "arbiter" "no"; then
+        echo -e "${RED}❌ Failed to start ARBITER 1 node${NC}"
+        return 1
+    fi
+    
+    echo "Starting ARBITER 2 node without security..."
+    if ! setup_node_linux $ARBITER2_PORT "arbiter" "no"; then
+        echo -e "${RED}❌ Failed to start ARBITER 2 node${NC}"
+        return 1
+    fi
 
     # Step 2: Initialize replica set
+    echo "Initializing replica set..."
     mongosh --port $PRIMARY_PORT --eval 'rs.initiate({
         _id: "rs0",
         members: [
@@ -88,33 +158,75 @@ setup_replica_primary_linux() {
             { _id: 2, host: "'$SERVER_IP:$ARBITER2_PORT'", arbiterOnly: true }
         ]
     })'
-    sleep 3
+    
+    # Wait for replica set to initialize
+    echo "Waiting for replica set to initialize..."
+    sleep 10
+    
+    # Check replica set status
+    mongosh --port $PRIMARY_PORT --eval 'rs.status()'
 
     # Step 3: Create admin user
+    echo "Creating admin user..."
     mongosh --port $PRIMARY_PORT --eval '
         db = db.getSiblingDB("admin");
         if (!db.getUser("'$admin_username'")) {
             db.createUser({user: "'$admin_username'", pwd: "'$admin_password'", roles: [ { role: "root", db: "admin" }, { role: "clusterAdmin", db: "admin" } ]});
+            print("Admin user created successfully");
+        } else {
+            print("Admin user already exists");
         }
     '
-    sleep 2
+    
+    # Wait a moment for the user creation to take effect
+    sleep 3
 
     # Step 4: Enable security, restart nodes
+    echo "Creating keyfile..."
     create_keyfile_linux
-    pkill mongod || true
-    sleep 2
-    setup_node_linux $PRIMARY_PORT "primary" "yes"
-    setup_node_linux $ARBITER1_PORT "arbiter" "yes"
-    setup_node_linux $ARBITER2_PORT "arbiter" "yes"
+    
+    echo "Stopping MongoDB instances to restart with security..."
+    pkill -f mongod || true
     sleep 5
+    
+    echo "Starting PRIMARY node with security enabled..."
+    if ! setup_node_linux $PRIMARY_PORT "primary" "yes"; then
+        echo -e "${RED}❌ Failed to start PRIMARY node with security${NC}"
+        return 1
+    fi
+    
+    # Wait for primary to be ready with authentication
+    if ! wait_for_mongodb_ready "localhost" $PRIMARY_PORT "yes" "$admin_username" "$admin_password"; then
+        echo -e "${RED}❌ PRIMARY node with security failed to start properly${NC}"
+        return 1
+    fi
+    
+    echo "Starting ARBITER 1 node with security enabled..."
+    if ! setup_node_linux $ARBITER1_PORT "arbiter" "yes"; then
+        echo -e "${RED}❌ Failed to start ARBITER 1 node with security${NC}"
+        return 1
+    fi
+    
+    echo "Starting ARBITER 2 node with security enabled..."
+    if ! setup_node_linux $ARBITER2_PORT "arbiter" "yes"; then
+        echo -e "${RED}❌ Failed to start ARBITER 2 node with security${NC}"
+        return 1
+    fi
+    
+    # Wait for all nodes to be ready
+    sleep 10
 
-    # Step 5: Check login
-    mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'db.runCommand({ping:1})'
-    if [ $? -eq 0 ]; then
-        echo -e "\n${GREEN}✅ Successfully configured and logged into PRIMARY node${NC}"
+    # Step 5: Check login and replica set status
+    echo "Verifying replica set status..."
+    if mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.status()' &> /dev/null; then
+        echo -e "\n${GREEN}✅ Successfully configured MongoDB Replica Set PRIMARY${NC}"
         echo "Connection: mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin"
+        
+        # Show replica set status
+        echo -e "\n${YELLOW}Replica Set Status:${NC}"
+        mongosh --port $PRIMARY_PORT -u $admin_username -p $admin_password --authenticationDatabase admin --eval 'rs.status()'
     else
-        echo -e "${RED}❌ Login failed. Check logs.${NC}"
+        echo -e "${RED}❌ Login failed or replica set is not functioning correctly. Check logs.${NC}"
     fi
 }
 
@@ -137,7 +249,7 @@ setup_replica_secondary_linux() {
     admin_password=${admin_password:-manhnk}
     
     # Stop current MongoDB instances
-    pkill mongod || true
+    pkill -f mongod || true
     sleep 2
     
     # First setup nodes WITHOUT security
@@ -187,7 +299,7 @@ setup_replica_secondary_linux() {
     
     # Now create keyfile and restart with security enabled
     create_keyfile_linux
-    pkill mongod || true
+    pkill -f mongod || true
     sleep 2
     
     # Restart nodes WITH security
