@@ -13,7 +13,13 @@ setup_node_linux() {
     mkdir -p $DB_PATH $LOG_PATH
     chown -R mongodb:mongodb $DB_PATH $LOG_PATH 2>/dev/null || true
 
-    # Create config file
+    # Clean up database directory for fresh start if needed
+    if [ "$3" = "clean" ]; then
+        echo "Cleaning up MongoDB data directory for port $PORT..."
+        rm -rf $DB_PATH/*
+    fi
+
+    # Create config file with enhanced settings
     cat > $CONFIG_FILE <<EOL
 systemLog:
   destination: file
@@ -30,6 +36,7 @@ setParameter:
   allowMultipleArbiters: true
 processManagement:
   fork: true
+  timeZoneInfo: /usr/share/zoneinfo
 EOL
 
     # Add security if enabled
@@ -41,18 +48,45 @@ security:
 EOL
     fi
 
-    # Start mongod
+    # Start mongod with increased wait time
+    echo "Starting MongoDB on port $PORT..."
     mongod --config $CONFIG_FILE
     
-    # Check if MongoDB started successfully
-    sleep 3
-    if pgrep -f "mongod.*--port $PORT" > /dev/null; then
-        echo -e "${GREEN}✅ MongoDB started successfully on port $PORT${NC}"
-    else
+    # Check if MongoDB started successfully with more thorough verification
+    local max_attempts=10
+    local attempt=1
+    local started=false
+    
+    while [ $attempt -le $max_attempts ]; do
+        echo "Waiting for MongoDB to start (attempt $attempt/$max_attempts)..."
+        sleep 3
+        
+        if pgrep -f "mongod.*--port $PORT" > /dev/null; then
+            # MongoDB process exists, try connecting
+            if [ "$PORT" = "27017" ]; then  # Only check connection on main port
+                if mongosh --port $PORT --eval "db.version()" --quiet &>/dev/null; then
+                    echo -e "${GREEN}✅ MongoDB started successfully on port $PORT${NC}"
+                    started=true
+                    break
+                fi
+            else
+                echo -e "${GREEN}✅ MongoDB process running on port $PORT${NC}"
+                started=true
+                break
+            fi
+        fi
+        
+        attempt=$((attempt + 1))
+    done
+    
+    if [ "$started" = "false" ]; then
         echo -e "${RED}❌ Failed to start MongoDB on port $PORT${NC}"
         echo "Last 10 lines of log:"
         tail -n 10 "$LOG_PATH/mongod_${PORT}.log"
+        return 1
     fi
+    
+    return 0
 }
 
 create_keyfile_linux() {
@@ -71,29 +105,65 @@ setup_replica_primary_linux() {
     local ARBITER1_PORT=27018
     local ARBITER2_PORT=27019
 
-    # Step 1: Start all nodes WITHOUT security
+    # Step 1: Start all nodes WITHOUT security and clean data
     echo "Step 1: Starting MongoDB nodes without security..."
     pkill -f mongod || true
     sleep 2
     
-    setup_node_linux $PRIMARY_PORT "no"
-    setup_node_linux $ARBITER1_PORT "no"
-    setup_node_linux $ARBITER2_PORT "no"
-    sleep 5
+    # Clean start for better initialization
+    setup_node_linux $PRIMARY_PORT "no" "clean"
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}❌ Failed to start PRIMARY node${NC}"
+        return 1
+    fi
     
-    # Step 2: Initialize replica set
+    setup_node_linux $ARBITER1_PORT "no" "clean"
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}❌ Failed to start ARBITER1 node${NC}"
+        return 1
+    fi
+    
+    setup_node_linux $ARBITER2_PORT "no" "clean" 
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}❌ Failed to start ARBITER2 node${NC}"
+        return 1
+    fi
+    
+    echo "Waiting for MongoDB instances to be ready..."
+    sleep 10
+    
+    # Step 2: Initialize replica set with explicit options
     echo "Step 2: Initializing replica set..."
     mongosh --port $PRIMARY_PORT --eval '
-    rs.initiate({
-        _id: "rs0",
-        members: [
-            { _id: 0, host: "'$SERVER_IP:$PRIMARY_PORT'", priority: 2 },
-            { _id: 1, host: "'$SERVER_IP:$ARBITER1_PORT'", arbiterOnly: true },
-            { _id: 2, host: "'$SERVER_IP:$ARBITER2_PORT'", arbiterOnly: true }
-        ]
-    })
+    try {
+        print("Initializing replica set with forced configuration...");
+        var config = {
+            _id: "rs0",
+            members: [
+                { _id: 0, host: "'$SERVER_IP:$PRIMARY_PORT'", priority: 2 },
+                { _id: 1, host: "'$SERVER_IP:$ARBITER1_PORT'", arbiterOnly: true, priority: 0 },
+                { _id: 2, host: "'$SERVER_IP:$ARBITER2_PORT'", arbiterOnly: true, priority: 0 }
+            ],
+            settings: {
+                heartbeatTimeoutSecs: 10,
+                electionTimeoutMillis: 10000,
+                catchUpTimeoutMillis: 60000
+            }
+        };
+        rs.initiate(config);
+        print("Initialization command sent, waiting for completion...");
+    } catch(err) {
+        print("Error during initialization: " + err);
+        quit(1);
+    }
     '
-    sleep 5
+    
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}❌ Failed to initialize replica set${NC}"
+        return 1
+    fi
+    
+    sleep 10
     
     # Step 3: Wait for primary to be elected
     echo "Step 3: Waiting for primary to be elected..."
@@ -228,9 +298,8 @@ setup_replica_secondary_linux() {
     
     # Step 3: Start MongoDB without security first
     echo "Step 3: Starting MongoDB without security..."
-    setup_node_linux $PRIMARY_PORT "no"
-    setup_node_linux $ARBITER_PORT "no"
-    sleep 5
+    setup_node_linux $PRIMARY_PORT "no" "clean"  # Add clean flag
+    setup_node_linux $ARBITER_PORT "no" "clean"  # Add clean flag
     
     # Step 4: Test connection to primary
     echo "Step 4: Testing connection to PRIMARY server..."
