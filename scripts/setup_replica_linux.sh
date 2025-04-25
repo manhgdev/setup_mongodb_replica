@@ -242,7 +242,7 @@ setup_primary() {
     
     # Start PRIMARY first
     echo "Starting PRIMARY node..."
-    mongod --config /etc/mongod_27017.conf > /var/log/mongodb/mongod_27017.log 2>&1 &
+    mongod --config /etc/mongod_27017.conf --fork --logpath /var/log/mongodb/mongod_27017.log
     sleep 10
     
     # Check if PRIMARY is running
