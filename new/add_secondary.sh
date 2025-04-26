@@ -21,6 +21,7 @@ echo -e "Vui lòng nhập IP của PRIMARY node"
 read -p "PRIMARY node IP: " PRIMARY_HOST
 if [ -z "$PRIMARY_HOST" ]; then
   PRIMARY_HOST=$(get_current_ip)
+  echo "PRIMARY IP: $PRIMARY_HOST"
 fi
 
 if [ -z "$PRIMARY_HOST" ] || [ -z "$MONGODB_USER" ] || [ -z "$MONGODB_PASS" ]; then
