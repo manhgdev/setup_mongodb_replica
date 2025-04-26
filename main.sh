@@ -33,7 +33,7 @@ show_menu() {
     echo -e "${BLUE}║${NC} ${RED}0.${NC} Thoát                                   ${BLUE}║${NC}"
     echo -e "${BLUE}╚════════════════════════════════════════════╝${NC}"
     echo -e "${YELLOW}Server IP: $(get_server_ip true)${NC}"
-    echo -e "${YELLOW}MongoDB Version: ${MONGO_VERSION} | Port: ${MONGO_PORT} | Replica: ${REPLICA_SET_NAME}${NC}"
+    echo -e "${YELLOW}MongoDB Version: ${MONGO_VERSION} | Port: ${MONGODB_PORT} | Replica: ${REPLICA_SET_NAME}${NC}"
     echo
     read -p "$(echo -e ${GREEN}">>${NC} Chọn chức năng [0-6]: ")" choice
     

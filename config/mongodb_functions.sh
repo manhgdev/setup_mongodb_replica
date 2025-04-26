@@ -28,14 +28,14 @@ stop_mongodb() {
     fi
     
     # Đảm bảo port MongoDB không còn được sử dụng
-    if lsof -Pi :${MONGO_PORT} -sTCP:LISTEN -t >/dev/null ; then
-        echo -e "${YELLOW}Kill tiến trình sử dụng port ${MONGO_PORT}...${NC}"
-        lsof -Pi :${MONGO_PORT} -sTCP:LISTEN -t | xargs $sudo_cmd kill -9
+    if lsof -Pi :${MONGODB_PORT} -sTCP:LISTEN -t >/dev/null ; then
+        echo -e "${YELLOW}Kill tiến trình sử dụng port ${MONGODB_PORT}...${NC}"
+        lsof -Pi :${MONGODB_PORT} -sTCP:LISTEN -t | xargs $sudo_cmd kill -9
     fi
     
     # Đợi port được giải phóng
-    echo -e "${YELLOW}Đợi port ${MONGO_PORT} được giải phóng...${NC}"
-    while lsof -Pi :${MONGO_PORT} -sTCP:LISTEN -t >/dev/null; do
+    echo -e "${YELLOW}Đợi port ${MONGODB_PORT} được giải phóng...${NC}"
+    while lsof -Pi :${MONGODB_PORT} -sTCP:LISTEN -t >/dev/null; do
         sleep 1
     done
     

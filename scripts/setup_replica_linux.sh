@@ -242,6 +242,9 @@ setup_secondary_node() {
         echo -e "${YELLOW}Kiểm tra lại địa chỉ IP và đảm bảo PRIMARY node đang hoạt động${NC}"
         return 1
     fi
+
+    # Tạo keyfile
+    create_keyfile false "$primary_ip"
     
     # Kiểm tra MongoDB đã được cài đặt
     check_mongodb
@@ -251,9 +254,6 @@ setup_secondary_node() {
     
     # Tạo thư mục cần thiết
     create_dirs
-    
-    # Tạo keyfile
-    create_keyfile false "$primary_ip"
     
     # Tạo file cấu hình với security và replication
     create_config true true
@@ -341,7 +341,7 @@ setup_replica_linux() {
         echo -e "${BLUE}║${NC} ${RED}0.${NC} Quay lại menu chính                       ${BLUE}║${NC}"
         echo -e "${BLUE}╚════════════════════════════════════════════╝${NC}"
         echo "Server IP: $(get_server_ip true || echo 'không có')"
-        echo "MongoDB Version: ${MONGO_VERSION} | Port: ${MONGO_PORT} | Replica: ${REPLICA_SET_NAME}"
+        echo "MongoDB Version: ${MONGO_VERSION} | Port: ${MONGODB_PORT} | Replica: ${REPLICA_SET_NAME}"
         echo
         
         read -p ">> Chọn chức năng [0-6]: " choice

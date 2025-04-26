@@ -1,11 +1,19 @@
 #!/bin/bash
 
-# Màu sắc
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+# Get the absolute path of the script directory
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+# Import required configuration files
+if [ -f "$SCRIPT_DIR/../config/mongodb_settings.sh" ]; then
+    source "$SCRIPT_DIR/../config/mongodb_settings.sh"
+else
+    # Màu sắc
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[0;33m'
+    BLUE='\033[0;34m'
+    NC='\033[0m' # No Color
+fi
 
 clear
 echo -e "${BLUE}
@@ -21,41 +29,17 @@ fi
 
 # Thu thập thông tin kết nối
 echo -e "${YELLOW}Nhập thông tin kết nối:${NC}"
-read -p "Tên người dùng MongoDB [manhg]: " USERNAME
-USERNAME=${USERNAME:-manhg}
+read -p "Tên người dùng MongoDB [$MONGODB_USER]: " USERNAME
+USERNAME=${USERNAME:-$MONGODB_USER}
 
-read -p "Mật khẩu MongoDB [manhnk]: " PASSWORD
-PASSWORD=${PASSWORD:-manhnk}
+read -p "Mật khẩu MongoDB [$MONGODB_PASSWORD]: " PASSWORD
+PASSWORD=${PASSWORD:-$MONGODB_PASSWORD}
 
-read -p "Database xác thực [admin]: " AUTH_DB
-AUTH_DB=${AUTH_DB:-admin}
+read -p "Database xác thực [$AUTH_DATABASE]: " AUTH_DB
+AUTH_DB=${AUTH_DB:-$AUTH_DATABASE}
 
 # Thử nhiều cách để lấy IP
-CURRENT_IP=""
-
-# Phương pháp 1: hostname -I
-if [ -z "$CURRENT_IP" ]; then
-  IP_RESULT=$(hostname -I 2>/dev/null | awk '{print $1}')
-  if [ -n "$IP_RESULT" ]; then
-    CURRENT_IP=$IP_RESULT
-  fi
-fi
-
-# Phương pháp 2: ip addr
-if [ -z "$CURRENT_IP" ]; then
-  IP_RESULT=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v "127.0.0.1" | head -n1)
-  if [ -n "$IP_RESULT" ]; then
-    CURRENT_IP=$IP_RESULT
-  fi
-fi
-
-# Phương pháp 3: ifconfig
-if [ -z "$CURRENT_IP" ]; then
-  IP_RESULT=$(ifconfig 2>/dev/null | grep -Eo 'inet (addr:)?([0-9]*\.){3}[0-9]*' | grep -Eo '([0-9]*\.){3}[0-9]*' | grep -v '127.0.0.1' | head -n1)
-  if [ -n "$IP_RESULT" ]; then
-    CURRENT_IP=$IP_RESULT
-  fi
-fi
+CURRENT_IP=$(get_server_ip)
 
 # Thông báo nếu phát hiện được IP
 if [ -n "$CURRENT_IP" ]; then
@@ -68,8 +52,8 @@ fi
 read -p "Địa chỉ IP/hostname của server hiện tại [$CURRENT_IP]: " USER_CURRENT_HOST
 CURRENT_HOST=${USER_CURRENT_HOST:-$CURRENT_IP}
 
-read -p "Port của server hiện tại [27017]: " CURRENT_PORT
-CURRENT_PORT=${CURRENT_PORT:-27017}
+read -p "Port của server hiện tại [$MONGO_PORT]: " CURRENT_PORT
+CURRENT_PORT=${CURRENT_PORT:-$MONGODB_PORT}
 
 # Kiểm tra trạng thái hiện tại
 echo -e "${YELLOW}Kiểm tra trạng thái hiện tại...${NC}"
@@ -110,41 +94,40 @@ fi
 
 # Thu thập thông tin replica set
 echo -e "${YELLOW}Nhập thông tin replica set:${NC}"
-read -p "Tên replica set [rs0]: " RS_NAME
-RS_NAME=${RS_NAME:-rs0}
+read -p "Tên replica set [$REPLICA_SET_NAME]: " RS_NAME
+RS_NAME=${RS_NAME:-$REPLICA_SET_NAME}
 
 # Tạo keyfile cho authentication
 echo -e "${YELLOW}Tạo keyfile cho authentication...${NC}"
-KEYFILE_PATH="/etc/mongodb-keyfile"
-if [ ! -f "$KEYFILE_PATH" ]; then
-  openssl rand -base64 756 > $KEYFILE_PATH
-  chmod 600 $KEYFILE_PATH
-  chown mongodb:mongodb $KEYFILE_PATH
+if [ ! -f "$MONGODB_KEYFILE" ]; then
+  openssl rand -base64 756 > $MONGODB_KEYFILE
+  chmod 600 $MONGODB_KEYFILE
+  chown mongodb:mongodb $MONGODB_KEYFILE
   echo -e "${GREEN}✓ Đã tạo keyfile mới${NC}"
 else
-  chmod 600 $KEYFILE_PATH
-  chown mongodb:mongodb $KEYFILE_PATH
+  chmod 600 $MONGODB_KEYFILE
+  chown mongodb:mongodb $MONGODB_KEYFILE
   echo -e "${YELLOW}✓ Keyfile đã tồn tại${NC}"
 fi
 
 # Cập nhật cấu hình MongoDB
 echo -e "${YELLOW}Cập nhật cấu hình MongoDB...${NC}"
-cat > /etc/mongod.conf << EOF
+cat > $MONGODB_CONFIG << EOF
 storage:
-  dbPath: /var/lib/mongodb
+  dbPath: $MONGODB_DATA_DIR
 
 systemLog:
   destination: file
   logAppend: true
-  path: /var/log/mongodb/mongod.log
+  path: $MONGODB_LOG_PATH
 
 net:
   port: $CURRENT_PORT
-  bindIp: 0.0.0.0
+  bindIp: $BIND_IP
 
 security:
   authorization: enabled
-  keyFile: $KEYFILE_PATH
+  keyFile: $MONGODB_KEYFILE
 
 replication:
   replSetName: $RS_NAME

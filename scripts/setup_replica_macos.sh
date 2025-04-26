@@ -50,13 +50,13 @@ setup_replica_macos() {
     mkdir -p "$MONGODB_CONFIG_DIR"
 
     # Generate keyfile if not exists
-    if [ ! -f "$KEYFILE_PATH" ]; then
-        openssl rand -base64 756 > "$KEYFILE_PATH"
-        chmod 400 "$KEYFILE_PATH"
+    if [ ! -f "$MONGODB_KEYFILE" ]; then
+        openssl rand -base64 756 > "$MONGODB_KEYFILE"
+        chmod 400 "$MONGODB_KEYFILE"
     fi
 
     # Create MongoDB configuration
-    cat > "$MONGODB_CONFIG_PATH" << EOF
+    cat > "$MONGODB_CONFIG" << EOF
 systemLog:
   destination: file
   path: "$MONGODB_LOG_PATH"
@@ -64,10 +64,10 @@ systemLog:
 storage:
   dbPath: "$MONGODB_DATA_DIR"
 net:
-  port: $MONGODB_PORT
+  port: $MONGO_PORT
   bindIp: 0.0.0.0
 security:
-  keyFile: "$KEYFILE_PATH"
+  keyFile: "$MONGODB_KEYFILE"
 replication:
   replSetName: "$REPLICA_SET_NAME"
 EOF
@@ -82,11 +82,11 @@ EOF
     sleep 5
 
     # Initialize replica set
-    mongosh --port $MONGODB_PORT --eval "
+    mongosh --port $MONGO_PORT --eval "
         rs.initiate({
             _id: '$REPLICA_SET_NAME',
             members: [
-                {_id: 0, host: 'localhost:$MONGODB_PORT'}
+                {_id: 0, host: 'localhost:$MONGO_PORT'}
             ]
         })
     "
