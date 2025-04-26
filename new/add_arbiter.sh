@@ -32,7 +32,7 @@ get_current_ip() {
 }
 
 # Yêu cầu người dùng nhập IP của PRIMARY node
-echo -e "${YELLOW}Vui lòng nhập IP của [$(get_current_ip)] node:${NC}"
+echo -e "${YELLOW}Vui lòng nhập IP của node:${NC}"
 read -p "PRIMARY node IP: " PRIMARY_IP
 
 if [ -z "$PRIMARY_IP" ]; then
@@ -62,13 +62,6 @@ ARBITER_HOST="${ARBITER_IP}:${MONGODB_PORT}"
 echo -e "${YELLOW}Bắt đầu thiết lập MongoDB ARBITER Node...${NC}"
 echo -e "${YELLOW}PRIMARY node: $PRIMARY_HOST${NC}"
 echo -e "${YELLOW}ARBITER node: $ARBITER_HOST${NC}"
-
-# 1. Kiểm tra keyfile từ PRIMARY
-if [ ! -f "$MONGODB_KEYFILE" ]; then
-    echo -e "${RED}Keyfile không tồn tại tại $MONGODB_KEYFILE${NC}"
-    echo -e "${YELLOW}Vui lòng copy keyfile từ PRIMARY node về trước khi chạy script này.${NC}"
-    exit 1
-fi
 
 # 2. Tạo thư mục dữ liệu MongoDB nếu chưa tồn tại
 if [ ! -d "$MONGODB_DATA_DIR" ]; then
@@ -192,7 +185,12 @@ fi
 
 # Join vào Replica Set từ PRIMARY
 echo -e "${YELLOW}Đang join vào Replica Set từ PRIMARY...${NC}"
-mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "rs.addArb(\"$ARBITER_HOST\")"
+mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "rs.addArb(\"$ARBITER_HOST\")" || {
+    echo -e "${YELLOW}Thử cách khác để thêm ARBITER...${NC}"
+    mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "rs.reconfig(rs.conf())"
+    sleep 5
+    mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "rs.addArb(\"$ARBITER_HOST\")"
+}
 
 # Đợi một chút để Replica Set cập nhật
 sleep 5
@@ -204,4 +202,4 @@ mongosh --port $MONGODB_PORT -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticat
 # Hoàn thành
 echo -e "${GREEN}MongoDB ARBITER Node đã được thiết lập thành công!${NC}"
 echo -e "${GREEN}Bạn có thể đăng nhập với lệnh sau:${NC}"
-echo -e "${GREEN}mongosh --port $MONGODB_PORT -u $MONGODB_USER -p $MONGODB_PASS --authenticationDatabase admin${NC}" 
+echo -e "${GREEN}mongosh --port $MONGODB_PORT -u $MONGODB_USER -p $MONGODB_PASS --authenticationDatabase admin${NC}"
