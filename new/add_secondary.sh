@@ -17,14 +17,14 @@ get_current_ip() {
 }
 
 echo -e "Vui lòng nhập IP của PRIMARY node"
-read -p "PRIMARY node IP: " PRIMARY_HOST
-if [ -z "$PRIMARY_HOST" ]; then
-  PRIMARY_HOST=$(get_current_ip)
-  echo "PRIMARY IP: $PRIMARY_HOST"
+read -p "PRIMARY node IP: " PRIMARY_IP
+if [ -z "$PRIMARY_IP" ]; then
+  PRIMARY_IP=$(get_current_ip)
+  echo "PRIMARY IP: $PRIMARY_IP"
 fi
 
-if [ -z "$PRIMARY_HOST" ] || [ -z "$MONGODB_USER" ] || [ -z "$MONGODB_PASS" ]; then
-  echo "Usage: $0 <PRIMARY_HOST> <MONGODB_USER> <MONGODB_PASS>"
+if [ -z "$PRIMARY_IP" ] || [ -z "$MONGODB_USER" ] || [ -z "$MONGODB_PASS" ]; then
+  echo "Usage: $0 <PRIMARY_IP> <MONGODB_USER> <MONGODB_PASS>"
   exit 1
 fi
 
@@ -35,7 +35,7 @@ if [ -z "$SECONDARY_HOST" ]; then
   exit 1
 fi
 
-mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "$AUTH_DB" --eval "
+mongosh --host "$PRIMARY_IP" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "$AUTH_DB" --eval "
 rs.add('$SECONDARY_HOST');
 var cfg = rs.conf();
 for (var i = 0; i < cfg.members.length; i++) {

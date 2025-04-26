@@ -19,24 +19,24 @@ get_current_ip() {
 }
 
 echo -e "Vui lòng nhập IP của PRIMARY node"
-read -p "PRIMARY node IP: " PRIMARY_HOST
-if [ -z "$PRIMARY_HOST" ]; then
-  PRIMARY_HOST=$(get_current_ip)
-  echo "PRIMARY IP: $PRIMARY_HOST"
+read -p "PRIMARY node IP: " PRIMARY_IP
+if [ -z "$PRIMARY_IP" ]; then
+  PRIMARY_IP=$(get_current_ip)
+  echo "PRIMARY IP: $PRIMARY_IP"
 fi
 
 # Kiểm tra IP PRIMARY hợp lệ
-if [[ ! $PRIMARY_HOST =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+if [[ ! $PRIMARY_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo -e "${RED}IP PRIMARY không hợp lệ. Vui lòng nhập lại.${NC}"
     exit 1
 fi
 
-if [ -z "$PRIMARY_HOST" ] || [ -z "$MONGODB_USER" ] || [ -z "$MONGODB_PASS" ]; then
-  echo "Usage: $0 <PRIMARY_HOST> <MONGODB_USER> <MONGODB_PASS>"
+if [ -z "$PRIMARY_IP" ] || [ -z "$MONGODB_USER" ] || [ -z "$MONGODB_PASS" ]; then
+  echo "Usage: $0 <PRIMARY_IP> <MONGODB_USER> <MONGODB_PASS>"
   exit 1
 fi
 
-UNREACHABLE_NODES=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "$AUTH_DB" --quiet --eval '
+UNREACHABLE_NODES=$(mongosh --host "$PRIMARY_IP" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "$AUTH_DB" --quiet --eval '
 rs.status().members.filter(m => m.health === 0 || m.stateStr.includes("not reachable")).map(m => m.name).join(" ")
 ')
 
@@ -47,7 +47,7 @@ fi
 
 for NODE in $UNREACHABLE_NODES; do
   echo "Đang remove node không reachable: $NODE"
-  mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "$AUTH_DB" --eval "rs.remove(\"$NODE\")"
+  mongosh --host "$PRIMARY_IP" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "$AUTH_DB" --eval "rs.remove(\"$NODE\")"
 done
 
 echo "Đã remove xong các node không reachable."

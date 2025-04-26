@@ -20,7 +20,7 @@ NC='\033[0m' # No Color
 
 # Hàm tạo keyfile
 create_keyfile() {
-    local primary_host=$1
+    local PRIMARY_IP=$1
     
     echo -e "${YELLOW}Tạo keyfile cho xác thực...${NC}"
     
@@ -28,8 +28,8 @@ create_keyfile() {
     read -p "Nhập username SSH cho máy chủ primary: " ssh_user
     
     # Thử copy keyfile từ primary
-    echo -e "${YELLOW}Copy keyfile từ máy chủ primary $primary_host...${NC}"
-    if scp -o StrictHostKeyChecking=no ${ssh_user}@${primary_host}:${MONGODB_KEYFILE} ${MONGODB_KEYFILE}; then
+    echo -e "${YELLOW}Copy keyfile từ máy chủ primary $PRIMARY_IP...${NC}"
+    if scp -o StrictHostKeyChecking=no ${ssh_user}@${PRIMARY_IP}:${MONGODB_KEYFILE} ${MONGODB_KEYFILE}; then
         echo -e "${GREEN}Đã copy keyfile từ primary thành công${NC}"
     else
         echo -e "${RED}Không thể copy keyfile từ primary. Tạo keyfile mới...${NC}"
@@ -88,11 +88,11 @@ if [ -z "$SECONDARY_IP" ] || [[ ! $SECONDARY_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9
     fi
 fi
 
-PRIMARY_HOST="${PRIMARY_IP}:27017"
+PRIMARY_IP="${PRIMARY_IP}:27017"
 SECONDARY_HOST="${SECONDARY_IP}:27017"
 
 echo -e "${YELLOW}Bắt đầu thiết lập MongoDB Secondary Node...${NC}"
-echo -e "${YELLOW}PRIMARY node: $PRIMARY_HOST${NC}"
+echo -e "${YELLOW}PRIMARY node: $PRIMARY_IP${NC}"
 echo -e "${YELLOW}SECONDARY node: $SECONDARY_HOST${NC}"
 
 # Tạo keyfile từ PRIMARY node
@@ -148,9 +148,9 @@ if [ "$AUTH_STATUS" == "1" ]; then
         
         # Join vào Replica Set từ PRIMARY
         echo -e "${YELLOW}Đang join vào Replica Set từ PRIMARY...${NC}"
-        mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "rs.add(\"$SECONDARY_HOST\")"
+        mongosh --host "$PRIMARY_IP" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "rs.add(\"$SECONDARY_HOST\")"
         sleep 2
-        mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "
+        mongosh --host "$PRIMARY_IP" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "
             var cfg = rs.conf();
             for (var i = 0; i < cfg.members.length; i++) {
                 if (cfg.members[i].host === '$SECONDARY_HOST') {
@@ -221,7 +221,7 @@ EOF
     
     # Join vào Replica Set từ PRIMARY
     echo -e "${YELLOW}Đang join vào Replica Set từ PRIMARY...${NC}"
-    mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "rs.add(\"$SECONDARY_HOST\")"
+    mongosh --host "$PRIMARY_IP" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "rs.add(\"$SECONDARY_HOST\")"
     
     # Đợi một chút để Replica Set cập nhật
     sleep 5

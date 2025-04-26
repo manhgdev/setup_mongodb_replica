@@ -35,10 +35,10 @@ get_current_ip() {
 echo -e "${YELLOW}Vui lòng nhập IP của PRIMARY node:${NC}"
 read -p "PRIMARY node IP: " PRIMARY_IP
 
-# Kiểm tra IP PRIMARY hợp lệ
-if [[ ! $PRIMARY_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    echo -e "${RED}IP PRIMARY không hợp lệ. Vui lòng nhập lại.${NC}"
-    exit 1
+read -p "PRIMARY node IP: " PRIMARY_IP
+if [ -z "$PRIMARY_IP" ]; then
+  PRIMARY_IP=$(get_current_ip)
+  echo "PRIMARY IP: $PRIMARY_IP"
 fi
 
 # Tự động lấy IP của ARBITER node (node hiện tại)
