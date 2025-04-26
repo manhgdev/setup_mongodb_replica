@@ -6,6 +6,9 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+# Biến cấu hình
+MONGO_PORT="27017"
+
 # Kiểm tra và sửa các vấn đề có thể gây ra lỗi không reachable
 check_and_fix_unreachable() {
     local NODE_IP=$1
@@ -53,7 +56,7 @@ check_and_fix_unreachable() {
     
     # Kiểm tra kết nối từ PRIMARY
     echo -e "${YELLOW}Kiểm tra kết nối từ PRIMARY...${NC}"
-    local primary_status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
+    local primary_status=$(mongosh --host $PRIMARY_IP --port ${MONGO_PORT} -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
     local primary_host=$(echo "$primary_status" | grep -A 5 "PRIMARY" | grep "name" | awk -F'"' '{print $4}')
     
     if [ -n "$primary_host" ]; then
@@ -99,14 +102,14 @@ fix_unreachable_node() {
     fi
     
     # Kiểm tra trạng thái replica set
-    local status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
+    local status=$(mongosh --host $PRIMARY_IP --port ${MONGO_PORT} -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
     
     # Kiểm tra node có trong replica set không
     if ! echo "$status" | grep -q "$NODE_IP:$NODE_PORT"; then
         echo -e "${YELLOW}⚠️ Node $NODE_IP:$NODE_PORT không có trong replica set${NC}"
         echo -e "${YELLOW}Đang thêm node vào replica set...${NC}"
         
-        local add_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
+        local add_result=$(mongosh --host $PRIMARY_IP --port ${MONGO_PORT} -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
         rs.add('$NODE_IP:$NODE_PORT')" --quiet)
         
         if echo "$add_result" | grep -q "ok"; then
@@ -123,7 +126,7 @@ fix_unreachable_node() {
     sleep 10
     
     # Kiểm tra trạng thái node
-    local status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
+    local status=$(mongosh --host $PRIMARY_IP --port ${MONGO_PORT} -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
     
     if echo "$status" | grep -q "$NODE_IP:$NODE_PORT.*SECONDARY"; then
         echo -e "${GREEN}✅ Node $NODE_IP:$NODE_PORT đã hoạt động bình thường${NC}"
@@ -159,14 +162,14 @@ force_recover_node() {
     fi
     
     # Kiểm tra trạng thái replica set
-    local status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
+    local status=$(mongosh --host $PRIMARY_IP --port ${MONGO_PORT} -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
     
     # Kiểm tra node có trong replica set không
     if echo "$status" | grep -q "$NODE_IP:$NODE_PORT"; then
         echo -e "${YELLOW}⚠️ Node $NODE_IP:$NODE_PORT đã có trong replica set, đang xóa...${NC}"
         
         # Xóa node khỏi replica set
-        local remove_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
+        local remove_result=$(mongosh --host $PRIMARY_IP --port ${MONGO_PORT} -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
         rs.remove('$NODE_IP:$NODE_PORT')" --quiet)
         
         if echo "$remove_result" | grep -q "ok"; then
@@ -184,7 +187,7 @@ force_recover_node() {
     
     # Thêm lại node vào replica set
     echo -e "${YELLOW}Đang thêm lại node vào replica set...${NC}"
-    local add_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
+    local add_result=$(mongosh --host $PRIMARY_IP --port ${MONGO_PORT} -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
     rs.add('$NODE_IP:$NODE_PORT')" --quiet)
     
     if echo "$add_result" | grep -q "ok"; then
@@ -200,7 +203,7 @@ force_recover_node() {
     sleep 5
     
     # Kiểm tra trạng thái node
-    local status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
+    local status=$(mongosh --host $PRIMARY_IP --port ${MONGO_PORT} -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
     
     if echo "$status" | grep -q "$NODE_IP:$NODE_PORT.*SECONDARY"; then
         echo -e "${GREEN}✅ Node $NODE_IP:$NODE_PORT đã hoạt động bình thường${NC}"
@@ -224,7 +227,7 @@ force_reconfigure_node() {
     
     # Force reconfigure replica set
     echo -e "${YELLOW}Force reconfigure replica set...${NC}"
-    local reconfigure_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
+    local reconfigure_result=$(mongosh --host $PRIMARY_IP --port ${MONGO_PORT} -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
     try {
         let config = rs.conf();
         let members = config.members;
@@ -265,7 +268,7 @@ force_reconfigure_node() {
     sleep 30
     
     # Kiểm tra trạng thái node
-    local status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
+    local status=$(mongosh --host $PRIMARY_IP --port ${MONGO_PORT} -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
     
     if echo "$status" | grep -q "$NODE_IP:$NODE_PORT.*SECONDARY"; then
         echo -e "${GREEN}✅ Node $NODE_IP:$NODE_PORT đã hoạt động bình thường${NC}"
@@ -288,7 +291,7 @@ remove_node() {
     echo -e "${YELLOW}Đang xóa node $NODE_IP:$NODE_PORT khỏi replica set...${NC}"
     
     # Kiểm tra trạng thái replica set
-    local status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
+    local status=$(mongosh --host $PRIMARY_IP --port ${MONGO_PORT} -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "rs.status()" --quiet)
     
     # Kiểm tra node có trong replica set không
     if ! echo "$status" | grep -q "$NODE_IP:$NODE_PORT"; then
@@ -297,7 +300,7 @@ remove_node() {
     fi
     
     # Xóa node khỏi replica set
-    local remove_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
+    local remove_result=$(mongosh --host $PRIMARY_IP --port ${MONGO_PORT} -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
     try {
         rs.remove('$NODE_IP:$NODE_PORT');
         print('OK');
@@ -327,7 +330,7 @@ force_fix_node() {
     
     # 1. Xóa node khỏi replica set trước
     echo -e "${YELLOW}1. Xóa node khỏi replica set...${NC}"
-    mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
+    mongosh --host $PRIMARY_IP --port ${MONGO_PORT} -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
     try {
         rs.remove('$NODE_IP:$NODE_PORT');
         print('OK');
@@ -360,7 +363,7 @@ force_fix_node() {
     
     # 7. Thêm lại node vào replica set với priority thấp
     echo -e "${YELLOW}7. Thêm lại node vào replica set...${NC}"
-    local add_result=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
+    local add_result=$(mongosh --host $PRIMARY_IP --port ${MONGO_PORT} -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
     try {
         rs.add({
             host: '$NODE_IP:$NODE_PORT',
@@ -383,7 +386,7 @@ force_fix_node() {
     
     # 9. Kiểm tra trạng thái cuối cùng
     echo -e "${YELLOW}9. Kiểm tra trạng thái cuối cùng...${NC}"
-    local status=$(mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
+    local status=$(mongosh --host $PRIMARY_IP --port ${MONGO_PORT} -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
     let status = rs.status();
     let member = status.members.find(m => m.name === '$NODE_IP:$NODE_PORT');
     if (member) {
@@ -398,7 +401,7 @@ force_fix_node() {
         
         # 10. Tăng priority lên bình thường
         echo -e "${YELLOW}10. Tăng priority lên bình thường...${NC}"
-        mongosh --host $PRIMARY_IP --port 27017 -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
+        mongosh --host $PRIMARY_IP --port ${MONGO_PORT} -u $ADMIN_USER -p $ADMIN_PASS --authenticationDatabase admin --eval "
         try {
             let config = rs.conf();
             let member = config.members.find(m => m.host === '$NODE_IP:$NODE_PORT');

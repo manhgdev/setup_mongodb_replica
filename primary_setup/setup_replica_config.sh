@@ -122,6 +122,8 @@ if [ ! -f "$KEYFILE_PATH" ]; then
   chown mongodb:mongodb $KEYFILE_PATH
   echo -e "${GREEN}✓ Đã tạo keyfile mới${NC}"
 else
+  chmod 600 $KEYFILE_PATH
+  chown mongodb:mongodb $KEYFILE_PATH
   echo -e "${YELLOW}✓ Keyfile đã tồn tại${NC}"
 fi
 
