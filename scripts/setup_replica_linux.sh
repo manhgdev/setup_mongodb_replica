@@ -136,17 +136,26 @@ check_replica_status() {
     
     echo -e "${YELLOW}Kiểm tra trạng thái replica set $REPLICA_SET_NAME...${NC}"
     
-    # Lấy thông tin status
-    local status=$(mongosh --host "$host" --port "$MONGO_PORT" --eval "rs.status()")
+    # Yêu cầu thông tin đăng nhập
+    read -p "Username (mặc định: $MONGODB_USER): " username
+    read -sp "Password (mặc định: $MONGODB_PASSWORD): " password
+    echo ""
+    
+    # Sử dụng giá trị mặc định nếu không nhập
+    username=${username:-$MONGODB_USER}
+    password=${password:-$MONGODB_PASSWORD}
+    
+    # Lấy thông tin status với xác thực
+    local status=$(mongosh --host "$host" --port "$MONGO_PORT" -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "rs.status()")
     
     # Hiển thị thông tin cơ bản
-    local members=$(mongosh --host "$host" --port "$MONGO_PORT" --eval "rs.status().members.forEach(function(m) { print(m.name + ' - ' + m.stateStr); })")
+    local members=$(mongosh --host "$host" --port "$MONGO_PORT" -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "rs.status().members.forEach(function(m) { print(m.name + ' - ' + m.stateStr); })")
     
     echo -e "${GREEN}Thông tin replica set:${NC}"
     echo "$members"
     
     # Kiểm tra node primary
-    local primary=$(mongosh --host "$host" --port "$MONGO_PORT" --eval "rs.isMaster().primary" | grep -v MongoDB)
+    local primary=$(mongosh --host "$host" --port "$MONGO_PORT" -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "rs.isMaster().primary" | grep -v MongoDB)
     if [ -n "$primary" ]; then
         echo -e "${GREEN}Primary node: $primary${NC}"
     else

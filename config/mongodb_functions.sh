@@ -517,31 +517,22 @@ get_server_ip() {
             # Lấy IP từ giao diện mạng chính (không phải lo/loopback)
             local default_iface=$(ip route | grep default | awk '{print $5}' | head -n1)
             if [ -n "$default_iface" ]; then
-                local ip_addr=$(ip -4 addr show $default_iface | grep -oP "(?<=inet )([0-9]{1,3}\.){3}[0-9]{1,3}")
-                if [ -n "$ip_addr" ]; then
-                    external_ip=$ip_addr
-                fi
+                external_ip=$(ip -4 addr show $default_iface | grep -oP "(?<=inet )([0-9]{1,3}\.){3}[0-9]{1,3}")
             fi
         elif command -v ifconfig &>/dev/null; then
-            # Backup nếu không có ip command
-            local ip_addr=$(ifconfig | grep -A1 'eth0\|en0\|ens3' | grep -oP "(?<=inet )([0-9]{1,3}\.){3}[0-9]{1,3}" | head -n1)
-            if [ -n "$ip_addr" ]; then
-                external_ip=$ip_addr
+            # Lấy ip từ ifconfig
+            local default_iface=$(netstat -rn | grep default | head -n1 | awk '{print $NF}')
+            if [ -n "$default_iface" ]; then
+                external_ip=$(ifconfig $default_iface | grep -oE "inet ([0-9]{1,3}\.){3}[0-9]{1,3}" | awk '{print $2}')
             fi
         fi
     fi
     
-    # Nếu vẫn không lấy được IP, sử dụng localhost
+    # Fallback nếu không tìm được IP
     if [ -z "$external_ip" ]; then
         external_ip="127.0.0.1"
-        if [ "$quiet" = false ]; then
-            echo -e "${YELLOW}Không thể xác định IP, sử dụng localhost: $external_ip${NC}"
-        fi
-    else
-        if [ "$quiet" = false ]; then
-            echo -e "${GREEN}IP máy chủ: $external_ip${NC}"
-        fi
     fi
     
+    # Trả về kết quả không kèm thông báo
     echo "$external_ip"
 } 
