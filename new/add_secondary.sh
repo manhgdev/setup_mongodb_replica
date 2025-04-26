@@ -18,6 +18,7 @@ get_current_ip() {
 
 echo -e "Vui lòng nhập IP của PRIMARY node"
 read -p "PRIMARY node IP: " PRIMARY_IP
+
 if [ -z "$PRIMARY_IP" ]; then
   PRIMARY_IP=$(get_current_ip)
   echo "PRIMARY IP: $PRIMARY_IP"

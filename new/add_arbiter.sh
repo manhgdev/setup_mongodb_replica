@@ -32,13 +32,11 @@ get_current_ip() {
 }
 
 # Yêu cầu người dùng nhập IP của PRIMARY node
-echo -e "${YELLOW}Vui lòng nhập IP của PRIMARY node:${NC}"
+echo -e "${YELLOW}Vui lòng nhập IP của [$(get_current_ip)] node:${NC}"
 read -p "PRIMARY node IP: " PRIMARY_IP
 
-read -p "PRIMARY node IP: " PRIMARY_IP
 if [ -z "$PRIMARY_IP" ]; then
   PRIMARY_IP=$(get_current_ip)
-  echo "PRIMARY IP: $PRIMARY_IP"
 fi
 
 # Tự động lấy IP của ARBITER node (node hiện tại)
