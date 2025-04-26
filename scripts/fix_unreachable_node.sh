@@ -437,8 +437,8 @@ fix_unreachable_node_menu() {
     read -p "Nhập Port của node (Enter để dùng 27018): " NODE_PORT
     NODE_PORT=${NODE_PORT:-27018}  # Nếu không nhập thì dùng 27018
     
-    read -p "Nhập IP của PRIMARY node (Enter để dùng 171.244.21.188): " PRIMARY_IP
-    PRIMARY_IP=${PRIMARY_IP:-171.244.21.188}  # Nếu không nhập thì dùng 171.244.21.188
+    read -p "Nhập IP của PRIMARY node (Enter để dùng 0.0.0.0): " PRIMARY_IP
+    PRIMARY_IP=${PRIMARY_IP:-0.0.0.0}  # Nếu không nhập thì dùng 0.0.0.0
     
     read -p "Nhập username admin (Enter để dùng $MONGODB_USER): " ADMIN_USER
     ADMIN_USER=${ADMIN_USER:-$MONGODB_USER}  # Nếu không nhập thì dùng MONGODB_USER

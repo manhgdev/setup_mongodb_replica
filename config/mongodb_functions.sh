@@ -501,6 +501,7 @@ EOF
 # Lấy IP của máy chủ
 get_server_ip() {
     local external_ip=""
+    local quiet=${1:-false}
     
     # Thử lấy IP public
     if command -v curl &>/dev/null; then
@@ -533,9 +534,13 @@ get_server_ip() {
     # Nếu vẫn không lấy được IP, sử dụng localhost
     if [ -z "$external_ip" ]; then
         external_ip="127.0.0.1"
-        echo -e "${YELLOW}Không thể xác định IP, sử dụng localhost: $external_ip${NC}"
+        if [ "$quiet" = false ]; then
+            echo -e "${YELLOW}Không thể xác định IP, sử dụng localhost: $external_ip${NC}"
+        fi
     else
-        echo -e "${GREEN}IP máy chủ: $external_ip${NC}"
+        if [ "$quiet" = false ]; then
+            echo -e "${GREEN}IP máy chủ: $external_ip${NC}"
+        fi
     fi
     
     echo "$external_ip"

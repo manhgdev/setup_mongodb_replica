@@ -2,31 +2,36 @@
 # MongoDB Replica Set Setup Script
 # Script thiết lập Replica Set MongoDB tự động
 
-# Đọc các biến cấu hình và hàm chức năng
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/../config/mongodb_settings.sh"
-source "${SCRIPT_DIR}/../config/mongodb_functions.sh"
-
-# Kiểm tra quyền root
-has_sudo_rights=true
-if [ "$(id -u)" -ne 0 ]; then
-    if command -v sudo &>/dev/null; then
-        echo -e "${YELLOW}Script sẽ thực hiện một số lệnh cần quyền sudo.${NC}"
-        sudo -v || has_sudo_rights=false
-    else
-        has_sudo_rights=false
-    fi
-    
-    if [ "$has_sudo_rights" = false ]; then
-        echo -e "${YELLOW}Cảnh báo: Không chạy với quyền root hoặc sudo.${NC}"
-        echo -e "${YELLOW}Một số chức năng có thể không hoạt động, tiếp tục ở chế độ thử nghiệm...${NC}"
-    fi
+# Đọc các biến cấu hình và hàm chức năng nếu chưa import
+if [ -z "$REPLICA_SET_NAME" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    source "${SCRIPT_DIR}/../config/mongodb_settings.sh"
+    source "${SCRIPT_DIR}/../config/mongodb_functions.sh"
 fi
 
-# Chuyển đổi lệnh sudo dựa trên quyền
-sudo_cmd=""
-if [ "$(id -u)" -ne 0 ] && [ "$has_sudo_rights" = true ]; then
-    sudo_cmd="sudo"
+# Thiết lập sudo_cmd nếu chưa được định nghĩa
+if [ -z "$sudo_cmd" ]; then
+    # Kiểm tra quyền root
+    has_sudo_rights=true
+    if [ "$(id -u)" -ne 0 ]; then
+        if command -v sudo &>/dev/null; then
+            echo -e "${YELLOW}Script sẽ thực hiện một số lệnh cần quyền sudo.${NC}"
+            sudo -v || has_sudo_rights=false
+        else
+            has_sudo_rights=false
+        fi
+        
+        if [ "$has_sudo_rights" = false ]; then
+            echo -e "${YELLOW}Cảnh báo: Không chạy với quyền root hoặc sudo.${NC}"
+            echo -e "${YELLOW}Một số chức năng có thể không hoạt động, tiếp tục ở chế độ thử nghiệm...${NC}"
+        fi
+    fi
+
+    # Chuyển đổi lệnh sudo dựa trên quyền
+    sudo_cmd=""
+    if [ "$(id -u)" -ne 0 ] && [ "$has_sudo_rights" = true ]; then
+        sudo_cmd="sudo"
+    fi
 fi
 
 # Functions
@@ -218,42 +223,25 @@ setup_secondary_node() {
     # Thông báo cho người dùng
     echo -e "${YELLOW}Địa chỉ IP của SECONDARY node: $secondary_ip${NC}"
     echo -e "${YELLOW}Hãy thêm node này vào replica set từ PRIMARY node bằng lệnh:${NC}"
-    echo -e "${GREEN}mongo --host $primary_ip --port $MONGO_PORT --eval \"rs.add('$secondary_ip:$MONGO_PORT')\"${NC}"
+    echo -e "${GREEN}mongosh --host $primary_ip --port $MONGO_PORT --eval \"rs.add('$secondary_ip:$MONGO_PORT')\"${NC}"
     
     # Hỏi người dùng có muốn thêm node này vào replica set ngay không
     read -p "Thêm node này vào replica set ngay? (y/n): " add_now
     if [[ "$add_now" == "y" || "$add_now" == "Y" ]]; then
         # Yêu cầu thông tin đăng nhập
-        read -p "Username (mặc định: $ADMIN_USERNAME): " username
-        read -sp "Password (mặc định: $ADMIN_PASSWORD): " password
+        read -p "Username (mặc định: $MONGODB_USER): " username
+        read -sp "Password (mặc định: $MONGODB_PASSWORD): " password
         echo ""
         
         # Sử dụng giá trị mặc định nếu không nhập
-        username=${username:-$ADMIN_USERNAME}
-        password=${password:-$ADMIN_PASSWORD}
+        username=${username:-$MONGODB_USER}
+        password=${password:-$MONGODB_PASSWORD}
         
         # Thêm node vào replica set
-        mongo --host "$primary_ip" --port "$MONGO_PORT" -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "rs.add('$secondary_ip:$MONGO_PORT')"
+        mongosh --host "$primary_ip" --port "$MONGO_PORT" -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "rs.add('$secondary_ip:$MONGO_PORT')"
     fi
     
     echo -e "${GREEN}Thiết lập SECONDARY NODE hoàn tất!${NC}"
-}
-
-# Menu
-show_menu() {
-    clear
-    echo -e "${BLUE}=========================================${NC}"
-    echo -e "${BLUE}     MONGODB REPLICA SET SETUP TOOL     ${NC}"
-    echo -e "${BLUE}=========================================${NC}"
-    echo -e "${YELLOW}1. Thiết lập PRIMARY node${NC}"
-    echo -e "${YELLOW}2. Thiết lập SECONDARY node${NC}"
-    echo -e "${YELLOW}3. Kiểm tra trạng thái replica set${NC}"
-    echo -e "${YELLOW}4. Khởi động lại MongoDB${NC}"
-    echo -e "${YELLOW}5. Dừng MongoDB${NC}"
-    echo -e "${YELLOW}6. Xem thông tin cấu hình${NC}"
-    echo -e "${YELLOW}0. Thoát${NC}"
-    echo -e "${BLUE}=========================================${NC}"
-    echo -n "Chọn một tùy chọn [0-6]: "
 }
 
 # Xem thông tin cấu hình
@@ -263,8 +251,8 @@ show_config() {
     echo -e "${YELLOW}MongoDB Port: ${GREEN}$MONGO_PORT${NC}"
     echo -e "${YELLOW}Replica Set Name: ${GREEN}$REPLICA_SET_NAME${NC}"
     echo -e "${YELLOW}Admin Database: ${GREEN}$AUTH_DATABASE${NC}"
-    echo -e "${YELLOW}Admin Username: ${GREEN}$ADMIN_USERNAME${NC}"
-    echo -e "${YELLOW}Admin Password: ${GREEN}$ADMIN_PASSWORD${NC}"
+    echo -e "${YELLOW}Admin Username: ${GREEN}$MONGODB_USER${NC}"
+    echo -e "${YELLOW}Admin Password: ${GREEN}$MONGODB_PASSWORD${NC}"
     echo -e "${YELLOW}Data Directory: ${GREEN}$MONGODB_DATA_DIR${NC}"
     echo -e "${YELLOW}Log Path: ${GREEN}$MONGODB_LOG_PATH${NC}"
     echo -e "${YELLOW}Config File: ${GREEN}$MONGODB_CONFIG${NC}"
@@ -286,22 +274,45 @@ show_config() {
     fi
 }
 
-# Main
-# ----
-
-# Thực thi menu
-while true; do
-    show_menu
-    read choice
+# Hiển thị menu replica
+show_replica_menu() {
+    local exit_text=$1
     
-    case $choice in
-        1) setup_primary_node; read -p "Nhấn Enter để tiếp tục..." ;;
-        2) setup_secondary_node; read -p "Nhấn Enter để tiếp tục..." ;;
-        3) check_replica_status; read -p "Nhấn Enter để tiếp tục..." ;;
-        4) stop_mongodb && start_mongodb; read -p "Nhấn Enter để tiếp tục..." ;;
-        5) stop_mongodb; read -p "Nhấn Enter để tiếp tục..." ;;
-        6) show_config; read -p "Nhấn Enter để tiếp tục..." ;;
-        0) echo -e "${GREEN}Tạm biệt!${NC}"; exit 0 ;;
-        *) echo -e "${RED}Lựa chọn không hợp lệ. Vui lòng chọn lại.${NC}"; read -p "Nhấn Enter để tiếp tục..." ;;
-    esac
-done
+    clear
+    echo -e "${BLUE}╔════════════════════════════════════════════╗${NC}"
+    echo -e "${BLUE}║${NC}       ${YELLOW}MONGODB REPLICA SET SETUP${NC}           ${BLUE}║${NC}"
+    echo -e "${BLUE}╠════════════════════════════════════════════╣${NC}"
+    echo -e "${BLUE}║${NC} ${GREEN}1.${NC} Thiết lập PRIMARY node                  ${BLUE}║${NC}"
+    echo -e "${BLUE}║${NC} ${GREEN}2.${NC} Thiết lập SECONDARY node                ${BLUE}║${NC}"
+    echo -e "${BLUE}║${NC} ${GREEN}3.${NC} Kiểm tra trạng thái replica set         ${BLUE}║${NC}"
+    echo -e "${BLUE}║${NC} ${GREEN}4.${NC} Khởi động lại MongoDB                   ${BLUE}║${NC}"
+    echo -e "${BLUE}║${NC} ${GREEN}5.${NC} Dừng MongoDB                            ${BLUE}║${NC}"
+    echo -e "${BLUE}║${NC} ${GREEN}6.${NC} Xem thông tin cấu hình                  ${BLUE}║${NC}"
+    echo -e "${BLUE}║${NC} ${RED}0.${NC} $exit_text                               ${BLUE}║${NC}"
+    echo -e "${BLUE}╚════════════════════════════════════════════╝${NC}"
+    echo -e "${YELLOW}Server IP: $(get_server_ip true)${NC}"
+    echo -e "${YELLOW}MongoDB Version: ${MONGO_VERSION} | Port: ${MONGO_PORT} | Replica: ${REPLICA_SET_NAME}${NC}"
+    echo
+    read -p "$(echo -e ${GREEN}">>${NC} Chọn chức năng [0-6]: ")" choice
+    
+    echo "$choice"
+}
+
+# Hàm setup_replica để gọi từ main.sh
+setup_replica_linux() {
+    while true; do
+        # Hiển thị menu đặc thù cho replica
+        choice=$(show_replica_menu "Quay lại menu chính")
+        
+        case $choice in
+            1) setup_primary_node; read -p "Nhấn Enter để tiếp tục..." ;;
+            2) setup_secondary_node; read -p "Nhấn Enter để tiếp tục..." ;;
+            3) check_replica_status; read -p "Nhấn Enter để tiếp tục..." ;;
+            4) stop_mongodb && start_mongodb; read -p "Nhấn Enter để tiếp tục..." ;;
+            5) stop_mongodb; read -p "Nhấn Enter để tiếp tục..." ;;
+            6) show_config; read -p "Nhấn Enter để tiếp tục..." ;;
+            0) return 0 ;;
+            *) echo -e "${RED}❌ Lựa chọn không hợp lệ. Vui lòng chọn lại.${NC}"; read -p "Nhấn Enter để tiếp tục..." ;;
+        esac
+    done
+}
