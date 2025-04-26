@@ -2,6 +2,42 @@
 # MongoDB Replica Set Setup Script
 # Script thiết lập Replica Set MongoDB tự động
 
+# Đảm bảo terminal hỗ trợ các ký tự ANSI
+export TERM=xterm-256color
+
+# Define colors
+BLUE='\033[0;34m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+# Kiểm tra terminal hỗ trợ màu
+if [ -t 1 ]; then
+    ncolors=$(tput colors 2>/dev/null)
+    if [ -n "$ncolors" ] && [ $ncolors -ge 8 ]; then
+        echo "Terminal hỗ trợ màu"
+    else
+        # Nếu terminal không hỗ trợ màu, đặt các biến màu về rỗng
+        echo "Terminal không hỗ trợ màu, hiển thị văn bản thường"
+        BLUE=''
+        GREEN=''
+        YELLOW=''
+        RED=''
+        NC=''
+    fi
+fi
+
+# Kiểm tra xem script có đang chạy trên macOS hay không
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    echo -e "${YELLOW}⚠️ Script này dành cho Linux. Đang chạy trên macOS, một số tính năng có thể không hoạt động.${NC}"
+    echo
+    read -p "Bạn có muốn tiếp tục? (y/n): " continue_mac
+    if [[ "$continue_mac" != "y" && "$continue_mac" != "Y" ]]; then
+        exit 1
+    fi
+fi
+
 # Get the absolute path of the script directory
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
@@ -12,15 +48,6 @@ fi
 
 if [ -f "$SCRIPT_DIR/../config/mongodb_functions.sh" ]; then
     source "$SCRIPT_DIR/../config/mongodb_functions.sh"
-fi
-
-# Define colors if not defined
-if [ -z "$BLUE" ] || [ -z "$GREEN" ] || [ -z "$YELLOW" ] || [ -z "$RED" ] || [ -z "$NC" ]; then
-    BLUE='\033[0;34m'
-    GREEN='\033[0;32m'
-    YELLOW='\033[0;33m'
-    RED='\033[0;31m'
-    NC='\033[0m'
 fi
 
 # Thiết lập sudo_cmd nếu chưa được định nghĩa
@@ -288,35 +315,27 @@ show_config() {
     fi
 }
 
-# Hiển thị menu replica
-show_replica_menu() {
-    local exit_text=$1
-    
-    clear
-    echo -e "${BLUE}╔════════════════════════════════════════════╗${NC}"
-    echo -e "${BLUE}║${NC}       ${YELLOW}MONGODB REPLICA SET SETUP${NC}           ${BLUE}║${NC}"
-    echo -e "${BLUE}╠════════════════════════════════════════════╣${NC}"
-    echo -e "${BLUE}║${NC} ${GREEN}1.${NC} Thiết lập PRIMARY node                  ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC} ${GREEN}2.${NC} Thiết lập SECONDARY node                ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC} ${GREEN}3.${NC} Kiểm tra trạng thái replica set         ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC} ${GREEN}4.${NC} Khởi động lại MongoDB                   ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC} ${GREEN}5.${NC} Dừng MongoDB                            ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC} ${GREEN}6.${NC} Xem thông tin cấu hình                  ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC} ${RED}0.${NC} $exit_text                               ${BLUE}║${NC}"
-    echo -e "${BLUE}╚════════════════════════════════════════════╝${NC}"
-    echo -e "${YELLOW}Server IP: $(get_server_ip true)${NC}"
-    echo -e "${YELLOW}MongoDB Version: ${MONGO_VERSION} | Port: ${MONGO_PORT} | Replica: ${REPLICA_SET_NAME}${NC}"
-    echo
-    read -p "$(echo -e ${GREEN}">>${NC} Chọn chức năng [0-6]: ")" choice
-    
-    echo "$choice"
-}
-
 # Hàm setup_replica để gọi từ main.sh
 setup_replica_linux() {
     while true; do
-        # Hiển thị menu đặc thù cho replica
-        choice=$(show_replica_menu "Quay lại menu chính")
+        # Hiển thị menu trực tiếp
+        clear
+        echo -e "${BLUE}╔════════════════════════════════════════════╗${NC}"
+        echo -e "${BLUE}║${NC}       ${YELLOW}MONGODB REPLICA SET SETUP${NC}           ${BLUE}║${NC}"
+        echo -e "${BLUE}╠════════════════════════════════════════════╣${NC}"
+        echo -e "${BLUE}║${NC} ${GREEN}1.${NC} Thiết lập PRIMARY node                  ${BLUE}║${NC}"
+        echo -e "${BLUE}║${NC} ${GREEN}2.${NC} Thiết lập SECONDARY node                ${BLUE}║${NC}"
+        echo -e "${BLUE}║${NC} ${GREEN}3.${NC} Kiểm tra trạng thái replica set         ${BLUE}║${NC}"
+        echo -e "${BLUE}║${NC} ${GREEN}4.${NC} Khởi động lại MongoDB                   ${BLUE}║${NC}"
+        echo -e "${BLUE}║${NC} ${GREEN}5.${NC} Dừng MongoDB                            ${BLUE}║${NC}"
+        echo -e "${BLUE}║${NC} ${GREEN}6.${NC} Xem thông tin cấu hình                  ${BLUE}║${NC}"
+        echo -e "${BLUE}║${NC} ${RED}0.${NC} Quay lại menu chính                       ${BLUE}║${NC}"
+        echo -e "${BLUE}╚════════════════════════════════════════════╝${NC}"
+        echo "Server IP: $(get_server_ip true || echo 'không có')"
+        echo "MongoDB Version: ${MONGO_VERSION} | Port: ${MONGO_PORT} | Replica: ${REPLICA_SET_NAME}"
+        echo
+        
+        read -p ">> Chọn chức năng [0-6]: " choice
         
         case $choice in
             1) setup_primary_node; read -p "Nhấn Enter để tiếp tục..." ;;
@@ -326,7 +345,7 @@ setup_replica_linux() {
             5) stop_mongodb; read -p "Nhấn Enter để tiếp tục..." ;;
             6) show_config; read -p "Nhấn Enter để tiếp tục..." ;;
             0) return 0 ;;
-            *) echo -e "${RED}❌ Lựa chọn không hợp lệ. Vui lòng chọn lại.${NC}"; read -p "Nhấn Enter để tiếp tục..." ;;
+            *) echo "❌ Lựa chọn không hợp lệ. Vui lòng chọn lại."; read -p "Nhấn Enter để tiếp tục..." ;;
         esac
     done
 }

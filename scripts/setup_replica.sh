@@ -3,14 +3,6 @@
 # Import required configuration files
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-if [ -f "$SCRIPT_DIR/../config/mongodb_settings.sh" ]; then
-    source "$SCRIPT_DIR/../config/mongodb_settings.sh"
-fi
-
-if [ -f "$SCRIPT_DIR/../config/mongodb_functions.sh" ]; then
-    source "$SCRIPT_DIR/../config/mongodb_functions.sh"
-fi
-
 setup_replica() {
     # Get the absolute path of the script directory
     SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
