@@ -2,41 +2,6 @@
 # MongoDB Replica Set Setup Script
 # Script thiết lập Replica Set MongoDB tự động
 
-# Đảm bảo terminal hỗ trợ các ký tự ANSI
-export TERM=xterm-256color
-
-# Define colors
-BLUE='\033[0;34m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-RED='\033[0;31m'
-NC='\033[0m'
-
-# Kiểm tra terminal hỗ trợ màu
-if [ -t 1 ]; then
-    ncolors=$(tput colors 2>/dev/null)
-    if [ -n "$ncolors" ] && [ $ncolors -ge 8 ]; then
-        echo "Terminal hỗ trợ màu"
-    else
-        # Nếu terminal không hỗ trợ màu, đặt các biến màu về rỗng
-        echo "Terminal không hỗ trợ màu, hiển thị văn bản thường"
-        BLUE=''
-        GREEN=''
-        YELLOW=''
-        RED=''
-        NC=''
-    fi
-fi
-
-# Kiểm tra xem script có đang chạy trên macOS hay không
-if [[ "$OSTYPE" == "darwin"* ]]; then
-    echo -e "${YELLOW}⚠️ Script này dành cho Linux. Đang chạy trên macOS, một số tính năng có thể không hoạt động.${NC}"
-    echo
-    read -p "Bạn có muốn tiếp tục? (y/n): " continue_mac
-    if [[ "$continue_mac" != "y" && "$continue_mac" != "Y" ]]; then
-        exit 1
-    fi
-fi
 
 # Get the absolute path of the script directory
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -97,8 +62,8 @@ rs.initiate({
 })
 EOF
     
-    # Chạy file khởi tạo
-    mongosh --port "$MONGO_PORT" < "$init_script"
+    # Chạy file khởi tạo với IP thực tế thay vì localhost
+    mongosh --host "$ip" --port "$MONGO_PORT" < "$init_script"
     
     # Xóa file tạm
     rm -f "$init_script"
@@ -112,27 +77,23 @@ EOF
 # Thêm node vào replica set
 add_replica_node() {
     local secondary_ip=$1
-    local primary_ip=${2:-"localhost"}
+    local primary_ip=${2:-$(get_server_ip)}
     
-    # Đảm bảo sử dụng IP thật
+    # Đảm bảo sử dụng IP thật cho cả primary và secondary
     if [[ "$secondary_ip" == "localhost" || "$secondary_ip" == "127.0.0.1" ]]; then
         secondary_ip=$(get_server_ip)
-        echo -e "${YELLOW}Đã chuyển đổi 'localhost' thành IP thật: $secondary_ip${NC}"
+        echo -e "${YELLOW}Đã chuyển đổi 'localhost' thành IP thật cho secondary: $secondary_ip${NC}"
+    fi
+    
+    if [[ "$primary_ip" == "localhost" || "$primary_ip" == "127.0.0.1" ]]; then
+        primary_ip=$(get_server_ip)
+        echo -e "${YELLOW}Đã chuyển đổi 'localhost' thành IP thật cho primary: $primary_ip${NC}"
     fi
     
     echo -e "${YELLOW}Thêm node $secondary_ip vào replica set $REPLICA_SET_NAME...${NC}"
     
-    # Tạo script thêm node
-    local add_script=$(mktemp)
-    cat > "$add_script" <<EOF
-rs.add("$secondary_ip:$MONGO_PORT")
-EOF
-    
-    # Thực hiện trên primary
+    # Thực hiện trên primary với IP thực
     mongosh --host "$primary_ip" --port "$MONGO_PORT" --eval "rs.add('$secondary_ip:$MONGO_PORT')"
-    
-    # Xóa file tạm
-    rm -f "$add_script"
     
     echo -e "${GREEN}Đã thêm node $secondary_ip:$MONGO_PORT vào replica set${NC}"
 }
@@ -193,9 +154,39 @@ check_replica_status() {
     fi
 }
 
+# Tạo admin user
+create_admin_user() {
+    local username=$1
+    local password=$2
+    local auth_db=$3
+    local server_ip=$(get_server_ip)
+    
+    echo -e "${YELLOW}Tạo user admin...${NC}"
+    
+    mongosh --host "$server_ip" --port "$MONGO_PORT" --eval "
+    db = db.getSiblingDB('$auth_db');
+    db.createUser({
+        user: '$username',
+        pwd: '$password',
+        roles: [
+            { role: 'root', db: 'admin' },
+            { role: 'userAdminAnyDatabase', db: 'admin' },
+            { role: 'dbAdminAnyDatabase', db: 'admin' },
+            { role: 'readWriteAnyDatabase', db: 'admin' }
+        ]
+    });
+    " --quiet
+    
+    echo -e "${GREEN}User $username đã được tạo${NC}"
+}
+
 # Thiết lập node như primary
 setup_primary_node() {
     echo -e "${BLUE}=== THIẾT LẬP PRIMARY NODE ===${NC}"
+    
+    # Lấy địa chỉ IP thực tế của server
+    local server_ip=$(get_server_ip)
+    echo -e "${YELLOW}Sử dụng địa chỉ IP: $server_ip${NC}"
     
     # Kiểm tra MongoDB đã được cài đặt
     check_mongodb
@@ -222,7 +213,7 @@ setup_primary_node() {
     configure_firewall
     
     # Thiết lập replica set
-    init_replica_set "primary" $(get_server_ip)
+    init_replica_set "primary" "$server_ip"
     
     # Tạo admin user
     create_admin_user "$MONGODB_USER" "$MONGODB_PASSWORD" "$AUTH_DATABASE"
@@ -237,15 +228,14 @@ setup_primary_node() {
     start_mongodb
     
     # Kiểm tra kết nối
-    verify_mongodb_connection "localhost" "$MONGO_PORT" "$AUTH_DATABASE" "$MONGODB_USER" "$MONGODB_PASSWORD"
+    verify_mongodb_connection "$server_ip" "$MONGO_PORT" "$AUTH_DATABASE" "$MONGODB_USER" "$MONGODB_PASSWORD"
     
     # Kiểm tra trạng thái replica set
-    check_replica_status
+    check_replica_status "$server_ip"
     
     echo -e "${GREEN}Thiết lập PRIMARY NODE hoàn tất!${NC}"
     
     # Hiển thị thông tin kết nối
-    local server_ip=$(get_server_ip)
     echo -e "${YELLOW}Thông tin kết nối:${NC}"
     echo -e "  Địa chỉ: ${GREEN}$server_ip:$MONGO_PORT${NC}"
     echo -e "  Tên replica set: ${GREEN}$REPLICA_SET_NAME${NC}"
@@ -256,6 +246,10 @@ setup_primary_node() {
 setup_secondary_node() {
     echo -e "${BLUE}=== THIẾT LẬP SECONDARY NODE ===${NC}"
     
+    # Lấy địa chỉ IP thực tế của secondary server
+    local secondary_ip=$(get_server_ip)
+    echo -e "${YELLOW}Địa chỉ IP của SECONDARY node: $secondary_ip${NC}"
+    
     # Yêu cầu địa chỉ primary
     read -p "Nhập địa chỉ IP của PRIMARY node: " primary_ip
     
@@ -263,6 +257,12 @@ setup_secondary_node() {
     if [ -z "$primary_ip" ]; then
         echo -e "${RED}Địa chỉ IP của PRIMARY node không được để trống${NC}"
         return 1
+    fi
+    
+    # Nếu primary_ip là localhost, thì chuyển thành IP thực
+    if [[ "$primary_ip" == "localhost" || "$primary_ip" == "127.0.0.1" ]]; then
+        primary_ip=$secondary_ip
+        echo -e "${YELLOW}Đã chuyển đổi 'localhost' thành IP thực cho primary: $primary_ip${NC}"
     fi
     
     # Kiểm tra kết nối tới primary
@@ -297,11 +297,7 @@ setup_secondary_node() {
     # Cấu hình tường lửa
     configure_firewall
     
-    # Lấy địa chỉ IP của secondary node
-    local secondary_ip=$(get_server_ip)
-    
     # Thông báo cho người dùng
-    echo -e "${YELLOW}Địa chỉ IP của SECONDARY node: $secondary_ip${NC}"
     echo -e "${YELLOW}Hãy thêm node này vào replica set từ PRIMARY node bằng lệnh:${NC}"
     echo -e "${GREEN}mongosh --host $primary_ip --port $MONGO_PORT --eval \"rs.add('$secondary_ip:$MONGO_PORT')\"${NC}"
     
@@ -317,8 +313,24 @@ setup_secondary_node() {
         username=${username:-$MONGODB_USER}
         password=${password:-$MONGODB_PASSWORD}
         
-        # Thêm node vào replica set
-        mongosh --host "$primary_ip" --port "$MONGO_PORT" -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "rs.add('$secondary_ip:$MONGO_PORT')"
+        # Thêm node vào replica set với IP thực
+        echo -e "${YELLOW}Đang thêm node $secondary_ip vào replica set...${NC}"
+        add_result=$(mongosh --host "$primary_ip" --port "$MONGO_PORT" -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "rs.add('$secondary_ip:$MONGO_PORT')" --quiet)
+        
+        # Kiểm tra kết quả
+        if echo "$add_result" | grep -q "\"ok\" : 1"; then
+            echo -e "${GREEN}✅ Đã thêm node vào replica set thành công!${NC}"
+        else
+            echo -e "${RED}❌ Có lỗi khi thêm node:${NC}"
+            echo "$add_result"
+        fi
+        
+        # Đợi node đồng bộ
+        echo -e "${YELLOW}Đợi node đồng bộ với replica set (30 giây)...${NC}"
+        sleep 30
+        
+        # Kiểm tra trạng thái
+        check_replica_status "$primary_ip"
     fi
     
     echo -e "${GREEN}Thiết lập SECONDARY NODE hoàn tất!${NC}"
@@ -352,6 +364,104 @@ show_config() {
         echo -e "${YELLOW}Config file content:${NC}"
         cat "$MONGODB_CONFIG"
     fi
+}
+
+# Hàm xác minh kết nối MongoDB
+verify_mongodb_connection() {
+    local host=$1
+    local port=$2
+    local auth_db=$3
+    local user=$4
+    local password=$5
+    
+    echo -e "${YELLOW}Kiểm tra kết nối tới MongoDB...${NC}"
+    
+    # Chuyển đổi localhost sang IP thực nếu cần
+    if [[ "$host" == "localhost" || "$host" == "127.0.0.1" ]]; then
+        local real_ip=$(get_server_ip)
+        echo -e "${YELLOW}Đang sử dụng IP thực $real_ip thay vì localhost${NC}"
+        host=$real_ip
+    fi
+    
+    # Kiểm tra kết nối
+    if ! nc -z -w5 $host $port; then
+        echo -e "${RED}Không thể kết nối tới MongoDB tại $host:$port${NC}"
+        return 1
+    fi
+    
+    # Kiểm tra xác thực
+    if [ -n "$user" ] && [ -n "$password" ]; then
+        local auth_result=$(mongosh --host "$host" --port "$port" -u "$user" -p "$password" --authenticationDatabase "$auth_db" --eval "db.runCommand({ping:1})" 2>&1)
+        
+        if echo "$auth_result" | grep -q "Authentication failed"; then
+            echo -e "${RED}Xác thực thất bại với user $user${NC}"
+            return 1
+        fi
+    fi
+    
+    echo -e "${GREEN}✅ Kết nối thành công tới MongoDB tại $host:$port${NC}"
+    return 0
+}
+
+# Tạo file cấu hình
+create_config() {
+    local use_auth=$1
+    local use_replication=$2
+    local server_ip=$(get_server_ip)
+    
+    echo -e "${YELLOW}Tạo file cấu hình...${NC}"
+    
+    # Tạo thư mục chứa file cấu hình nếu không tồn tại
+    if [ ! -d "$(dirname "$MONGODB_CONFIG")" ]; then
+        $sudo_cmd mkdir -p "$(dirname "$MONGODB_CONFIG")"
+    fi
+    
+    # Tạo file cấu hình với các tùy chọn cần thiết
+    $sudo_cmd tee "$MONGODB_CONFIG" > /dev/null << EOF
+# MongoDB configuration file
+# Tự động tạo bởi script thiết lập MongoDB Replica Set
+
+# Các cài đặt lưu trữ
+storage:
+  dbPath: $MONGODB_DATA_DIR
+  journal:
+    enabled: true
+
+# Các cài đặt hệ thống
+systemLog:
+  destination: file
+  logAppend: true
+  path: $MONGODB_LOG_PATH
+
+# Các cài đặt mạng
+net:
+  port: $MONGO_PORT
+  bindIp: $server_ip,127.0.0.1,$BIND_IP
+EOF
+    
+    # Thêm cài đặt security nếu cần
+    if [ "$use_auth" = true ]; then
+        $sudo_cmd tee -a "$MONGODB_CONFIG" > /dev/null << EOF
+
+# Cài đặt bảo mật
+security:
+  authorization: enabled
+  keyFile: $MONGODB_KEYFILE
+EOF
+    fi
+    
+    # Thêm cài đặt replication nếu cần
+    if [ "$use_replication" = true ]; then
+        $sudo_cmd tee -a "$MONGODB_CONFIG" > /dev/null << EOF
+
+# Cài đặt replication
+replication:
+  replSetName: $REPLICA_SET_NAME
+EOF
+    fi
+    
+    # Hiển thị thông báo
+    echo -e "${GREEN}✅ Đã tạo file cấu hình tại $MONGODB_CONFIG${NC}"
 }
 
 # Hàm setup_replica để gọi từ main.sh

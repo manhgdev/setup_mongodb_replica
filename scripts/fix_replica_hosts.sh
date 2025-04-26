@@ -39,7 +39,7 @@ echo ""
 
 # Get current replica set configuration
 echo -e "${YELLOW}Getting current replica set configuration...${NC}"
-CONFIG=$(mongosh --quiet --host localhost --port $MONGO_PORT -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "JSON.stringify(rs.conf())")
+CONFIG=$(mongosh --quiet --host $SERVER_IP --port $MONGO_PORT -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "JSON.stringify(rs.conf())")
 
 if [ -z "$CONFIG" ]; then
     echo -e "${RED}Failed to get replica set configuration. Check your credentials.${NC}"
@@ -48,7 +48,7 @@ fi
 
 # Parse the configuration
 echo -e "${YELLOW}Current replica set members:${NC}"
-MEMBERS=$(mongosh --quiet --host localhost --port $MONGO_PORT -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "
+MEMBERS=$(mongosh --quiet --host $SERVER_IP --port $MONGO_PORT -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "
 // Lấy danh sách thành viên với IP thật thay vì localhost
 let members = rs.conf().members;
 let serverIp = db.adminCommand({ whatsmyuri: 1 }).you.split(':')[0];
@@ -69,7 +69,25 @@ echo "$MEMBERS"
 
 # Check connectivity between nodes
 echo -e "${YELLOW}Checking connectivity between nodes...${NC}"
-HOSTS=$(mongosh --quiet --host localhost --port $MONGO_PORT -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "rs.conf().members.map(m => m.host).join(',')")
+HOSTS=$(mongosh --quiet --host $SERVER_IP --port $MONGO_PORT -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "
+let results = [];
+let members = rs.conf().members;
+let serverIp = db.adminCommand({ whatsmyuri: 1 }).you.split(':')[0];
+
+for (let i = 0; i < members.length; i++) {
+  let host = members[i].host;
+  let parts = host.split(':');
+  
+  // Thay thế localhost bằng địa chỉ IP thực
+  if (parts[0] === 'localhost' || parts[0] === '127.0.0.1') {
+    host = serverIp + ':' + parts[1];
+  }
+  
+  results.push(host);
+}
+
+results.join(',');
+")
 IFS=',' read -ra HOST_ARRAY <<< "$HOSTS"
 
 for host in "${HOST_ARRAY[@]}"; do
@@ -135,7 +153,7 @@ case $option in
         
         # Apply the configuration directly
         echo -e "${YELLOW}Applying new configuration...${NC}"
-        mongosh --host localhost --port $MONGO_PORT -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "
+        mongosh --host $SERVER_IP --port $MONGO_PORT -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "
         try {
           // Get current configuration
           var cfg = rs.conf();
@@ -172,7 +190,7 @@ case $option in
         echo -e "${YELLOW}Removing unreachable/dead node...${NC}"
         
         # Lấy danh sách các node từ replica set
-        NODE_LIST=$(mongosh --quiet --host localhost --port $MONGO_PORT -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "
+        NODE_LIST=$(mongosh --quiet --host $SERVER_IP --port $MONGO_PORT -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "
         let members = rs.conf().members;
         let serverIp = db.adminCommand({ whatsmyuri: 1 }).you.split(':')[0];
         let result = [];
@@ -242,7 +260,7 @@ case $option in
         
         # Áp dụng cấu hình trực tiếp
         echo -e "${YELLOW}Đang xóa node khỏi replica set...${NC}"
-        mongosh --host localhost --port $MONGO_PORT -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "
+        mongosh --host $SERVER_IP --port $MONGO_PORT -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "
         try {
           var result = rs.remove('$remove_host', {force: true});
           printjson(result);
@@ -279,7 +297,7 @@ case $option in
     3)
         # Show detailed replica status
         echo -e "${YELLOW}Showing detailed replica set status...${NC}"
-        mongosh --host localhost --port $MONGO_PORT -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "rs.status()"
+        mongosh --host $SERVER_IP --port $MONGO_PORT -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "rs.status()"
         ;;
     4)
         # Fix configuration for multi-server setup
@@ -301,7 +319,7 @@ case $option in
         
         # Apply the configuration directly
         echo -e "${YELLOW}Applying new configuration...${NC}"
-        mongosh --host localhost --port $MONGO_PORT -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "
+        mongosh --host $SERVER_IP --port $MONGO_PORT -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "
         try {
           var primary = '$primary_host';
           var serverHosts = [];
@@ -363,7 +381,7 @@ esac
 # Check the new configuration
 echo -e "${YELLOW}Verifying new configuration...${NC}"
 sleep 3
-NEW_MEMBERS=$(mongosh --quiet --host localhost --port $MONGO_PORT -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "
+NEW_MEMBERS=$(mongosh --quiet --host $SERVER_IP --port $MONGO_PORT -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "
 // Lấy và hiển thị cấu hình với IP thật thay vì localhost
 let members = rs.conf().members;
 let serverIp = db.adminCommand({ whatsmyuri: 1 }).you.split(':')[0];
@@ -384,7 +402,7 @@ echo "$NEW_MEMBERS"
 
 echo -e "${GREEN}✓ Replica set configuration update completed!${NC}"
 echo -e "${YELLOW}Note: It might take some time for all nodes to reconnect.${NC}"
-echo -e "${YELLOW}Check status with: mongosh --eval \"rs.status()\"${NC}"
+echo -e "${YELLOW}Check status with: mongosh -u $username -p $password --authenticationDatabase $AUTH_DATABASE --eval \"rs.status()\"${NC}"
 
 # Nếu script được gọi từ UI, cho phép trở về
 read -p "[*] Nhấn Enter để tiếp tục..." enter 
