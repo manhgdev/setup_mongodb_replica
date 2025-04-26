@@ -28,10 +28,3 @@ MONGODB_PASSWORD="manhnk"
 AUTH_DATABASE="admin"
 MONGO_VERSION="8.0"
 MAX_SERVERS=7
-
-# Đường dẫn
-HOME_DIR="${HOME}"
-MONGODB_KEYFILE="${HOME_DIR}/.mongodb-keyfile"
-MONGODB_CONFIG="${HOME_DIR}/.mongodb/mongod.conf"
-MONGODB_DATA_DIR="${HOME_DIR}/.mongodb/data"
-MONGODB_LOG_PATH="${HOME_DIR}/.mongodb/logs/mongod.log" 
