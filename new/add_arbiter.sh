@@ -63,6 +63,21 @@ echo -e "${YELLOW}Bắt đầu thiết lập MongoDB ARBITER Node...${NC}"
 echo -e "${YELLOW}PRIMARY node: $PRIMARY_HOST${NC}"
 echo -e "${YELLOW}ARBITER node: $ARBITER_HOST${NC}"
 
+# 1. Kiểm tra keyfile từ PRIMARY
+if [ ! -f "$MONGODB_KEYFILE" ]; then
+    echo -e "${RED}Keyfile không tồn tại tại $MONGODB_KEYFILE${NC}"
+    echo -e "${YELLOW}Vui lòng copy keyfile từ PRIMARY node về trước khi chạy script này.${NC}"
+    exit 1
+fi
+
+# Kiểm tra quyền keyfile
+KEYFILE_PERMS=$(stat -c "%a" "$MONGODB_KEYFILE" 2>/dev/null)
+if [ "$KEYFILE_PERMS" != "400" ]; then
+    echo -e "${YELLOW}Đang cập nhật quyền keyfile...${NC}"
+    sudo chmod 400 "$MONGODB_KEYFILE"
+    sudo chown mongodb:mongodb "$MONGODB_KEYFILE"
+fi
+
 # 2. Tạo thư mục dữ liệu MongoDB nếu chưa tồn tại
 if [ ! -d "$MONGODB_DATA_DIR" ]; then
     echo -e "${YELLOW}Tạo thư mục dữ liệu MongoDB...${NC}"
