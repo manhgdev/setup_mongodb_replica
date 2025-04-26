@@ -20,7 +20,7 @@ show_menu() {
     echo -e "${BLUE}║${NC} ${GREEN}2.${NC} Cài đặt Secondary Node                  ${BLUE}║${NC}"
     echo -e "${BLUE}║${NC} ${GREEN}3.${NC} Thêm Secondary Node                     ${BLUE}║${NC}"
     echo -e "${BLUE}║${NC} ${GREEN}4.${NC} Thêm Arbiter Node                       ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC} ${GREEN}5.${NC} Sửa lỗi node không reachable            ${BLUE}║${NC}"
+    echo -e "${BLUE}║${NC} ${GREEN}5.${NC} Xoá node reachable/healthy              ${BLUE}║${NC}"
     echo -e "${BLUE}║${NC} ${GREEN}6.${NC} Kiểm tra trạng thái                     ${BLUE}║${NC}"
     echo -e "${BLUE}║${NC} ${RED}0.${NC} Thoát                                   ${BLUE}║${NC}"
     echo -e "${BLUE}╚════════════════════════════════════════════╝${NC}"
@@ -55,11 +55,10 @@ while true; do
             run_script "./new/add_arbiter.sh"
             ;;
         5)
-            run_script "./new/fix_reachable.sh"
+            run_script "./new/remove_reachable.sh"
             ;;
         6)
-            echo -e "${YELLOW}Coming soon...${NC}"
-            read
+            run_script "./new/check_status.sh"
             ;;
         0)
             echo -e "${GREEN}✓ Tạm biệt!${NC}"
