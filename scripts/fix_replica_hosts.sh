@@ -48,7 +48,23 @@ fi
 
 # Parse the configuration
 echo -e "${YELLOW}Current replica set members:${NC}"
-MEMBERS=$(mongosh --quiet --host localhost --port $MONGO_PORT -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "rs.conf().members.forEach(m => print(m._id + ': ' + m.host))")
+MEMBERS=$(mongosh --quiet --host localhost --port $MONGO_PORT -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "
+// Lấy danh sách thành viên với IP thật thay vì localhost
+let members = rs.conf().members;
+let serverIp = db.adminCommand({ whatsmyuri: 1 }).you.split(':')[0];
+
+for (let i = 0; i < members.length; i++) {
+  let host = members[i].host;
+  let parts = host.split(':');
+  
+  // Thay thế localhost bằng địa chỉ IP thực
+  if (parts[0] === 'localhost' || parts[0] === '127.0.0.1') {
+    host = serverIp + ':' + parts[1];
+  }
+  
+  print(members[i]._id + ': ' + host);
+}
+")
 echo "$MEMBERS"
 
 # Check connectivity between nodes
@@ -117,107 +133,148 @@ case $option in
             exit 0
         fi
         
-        # Create a temporary JavaScript file
-        JS_FILE=$(mktemp)
-        cat > "$JS_FILE" << EOF
-try {
-  // Get current configuration
-  var cfg = rs.conf();
-  
-  // Track if any changes were made
-  var changed = false;
-  
-  // Update member hostnames
-  for (var i = 0; i < cfg.members.length; i++) {
-    var host = cfg.members[i].host;
-    var port = host.split(':')[1];
-    
-    if (host.includes('localhost') || host.includes('127.0.0.1')) {
-      cfg.members[i].host = "$SERVER_IP:" + port;
-      print("Updating member " + i + " from " + host + " to " + cfg.members[i].host);
-      changed = true;
-    }
-  }
-  
-  // Apply the new configuration if changed
-  if (changed) {
-    var result = rs.reconfig(cfg, {force: true});
-    printjson(result);
-  } else {
-    print("No changes needed. All members already using correct IP.");
-  }
-} catch (e) {
-  print("ERROR: " + e.message);
-}
-EOF
-        
-        # Apply the configuration
+        # Apply the configuration directly
         echo -e "${YELLOW}Applying new configuration...${NC}"
-        mongosh --host localhost --port $MONGO_PORT -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" "$JS_FILE"
-        
-        # Cleanup
-        rm -f "$JS_FILE"
+        mongosh --host localhost --port $MONGO_PORT -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "
+        try {
+          // Get current configuration
+          var cfg = rs.conf();
+          
+          // Track if any changes were made
+          var changed = false;
+          
+          // Update member hostnames
+          for (var i = 0; i < cfg.members.length; i++) {
+            var host = cfg.members[i].host;
+            var port = host.split(':')[1];
+            
+            if (host.includes('localhost') || host.includes('127.0.0.1')) {
+              cfg.members[i].host = '$SERVER_IP:' + port;
+              print('Updating member ' + i + ' from ' + host + ' to ' + cfg.members[i].host);
+              changed = true;
+            }
+          }
+          
+          // Apply the new configuration if changed
+          if (changed) {
+            var result = rs.reconfig(cfg, {force: true});
+            printjson(result);
+          } else {
+            print('No changes needed. All members already using correct IP.');
+          }
+        } catch (e) {
+          print('ERROR: ' + e.message);
+        }
+        "
         ;;
     2)
         # Remove unreachable/dead node
         echo -e "${YELLOW}Removing unreachable/dead node...${NC}"
-        read -p "Enter the host:port of the node to remove: " remove_host
+        
+        # Lấy danh sách các node từ replica set
+        NODE_LIST=$(mongosh --quiet --host localhost --port $MONGO_PORT -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "
+        let members = rs.conf().members;
+        let serverIp = db.adminCommand({ whatsmyuri: 1 }).you.split(':')[0];
+        let result = [];
+        
+        for (let i = 0; i < members.length; i++) {
+          let host = members[i].host;
+          let parts = host.split(':');
+          
+          // Thay thế localhost bằng địa chỉ IP thực
+          if (parts[0] === 'localhost' || parts[0] === '127.0.0.1') {
+            host = serverIp + ':' + parts[1];
+          }
+          
+          result.push({
+            id: members[i]._id,
+            host: host,
+            origHost: members[i].host
+          });
+        }
+        
+        // Xuất danh sách dạng JSON
+        JSON.stringify(result);
+        ")
+        
+        # Hiển thị danh sách để người dùng chọn
+        echo -e "${YELLOW}Chọn node muốn xóa:${NC}"
+        IFS=$'\n' read -d '' -ra NODE_ARRAY < <(echo "$NODE_LIST" | jq -r '.[] | "\(.id): \(.host)"')
+        
+        for node_entry in "${NODE_ARRAY[@]}"; do
+            echo "$node_entry"
+        done
+        
+        read -p "Nhập ID của node (hoặc nhập địa chỉ host:port): " remove_choice
+        
+        # Xác định xem người dùng đã nhập ID hay địa chỉ
+        if [[ "$remove_choice" =~ ^[0-9]+$ ]]; then
+            # Người dùng đã nhập ID
+            NODE_ID=$remove_choice
+            ORIG_HOST=$(echo "$NODE_LIST" | jq -r ".[] | select(.id == $NODE_ID) | .origHost")
+            DISPLAY_HOST=$(echo "$NODE_LIST" | jq -r ".[] | select(.id == $NODE_ID) | .host")
+            
+            if [ -z "$ORIG_HOST" ]; then
+                echo -e "${RED}Không tìm thấy node với ID $NODE_ID${NC}"
+                exit 1
+            fi
+            
+            remove_host=$ORIG_HOST
+            display_host=$DISPLAY_HOST
+        else
+            # Người dùng đã nhập địa chỉ host:port
+            remove_host=$remove_choice
+            display_host=$remove_choice
+        fi
         
         if [ -z "$remove_host" ]; then
-            echo -e "${RED}No host specified. Operation cancelled.${NC}"
+            echo -e "${RED}Không có node nào được chọn. Hủy thao tác.${NC}"
             exit 0
         fi
         
-        # Confirm removal
-        echo -e "${YELLOW}You are about to remove ${RED}$remove_host${YELLOW} from the replica set.${NC}"
-        read -p "Are you sure? (y/n): " confirm
+        # Xác nhận xóa
+        echo -e "${YELLOW}Bạn sắp xóa node ${RED}$display_host${YELLOW} khỏi replica set.${NC}"
+        read -p "Bạn có chắc chắn? (y/n): " confirm
         if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-            echo -e "${RED}Operation cancelled${NC}"
+            echo -e "${RED}Đã hủy thao tác${NC}"
             exit 0
         fi
         
-        # Create removal script
-        JS_FILE=$(mktemp)
-        cat > "$JS_FILE" << EOF
-try {
-  var result = rs.remove("$remove_host", {force: true});
-  printjson(result);
-} catch (e) {
-  print("ERROR: " + e.message);
-  
-  // Try more aggressive method if standard approach fails
-  try {
-    print("Trying alternative method...");
-    var cfg = rs.conf();
-    var newMembers = [];
-    
-    for (var i = 0; i < cfg.members.length; i++) {
-      if (cfg.members[i].host !== "$remove_host") {
-        newMembers.push(cfg.members[i]);
-      } else {
-        print("Found member to remove: " + cfg.members[i].host);
-      }
-    }
-    
-    if (newMembers.length === cfg.members.length) {
-      print("Node $remove_host was not found in the configuration");
-    } else {
-      cfg.members = newMembers;
-      var reconfigResult = rs.reconfig(cfg, {force: true});
-      printjson(reconfigResult);
-    }
-  } catch (e2) {
-    print("FATAL ERROR: " + e2.message);
-  }
-}
-EOF
-        
-        # Apply the configuration
-        echo -e "${YELLOW}Removing node from replica set...${NC}"
-        mongosh --host localhost --port $MONGO_PORT -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" "$JS_FILE"
-        
-        # Cleanup
-        rm -f "$JS_FILE"
+        # Áp dụng cấu hình trực tiếp
+        echo -e "${YELLOW}Đang xóa node khỏi replica set...${NC}"
+        mongosh --host localhost --port $MONGO_PORT -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "
+        try {
+          var result = rs.remove('$remove_host', {force: true});
+          printjson(result);
+        } catch (e) {
+          print('ERROR: ' + e.message);
+          
+          // Thử phương pháp khác nếu cách thông thường thất bại
+          try {
+            print('Đang thử phương pháp thay thế...');
+            var cfg = rs.conf();
+            var newMembers = [];
+            
+            for (var i = 0; i < cfg.members.length; i++) {
+              if (cfg.members[i].host !== '$remove_host') {
+                newMembers.push(cfg.members[i]);
+              } else {
+                print('Đã tìm thấy node cần xóa: ' + cfg.members[i].host);
+              }
+            }
+            
+            if (newMembers.length === cfg.members.length) {
+              print('Không tìm thấy node $remove_host trong cấu hình');
+            } else {
+              cfg.members = newMembers;
+              var reconfigResult = rs.reconfig(cfg, {force: true});
+              printjson(reconfigResult);
+            }
+          } catch (e2) {
+            print('LỖI NGHIÊM TRỌNG: ' + e2.message);
+          }
+        }
+        "
         ;;
     3)
         # Show detailed replica status
@@ -242,67 +299,60 @@ EOF
             exit 0
         fi
         
-        # Create a temporary JavaScript file
-        JS_FILE=$(mktemp)
-        cat > "$JS_FILE" << EOF
-try {
-  var primary = "$primary_host";
-  var serverHosts = [];
-  
-  // Add current server if not already a member
-  serverHosts.push("$SERVER_IP:$MONGO_PORT");
-  
-  // Get current configuration
-  var cfg = rs.conf();
-  
-  // Check if any members need updating
-  var changed = false;
-  
-  // First pass: update any localhost references to real IPs
-  for (var i = 0; i < cfg.members.length; i++) {
-    var host = cfg.members[i].host;
-    
-    if (host.includes('localhost') || host.includes('127.0.0.1')) {
-      // This is a local reference, update it
-      var port = host.split(':')[1];
-      cfg.members[i].host = "$SERVER_IP:" + port;
-      print("Updating local member " + i + " from " + host + " to " + cfg.members[i].host);
-      changed = true;
-    }
-  }
-  
-  // Apply the new configuration if changed
-  if (changed) {
-    print("Applying configuration updates...");
-    var result = rs.reconfig(cfg, {force: true});
-    printjson(result);
-    print("Replica set configuration updated successfully");
-  } else {
-    print("No changes needed for local references.");
-  }
-  
-  // Create simplified connection string for reference
-  var connString = "mongodb://$username:$password@";
-  var hosts = [];
-  
-  for (var i = 0; i < cfg.members.length; i++) {
-    hosts.push(cfg.members[i].host);
-  }
-  
-  connString += hosts.join(',') + "/$AUTH_DATABASE?replicaSet=" + cfg._id;
-  print("Connection string: " + connString);
-  
-} catch (e) {
-  print("ERROR: " + e.message);
-}
-EOF
-        
-        # Apply the configuration
+        # Apply the configuration directly
         echo -e "${YELLOW}Applying new configuration...${NC}"
-        mongosh --host localhost --port $MONGO_PORT -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" "$JS_FILE"
-        
-        # Cleanup
-        rm -f "$JS_FILE"
+        mongosh --host localhost --port $MONGO_PORT -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "
+        try {
+          var primary = '$primary_host';
+          var serverHosts = [];
+          
+          // Add current server if not already a member
+          serverHosts.push('$SERVER_IP:$MONGO_PORT');
+          
+          // Get current configuration
+          var cfg = rs.conf();
+          
+          // Check if any members need updating
+          var changed = false;
+          
+          // First pass: update any localhost references to real IPs
+          for (var i = 0; i < cfg.members.length; i++) {
+            var host = cfg.members[i].host;
+            
+            if (host.includes('localhost') || host.includes('127.0.0.1')) {
+              // This is a local reference, update it
+              var port = host.split(':')[1];
+              cfg.members[i].host = '$SERVER_IP:' + port;
+              print('Updating local member ' + i + ' from ' + host + ' to ' + cfg.members[i].host);
+              changed = true;
+            }
+          }
+          
+          // Apply the new configuration if changed
+          if (changed) {
+            print('Applying configuration updates...');
+            var result = rs.reconfig(cfg, {force: true});
+            printjson(result);
+            print('Replica set configuration updated successfully');
+          } else {
+            print('No changes needed for local references.');
+          }
+          
+          // Create simplified connection string for reference
+          var connString = 'mongodb://$username:$password@';
+          var hosts = [];
+          
+          for (var i = 0; i < cfg.members.length; i++) {
+            hosts.push(cfg.members[i].host);
+          }
+          
+          connString += hosts.join(',') + '/$AUTH_DATABASE?replicaSet=' + cfg._id;
+          print('Connection string: ' + connString);
+          
+        } catch (e) {
+          print('ERROR: ' + e.message);
+        }
+        "
         ;;
     0|*)
         echo -e "${GREEN}Exiting...${NC}"
@@ -313,9 +363,28 @@ esac
 # Check the new configuration
 echo -e "${YELLOW}Verifying new configuration...${NC}"
 sleep 3
-NEW_MEMBERS=$(mongosh --quiet --host localhost --port $MONGO_PORT -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "rs.conf().members.forEach(m => print(m._id + ': ' + m.host))")
+NEW_MEMBERS=$(mongosh --quiet --host localhost --port $MONGO_PORT -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "
+// Lấy và hiển thị cấu hình với IP thật thay vì localhost
+let members = rs.conf().members;
+let serverIp = db.adminCommand({ whatsmyuri: 1 }).you.split(':')[0];
+
+for (let i = 0; i < members.length; i++) {
+  let host = members[i].host;
+  let parts = host.split(':');
+  
+  // Thay thế localhost bằng địa chỉ IP thực
+  if (parts[0] === 'localhost' || parts[0] === '127.0.0.1') {
+    host = serverIp + ':' + parts[1];
+  }
+  
+  print(members[i]._id + ': ' + host);
+}
+")
 echo "$NEW_MEMBERS"
 
 echo -e "${GREEN}✓ Replica set configuration update completed!${NC}"
 echo -e "${YELLOW}Note: It might take some time for all nodes to reconnect.${NC}"
-echo -e "${YELLOW}Check status with: mongosh --eval \"rs.status()\"${NC}" 
+echo -e "${YELLOW}Check status with: mongosh --eval \"rs.status()\"${NC}"
+
+# Nếu script được gọi từ UI, cho phép trở về
+read -p "[*] Nhấn Enter để tiếp tục..." enter 
