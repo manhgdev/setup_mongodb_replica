@@ -26,7 +26,7 @@ if [[ "$OSTYPE" == "linux-gnu"* ]]; then
     MONGODB_CONFIG_DIR="${HOME_DIR}/.mongodb/config"
     MONGODB_LOG_PATH="${MONGODB_LOG_DIR}/mongod.log"
     MONGODB_CONFIG="${MONGODB_CONFIG_DIR}/mongod.conf"
-    MONGODB_KEYFILE="${MONGODB_CONFIG_DIR}/mongodb-keyfile"
+    MONGODB_KEYFILE="/etc/mongodb-keyfile"
 # Đường dẫn - macOS
 elif [[ "$OSTYPE" == "darwin"* ]]; then
     MONGODB_DATA_DIR="/usr/local/var/mongodb"
