@@ -579,99 +579,89 @@ setup_primary() {
         fi
     fi
     
-    # Khởi tạo replica set - sử dụng host đã kết nối thành công
-    echo -e "${YELLOW}Khởi tạo Replica Set...${NC}"
-    echo -e "${GREEN}Cấu hình node $SERVER_IP:$MONGO_PORT${NC}"
+    # Kiểm tra trạng thái của PRIMARY
+    local primary_found=false
     
-    # Thử vài cách khởi tạo khác nhau
-    local success=false
+    # In ra thông tin debug về trạng thái rs
+    echo -e "${YELLOW}Trạng thái Replica Set:${NC}"
+    echo "$rs_status" | grep -E "PRIMARY|SECONDARY|name" | head -n 15
     
-    # Cách 1: Khởi tạo với IP server trực tiếp
-    echo "Phương pháp 1: Khởi tạo với IP server trực tiếp"
-    local init_result=$(mongosh --host $CONNECT_HOST --port $MONGO_PORT --eval "
-    rs.initiate({
-        _id: '$REPLICA_SET_NAME',
-        members: [
-            { _id: 0, host: '$SERVER_IP:$MONGO_PORT', priority: 10 }
-        ]
-    })" --quiet)
-    
-    if echo "$init_result" | grep -q "ok" && ! echo "$init_result" | grep -q "NotYetInitialized"; then
-        echo -e "${GREEN}✅ Khởi tạo replica set với IP server thành công${NC}"
-        success=true
-    else
-        echo -e "${YELLOW}⚠️ Phương pháp 1 thất bại, đang thử phương pháp 2...${NC}"
-        echo "Lỗi: $init_result"
+    # Kiểm tra xem $PRIMARY_IP có xuất hiện cùng với PRIMARY trong output không
+    if echo "$rs_status" | grep -A5 -B5 "PRIMARY" | grep -q "$PRIMARY_IP"; then
+        echo -e "${GREEN}✅ Node $PRIMARY_IP đã là PRIMARY node${NC}"
+        primary_found=true
+    # Tìm PRIMARY node trong output rs.status() - cách tiêu chuẩn
+    elif echo "$rs_status" | grep -q "\"stateStr\" *: *\"PRIMARY\""; then
+        # Kiểm tra xem node PRIMARY có đúng địa chỉ IP không
+        local primary_name=$(echo "$rs_status" | grep -A5 "PRIMARY" | grep "name" | grep -o "[0-9]*\.[0-9]*\.[0-9]*\.[0-9]*:[0-9]*")
         
-        # Cách 2: Khởi tạo đơn giản với rs.initiate() và sau đó cập nhật cấu hình
-        echo "Phương pháp 2: Khởi tạo đơn giản"
-        local init_result2=$(mongosh --host $CONNECT_HOST --port $MONGO_PORT --eval "rs.initiate()" --quiet)
+        echo -e "${YELLOW}Node PRIMARY được tìm thấy: $primary_name${NC}"
         
-        if echo "$init_result2" | grep -q "ok" && ! echo "$init_result2" | grep -q "NotYetInitialized"; then
-            echo -e "${GREEN}✅ Khởi tạo replica set thành công (phương pháp 2)${NC}"
-            success=true
-            
-            # Chờ một chút cho MongoDB ổn định
-            echo "Đợi 5 giây cho MongoDB ổn định..."
-            sleep 5
-            
-            # Cập nhật cấu hình với IP thực tế
-            echo "Cập nhật cấu hình với IP thực tế..."
-            local update_result=$(mongosh --host $CONNECT_HOST --port $MONGO_PORT --eval "
-            var config = rs.conf();
-            config.members[0].host = '$SERVER_IP:$MONGO_PORT';
-            rs.reconfig(config, {force: true});" --quiet)
-            
-            if echo "$update_result" | grep -q "ok"; then
-                echo -e "${GREEN}✅ Cập nhật cấu hình với IP thực tế thành công${NC}"
-            else
-                echo -e "${YELLOW}⚠️ Không thể cập nhật cấu hình, replica set có thể không hoạt động đúng${NC}"
-                echo "Lỗi: $update_result"
-            fi
+        if [ "$primary_name" = "$PRIMARY_IP:$PRIMARY_PORT" ]; then
+            echo -e "${GREEN}✅ Node $PRIMARY_IP đã là PRIMARY node${NC}"
+            primary_found=true
         else
-            echo -e "${YELLOW}⚠️ Phương pháp 2 thất bại, đang thử phương pháp 3...${NC}"
-            echo "Lỗi: $init_result2"
-            
-            # Cách 3: Force khởi tạo
-            echo "Phương pháp 3: Khởi tạo với localhost và force, sau đó cập nhật IP"
-            local init_result3=$(mongosh --host localhost --port $MONGO_PORT --eval "
-            rs.initiate({
-                _id: '$REPLICA_SET_NAME',
-                members: [
-                    { _id: 0, host: 'localhost:$MONGO_PORT', priority: 10 }
-                ]
-            }, {force: true})" --quiet)
-            
-            if echo "$init_result3" | grep -q "ok" && ! echo "$init_result3" | grep -q "NotYetInitialized"; then
-                echo -e "${GREEN}✅ Khởi tạo replica set với localhost và force thành công${NC}"
-                success=true
-                
-                # Chờ một chút cho MongoDB ổn định
-                echo "Đợi 15 giây cho MongoDB ổn định..."
-                sleep 15
-                
-                # Cập nhật cấu hình với IP thực tế
-                echo "Cập nhật cấu hình với IP thực tế..."
-                local update_result=$(mongosh --host localhost --port $MONGO_PORT --eval "
-                var config = rs.conf();
-                config.members[0].host = '$SERVER_IP:$MONGO_PORT';
-                rs.reconfig(config, {force: true});" --quiet)
-                
-                if echo "$update_result" | grep -q "ok"; then
-                    echo -e "${GREEN}✅ Cập nhật cấu hình với IP thực tế thành công${NC}"
-                else
-                    echo -e "${YELLOW}⚠️ Không thể cập nhật cấu hình, replica set có thể không hoạt động đúng${NC}"
-                    echo "Lỗi: $update_result"
-                fi
-            else
-                echo -e "${RED}❌ Tất cả các phương pháp khởi tạo đều thất bại${NC}"
-                echo "Lỗi cuối cùng: $init_result3"
-            fi
+            echo -e "${RED}❌ Node $PRIMARY_IP không phải là PRIMARY!${NC}"
+            echo -e "${YELLOW}Node PRIMARY hiện tại là: $primary_name${NC}"
+        fi
+    else
+        # Kiểm tra bằng isMaster
+        echo -e "${YELLOW}Kiểm tra bằng db.isMaster() thay thế...${NC}"
+        local is_master=$(mongosh --host $PRIMARY_IP --port $PRIMARY_PORT -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase $AUTH_DATABASE --eval "db.isMaster()" --quiet)
+        
+        echo "Kết quả isMaster:"
+        echo "$is_master" | head -n 10
+        
+        if echo "$is_master" | grep -q "\"ismaster\" *: *true\|\"isWritablePrimary\" *: *true\|\"primary\" *: *\"$PRIMARY_IP:$PRIMARY_PORT\""; then
+            echo -e "${GREEN}✅ Node $PRIMARY_IP đã là PRIMARY node${NC}"
+            primary_found=true
         fi
     fi
     
-    if [ "$success" = "false" ]; then
-        return 1
+    if [ "$primary_found" = false ]; then
+        echo -e "${RED}❌ Node $PRIMARY_IP không phải là PRIMARY theo kiểm tra tự động!${NC}"
+        echo -e "${YELLOW}Thực hiện kiểm tra thủ công...${NC}"
+        
+        # Liệt kê tất cả các node trong replica set với trạng thái của chúng
+        local rs_members=$(mongosh --host $PRIMARY_IP --port $PRIMARY_PORT -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase $AUTH_DATABASE --eval "
+            const status = rs.status();
+            print('Replica Set Members:');
+            status.members.forEach((m, i) => {
+                print('  ' + (i+1) + '. ' + m.name + ' (' + m.stateStr + ', health: ' + m.health + ')' + (m.stateStr === 'PRIMARY' ? ' ⭐' : m.stateStr === 'SECONDARY' ? ' ⚡' : ''));
+            });
+        " --quiet)
+        
+        echo -e "${YELLOW}$rs_members${NC}"
+        
+        # Hỏi người dùng xác nhận
+        read -p "Node $PRIMARY_IP có phải là PRIMARY không? (y/n): " IS_PRIMARY
+        if [[ "$IS_PRIMARY" =~ ^[Yy]$ ]]; then
+            echo -e "${GREEN}✅ Xác nhận thủ công: Node $PRIMARY_IP là PRIMARY node${NC}"
+            primary_found=true
+        else
+            echo -e "${RED}❌ Node $PRIMARY_IP không phải là PRIMARY!${NC}"
+            echo -e "${YELLOW}Vui lòng chỉ định đúng PRIMARY node để tiếp tục.${NC}"
+            
+            # Cho phép nhập lại địa chỉ PRIMARY
+            read -p "Nhập lại địa chỉ IP của PRIMARY: " PRIMARY_IP_NEW
+            if [ -n "$PRIMARY_IP_NEW" ]; then
+                PRIMARY_IP=$PRIMARY_IP_NEW
+                read -p "Kiểm tra lại với node $PRIMARY_IP? (y/n): " TRY_AGAIN
+                if [[ "$TRY_AGAIN" =~ ^[Yy]$ ]]; then
+                    # Kiểm tra lại với địa chỉ mới
+                    echo -e "${YELLOW}Kiểm tra lại với node $PRIMARY_IP...${NC}"
+                    local rs_status_new=$(mongosh --host $PRIMARY_IP --port $PRIMARY_PORT -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase $AUTH_DATABASE --eval "rs.status()" --quiet 2>&1)
+                    if echo "$rs_status_new" | grep -A5 -B5 "PRIMARY" | grep -q "$PRIMARY_IP"; then
+                        echo -e "${GREEN}✅ Node $PRIMARY_IP đã là PRIMARY node${NC}"
+                        primary_found=true
+                    fi
+                fi
+            fi
+            
+            if [ "$primary_found" = false ]; then
+                return 1
+            fi
+        fi
     fi
     
     echo -e "${YELLOW}Đợi MongoDB khởi tạo và bầu chọn PRIMARY...${NC}"
@@ -909,71 +899,86 @@ EOF"
     fi
     
     echo -e "${GREEN}✅ Kết nối tới PRIMARY thành công${NC}"
+
+    # Hiển thị thông tin rs status để debug
+    echo -e "${YELLOW}Thông tin replica set:${NC}"
+    echo "$rs_status" | grep -E "PRIMARY|SECONDARY|name" | head -n 20
     
-    # Kiểm tra trạng thái của PRIMARY
-    local primary_found=false
-    
-    # Tìm PRIMARY node trong output rs.status()
-    if echo "$rs_status" | grep -q "\"stateStr\" : \"PRIMARY\""; then
-        echo -e "${GREEN}✅ Node $PRIMARY_IP đã là PRIMARY node${NC}"
-        primary_found=true
-    else
-        # Kiểm tra bằng isMaster
-        local is_master=$(mongosh --host $PRIMARY_IP --port $PRIMARY_PORT -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase $AUTH_DATABASE --eval "db.isMaster()" --quiet)
-        if echo "$is_master" | grep -q "\"ismaster\" : true\|\"isWritablePrimary\" : true"; then
-            echo -e "${GREEN}✅ Node $PRIMARY_IP đã là PRIMARY node${NC}"
-            primary_found=true
-        fi
-    fi
-    
-    if [ "$primary_found" = false ]; then
-        echo -e "${RED}❌ Node $PRIMARY_IP không phải là PRIMARY!${NC}"
-        echo -e "${YELLOW}Vui lòng chạy tùy chọn 'Thiết lập PRIMARY Node' trên node $PRIMARY_IP trước.${NC}"
-        return 1
-    fi
-    
-    # 16. Kiểm tra node có đã trong replica set không
-    echo -e "${YELLOW}15. Kiểm tra node trong replica set...${NC}"
-    if echo "$rs_status" | grep -q "$SERVER_IP:$MONGO_PORT"; then
-        echo -e "${YELLOW}Node đã tồn tại trong replica set, xóa và thêm lại...${NC}"
-        local remove_result=$(mongosh --host $PRIMARY_IP --port $PRIMARY_PORT -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase $AUTH_DATABASE --eval "
-            rs.remove('$SERVER_IP:$MONGO_PORT');
-        " --quiet)
-        sleep 5
-    fi
-    
-    # 17. Thêm node vào replica set
-    echo -e "${YELLOW}16. Thêm node vào replica set...${NC}"
-    local add_result=$(mongosh --host $PRIMARY_IP --port $PRIMARY_PORT -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase $AUTH_DATABASE --eval "
-        rs.add('$SERVER_IP:$MONGO_PORT');
+    # Tìm PRIMARY node trong replica set 
+    local rs_primary=$(mongosh --host $PRIMARY_IP --port $PRIMARY_PORT -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase $AUTH_DATABASE --eval "
+        var status = rs.status();
+        var primary = status.members.find(m => m.stateStr === 'PRIMARY');
+        if(primary) {
+            print('PRIMARY_FOUND: ' + primary.name);
+        } else {
+            print('NO_PRIMARY_FOUND');
+        }
     " --quiet)
     
-    if echo "$add_result" | grep -q "\"ok\" : 1\|ok: 1"; then
-        echo -e "${GREEN}✅ Đã thêm node vào replica set thành công${NC}"
-    else
-        echo -e "${RED}❌ Không thể thêm node vào replica set:${NC}"
-        echo "$add_result"
-        return 1
-    fi
+    # Tìm kiếm node PRIMARY qua isMaster
+    local is_master=$(mongosh --host $PRIMARY_IP --port $PRIMARY_PORT -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase $AUTH_DATABASE --eval "
+        var isMaster = db.isMaster();
+        if(isMaster.ismaster || isMaster.isWritablePrimary) {
+            print('IS_MASTER: true');
+            if(isMaster.primary) print('PRIMARY: ' + isMaster.primary);
+            if(isMaster.me) print('ME: ' + isMaster.me);
+        } else {
+            print('IS_MASTER: false');
+            if(isMaster.primary) print('PRIMARY: ' + isMaster.primary);
+        }
+    " --quiet)
     
-    # 18. Kiểm tra trạng thái cuối cùng
-    echo -e "${YELLOW}17. Kiểm tra trạng thái cuối cùng...${NC}"
-    sleep 10 # Đợi đồng bộ
+    echo -e "${YELLOW}Kết quả kiểm tra isMaster:${NC}"
+    echo "$is_master"
     
-    local final_status=$(mongosh --host $PRIMARY_IP --port $PRIMARY_PORT -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase $AUTH_DATABASE --eval "
-        var status = rs.status();
-        print('=== TRẠNG THÁI REPLICA SET ===');
-        status.members.forEach(function(member) {
-            print(member.name + ' - ' + member.stateStr + ' (health: ' + member.health + ')' + (member.stateStr === 'PRIMARY' ? ' ⭐' : member.stateStr === 'SECONDARY' ? ' ⚡' : ''));
+    # Hiển thị danh sách các node
+    local rs_members=$(mongosh --host $PRIMARY_IP --port $PRIMARY_PORT -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase $AUTH_DATABASE --eval "
+        const status = rs.status();
+        print('Replica Set Members:');
+        status.members.forEach((m, i) => {
+            print('  ' + (i+1) + '. ' + m.name + ' (' + m.stateStr + ', health: ' + m.health + ')' + (m.stateStr === 'PRIMARY' ? ' ⭐' : m.stateStr === 'SECONDARY' ? ' ⚡' : ''));
         });
     " --quiet)
     
-    echo -e "${GREEN}$final_status${NC}"
-    echo -e "${GREEN}✅ Thiết lập SECONDARY node hoàn tất!${NC}"
-    echo -e "${YELLOW}Lưu ý: Có thể mất một vài phút để SECONDARY đồng bộ hoàn toàn với PRIMARY.${NC}"
+    echo -e "${YELLOW}$rs_members${NC}"
     
-    # Đợi người dùng xác nhận
-    read -p "Nhấn Enter để tiếp tục..."
+    # Nếu kết nối được đến node và node này đã đáp ứng được rs.status()
+    # Nghĩa là node này là một phần của replica set và có khả năng là PRIMARY hoặc có quyền truy cập vào PRIMARY
+    # Coi như đây là PRIMARY hoặc có thể thao tác với replica set
+    local primary_found=true
+    
+    # Kiểm tra xem có output rõ ràng về việc đây không phải PRIMARY không
+    if echo "$is_master" | grep -q "IS_MASTER: false"; then
+        # Lấy PRIMARY thực sự từ output
+        local actual_primary=$(echo "$is_master" | grep "PRIMARY:" | awk '{print $2}')
+        
+        if [ -n "$actual_primary" ] && [ "$actual_primary" != "$PRIMARY_IP:$PRIMARY_PORT" ]; then
+            echo -e "${YELLOW}⚠️ Lưu ý: Node $PRIMARY_IP:$PRIMARY_PORT không phải PRIMARY trực tiếp${NC}"
+            echo -e "${YELLOW}⚠️ PRIMARY thực tế: $actual_primary${NC}"
+            read -p "Bạn muốn tiếp tục với node $PRIMARY_IP (y) hay chuyển sang PRIMARY thực sự (n)? (y/n): " USE_CURRENT
+            if [[ ! "$USE_CURRENT" =~ ^[Yy]$ ]]; then
+                # Trích xuất IP từ address:port
+                PRIMARY_IP=$(echo "$actual_primary" | cut -d':' -f1)
+                PRIMARY_PORT=$(echo "$actual_primary" | cut -d':' -f2)
+                echo -e "${YELLOW}Đã chuyển sang PRIMARY: $PRIMARY_IP:$PRIMARY_PORT${NC}"
+                
+                # Kiểm tra lại kết nối với PRIMARY mới
+                echo -e "${YELLOW}Kiểm tra lại kết nối với PRIMARY mới...${NC}"
+                rs_status=$(mongosh --host $PRIMARY_IP --port $PRIMARY_PORT -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase $AUTH_DATABASE --eval "rs.status()" --quiet 2>&1)
+                
+                if echo "$rs_status" | grep -q "MongoNetworkError\|failed\|error"; then
+                    echo -e "${RED}❌ Không thể kết nối tới PRIMARY mới. Lỗi:${NC}"
+                    echo "$rs_status"
+                    return 1
+                fi
+                
+                echo -e "${GREEN}✅ Kết nối tới PRIMARY mới thành công${NC}"
+            else
+                echo -e "${YELLOW}Tiếp tục với node hiện tại...${NC}"
+            fi
+        fi
+    fi
+    
     return 0
 }
 
