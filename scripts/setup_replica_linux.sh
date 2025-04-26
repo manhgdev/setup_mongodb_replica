@@ -84,6 +84,7 @@ init_replica_set() {
     local ip=${2:-$(get_server_ip)}
     
     echo -e "${YELLOW}Khởi tạo replica set $REPLICA_SET_NAME...${NC}"
+    echo -e "${YELLOW}Sử dụng IP: $ip cho node đầu tiên${NC}"
     
     # Tạo file khởi tạo replica set
     local init_script=$(mktemp)
@@ -112,6 +113,12 @@ EOF
 add_replica_node() {
     local secondary_ip=$1
     local primary_ip=${2:-"localhost"}
+    
+    # Đảm bảo sử dụng IP thật
+    if [[ "$secondary_ip" == "localhost" || "$secondary_ip" == "127.0.0.1" ]]; then
+        secondary_ip=$(get_server_ip)
+        echo -e "${YELLOW}Đã chuyển đổi 'localhost' thành IP thật: $secondary_ip${NC}"
+    fi
     
     echo -e "${YELLOW}Thêm node $secondary_ip vào replica set $REPLICA_SET_NAME...${NC}"
     
