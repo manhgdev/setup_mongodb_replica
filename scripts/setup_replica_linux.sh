@@ -299,7 +299,7 @@ setup_secondary_node() {
     
     # Thông báo cho người dùng
     echo -e "${YELLOW}Hãy thêm node này vào replica set từ PRIMARY node bằng lệnh:${NC}"
-    echo -e "${GREEN}mongosh --host $primary_ip --port $MONGO_PORT --eval \"rs.add('$secondary_ip:$MONGO_PORT')\"${NC}"
+    echo -e "${GREEN}mongosh --host $primary_ip --port $MONGO_PORT -u $MONGODB_USER -p $MONGODB_PASSWORD --authenticationDatabase $AUTH_DATABASE --eval \"rs.add('$secondary_ip:$MONGO_PORT')\"${NC}"
     
     # Hỏi người dùng có muốn thêm node này vào replica set ngay không
     read -p "Thêm node này vào replica set ngay? (y/n): " add_now
@@ -424,9 +424,7 @@ create_config() {
 # Các cài đặt lưu trữ
 storage:
   dbPath: $MONGODB_DATA_DIR
-  journal:
-    enabled: true
-
+  
 # Các cài đặt hệ thống
 systemLog:
   destination: file

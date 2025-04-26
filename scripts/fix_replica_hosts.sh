@@ -402,7 +402,7 @@ echo "$NEW_MEMBERS"
 
 echo -e "${GREEN}✓ Replica set configuration update completed!${NC}"
 echo -e "${YELLOW}Note: It might take some time for all nodes to reconnect.${NC}"
-echo -e "${YELLOW}Check status with: mongosh -u $username -p $password --authenticationDatabase $AUTH_DATABASE --eval \"rs.status()\"${NC}"
+echo -e "${YELLOW}Check status with: mongosh --host $SERVER_IP --port $MONGO_PORT -u $username -p $password --authenticationDatabase $AUTH_DATABASE --eval \"rs.status()\"${NC}"
 
 # Nếu script được gọi từ UI, cho phép trở về
 read -p "[*] Nhấn Enter để tiếp tục..." enter 

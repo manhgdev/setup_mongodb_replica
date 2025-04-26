@@ -269,7 +269,6 @@ else
     else
         echo -e "${RED}Arbiter không thể khởi động.${NC}"
         echo -e "${YELLOW}Kiểm tra log:${NC}"
-        journalctl -u mongod-arbiter -n 20 --no-pager
         
         echo -e "${YELLOW}Thử chạy mongod trực tiếp:${NC}"
         sudo -u $MONGO_USER $MONGOD_PATH --config /etc/mongod-arbiter.conf --fork
@@ -441,7 +440,6 @@ EOF
         else
             echo -e "${RED}Arbiter $i không thể khởi động.${NC}"
             echo -e "${YELLOW}Kiểm tra log:${NC}"
-            journalctl -u mongod-arbiter-$i -n 20 --no-pager
         fi
     done
     ;;
