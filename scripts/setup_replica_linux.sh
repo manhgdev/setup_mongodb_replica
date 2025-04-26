@@ -139,7 +139,7 @@ EOF
 
 # Kiểm tra trạng thái replica set
 check_replica_status() {
-    local host=${1:-"localhost"}
+    local host=${1:-$(get_server_ip)}
     
     echo -e "${YELLOW}Kiểm tra trạng thái replica set $REPLICA_SET_NAME...${NC}"
     
@@ -155,14 +155,37 @@ check_replica_status() {
     # Lấy thông tin status với xác thực
     local status=$(mongosh --host "$host" --port "$MONGO_PORT" -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "rs.status()")
     
-    # Hiển thị thông tin cơ bản
-    local members=$(mongosh --host "$host" --port "$MONGO_PORT" -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "rs.status().members.forEach(function(m) { print(m.name + ' - ' + m.stateStr); })")
+    # Hiển thị thông tin chi tiết hơn về nodes, thay localhost bằng IP thật
+    local members=$(mongosh --host "$host" --port "$MONGO_PORT" -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "
+    let result = '';
+    const serverIp = db.adminCommand({ whatsmyuri: 1 }).you.split(':')[0];
+    rs.status().members.forEach(function(m) {
+        // Kiểm tra nếu là localhost thì thay bằng IP thực
+        let name = m.name;
+        let parts = name.split(':');
+        if (parts[0] === 'localhost' || parts[0] === '127.0.0.1') {
+            name = serverIp + ':' + parts[1];
+        }
+        print(name + ' - ' + m.stateStr + (m.health !== 1 ? ' (not reachable/healthy)' : ''));
+    });
+    " --quiet)
     
     echo -e "${GREEN}Thông tin replica set:${NC}"
     echo "$members"
     
-    # Kiểm tra node primary
-    local primary=$(mongosh --host "$host" --port "$MONGO_PORT" -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "rs.isMaster().primary" | grep -v MongoDB)
+    # Kiểm tra node primary, thay localhost bằng IP thật
+    local primary=$(mongosh --host "$host" --port "$MONGO_PORT" -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "
+    const serverIp = db.adminCommand({ whatsmyuri: 1 }).you.split(':')[0];
+    let primary = rs.isMaster().primary;
+    if (primary) {
+        let parts = primary.split(':');
+        if (parts[0] === 'localhost' || parts[0] === '127.0.0.1') {
+            primary = serverIp + ':' + parts[1];
+        }
+    }
+    print(primary || 'NONE');
+    " --quiet | grep -v MongoDB)
+    
     if [ -n "$primary" ]; then
         echo -e "${GREEN}Primary node: $primary${NC}"
     else
