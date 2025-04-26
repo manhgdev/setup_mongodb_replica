@@ -12,6 +12,9 @@ fi
 # Đọc file cấu hình
 source "$CONFIG_FILE"
 
+# Đường dẫn đến script
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Kiểm tra và sửa các vấn đề có thể gây ra lỗi không reachable
 check_and_fix_unreachable() {
     local NODE_IP=$1
@@ -424,18 +427,63 @@ force_fix_node() {
     fi
 }
 
-# Hàm chính để sửa lỗi node không reachable
+# Hàm hiển thị menu sửa node không reachable
 fix_unreachable_node_menu() {
-    echo -e "${YELLOW}=== Sửa lỗi node không reachable ===${NC}"
+    clear
+    echo -e "${GREEN}==================================${NC}"
+    echo -e "${GREEN}     Sửa node không reachable     ${NC}"
+    echo -e "${GREEN}==================================${NC}"
+    echo "1. Kiểm tra và sửa node không reachable"
+    echo "2. Khôi phục node (xóa và thêm lại)"
+    echo "3. Force reconfigure replica set"
+    echo "4. Dùng công cụ sửa cấu hình nâng cao"
+    echo "0. Quay lại menu chính"
+    echo -e "${GREEN}==================================${NC}"
+    read -p "Chọn một tùy chọn (0-4): " choice
+
+    case $choice in
+        1)
+            fix_unreachable_node_wizard
+            ;;
+        2)
+            force_recover_node_wizard
+            ;;
+        3)
+            force_reconfigure_node_wizard
+            ;;
+        4)
+            # Kiểm tra xem công cụ fix_replica_hosts.sh có tồn tại không
+            if [ -x "$SCRIPT_DIR/fix_replica_hosts.sh" ]; then
+                "$SCRIPT_DIR/fix_replica_hosts.sh"
+            else
+                echo -e "${RED}Không tìm thấy công cụ fix_replica_hosts.sh hoặc không có quyền thực thi.${NC}"
+                echo -e "${YELLOW}Đang tìm kiếm tại: $SCRIPT_DIR/fix_replica_hosts.sh${NC}"
+                read -p "Nhấn Enter để tiếp tục..." enter
+            fi
+            ;;
+        0)
+            return 0
+            ;;
+        *)
+            echo -e "${RED}Tùy chọn không hợp lệ. Vui lòng chọn lại.${NC}"
+            read -p "Nhấn Enter để tiếp tục..." enter
+            ;;
+    esac
+    fix_unreachable_node_menu
+}
+
+# Hàm wizard để kiểm tra và sửa node không reachable
+fix_unreachable_node_wizard() {
+    echo -e "${YELLOW}=== Kiểm tra và sửa node không reachable ===${NC}"
     
     # Lấy IP của server hiện tại
-    local SERVER_IP=$(hostname -I | awk '{print $1}')
+    local SERVER_IP=$(hostname -I | awk '{print $1}' 2>/dev/null || get_server_ip)
     
     read -p "Nhập IP của node (Enter để dùng IP server $SERVER_IP): " NODE_IP
     NODE_IP=${NODE_IP:-$SERVER_IP}  # Nếu không nhập thì dùng SERVER_IP
     
-    read -p "Nhập Port của node (Enter để dùng 27018): " NODE_PORT
-    NODE_PORT=${NODE_PORT:-27018}  # Nếu không nhập thì dùng 27018
+    read -p "Nhập Port của node (Enter để dùng $MONGO_PORT): " NODE_PORT
+    NODE_PORT=${NODE_PORT:-$MONGO_PORT}  # Nếu không nhập thì dùng MONGO_PORT
     
     read -p "Nhập IP của PRIMARY node (Enter để dùng 0.0.0.0): " PRIMARY_IP
     PRIMARY_IP=${PRIMARY_IP:-0.0.0.0}  # Nếu không nhập thì dùng 0.0.0.0
@@ -452,41 +500,78 @@ fix_unreachable_node_menu() {
     echo "Port: $NODE_PORT"
     echo "PRIMARY IP: $PRIMARY_IP"
     echo "Username: $ADMIN_USER"
-    echo "Config file: $CONFIG_FILE"
     echo
     
-    echo -e "${YELLOW}Chọn hành động:${NC}"
-    echo "1. Kiểm tra và sửa các vấn đề"
-    echo "2. Sửa lỗi và thêm lại vào replica set"
-    echo "3. Khôi phục node bằng cách xóa và thêm lại"
-    echo "4. Khôi phục node bằng cách force reconfigure"
-    echo "5. Xóa node không hoạt động khỏi replica set"
-    echo "6. Xử lý triệt để (xóa data và cài lại)"
-    read -p "Lựa chọn (1-6): " action
+    check_and_fix_unreachable "$NODE_IP" "$NODE_PORT" "$ADMIN_USER" "$ADMIN_PASS" "$PRIMARY_IP"
+    read -p "Nhấn Enter để tiếp tục..." enter
+}
+
+# Hàm wizard để khôi phục node bằng cách xóa và thêm lại
+force_recover_node_wizard() {
+    echo -e "${YELLOW}=== Khôi phục node (xóa và thêm lại) ===${NC}"
     
-    case $action in
-        1)
-            check_and_fix_unreachable "$NODE_IP" "$NODE_PORT" "$ADMIN_USER" "$ADMIN_PASS" "$PRIMARY_IP"
-            ;;
-        2)
-            fix_unreachable_node "$NODE_IP" "$NODE_PORT" "$ADMIN_USER" "$ADMIN_PASS" "$PRIMARY_IP"
-            ;;
-        3)
-            force_recover_node "$NODE_IP" "$NODE_PORT" "$ADMIN_USER" "$ADMIN_PASS" "$PRIMARY_IP"
-            ;;
-        4)
-            force_reconfigure_node "$NODE_IP" "$NODE_PORT" "$ADMIN_USER" "$ADMIN_PASS" "$PRIMARY_IP"
-            ;;
-        5)
-            remove_node "$NODE_IP" "$NODE_PORT" "$ADMIN_USER" "$ADMIN_PASS" "$PRIMARY_IP"
-            ;;
-        6)
-            force_fix_node "$NODE_IP" "$NODE_PORT" "$ADMIN_USER" "$ADMIN_PASS" "$PRIMARY_IP"
-            ;;
-        *)
-            echo -e "${RED}❌ Lựa chọn không hợp lệ${NC}"
-            ;;
-    esac
+    # Lấy IP của server hiện tại
+    local SERVER_IP=$(hostname -I | awk '{print $1}' 2>/dev/null || get_server_ip)
+    
+    read -p "Nhập IP của node (Enter để dùng IP server $SERVER_IP): " NODE_IP
+    NODE_IP=${NODE_IP:-$SERVER_IP}  # Nếu không nhập thì dùng SERVER_IP
+    
+    read -p "Nhập Port của node (Enter để dùng $MONGO_PORT): " NODE_PORT
+    NODE_PORT=${NODE_PORT:-$MONGO_PORT}  # Nếu không nhập thì dùng MONGO_PORT
+    
+    read -p "Nhập IP của PRIMARY node (Enter để dùng 0.0.0.0): " PRIMARY_IP
+    PRIMARY_IP=${PRIMARY_IP:-0.0.0.0}  # Nếu không nhập thì dùng 0.0.0.0
+    
+    read -p "Nhập username admin (Enter để dùng $MONGODB_USER): " ADMIN_USER
+    ADMIN_USER=${ADMIN_USER:-$MONGODB_USER}  # Nếu không nhập thì dùng MONGODB_USER
+    
+    read -s -p "Nhập password admin (Enter để dùng $MONGODB_PASSWORD): " ADMIN_PASS
+    ADMIN_PASS=${ADMIN_PASS:-$MONGODB_PASSWORD}  # Nếu không nhập thì dùng MONGODB_PASSWORD
+    echo
+    
+    echo -e "${YELLOW}Thông tin node:${NC}"
+    echo "IP: $NODE_IP"
+    echo "Port: $NODE_PORT"
+    echo "PRIMARY IP: $PRIMARY_IP"
+    echo "Username: $ADMIN_USER"
+    echo
+    
+    force_recover_node "$NODE_IP" "$NODE_PORT" "$ADMIN_USER" "$ADMIN_PASS" "$PRIMARY_IP"
+    read -p "Nhấn Enter để tiếp tục..." enter
+}
+
+# Hàm wizard để khôi phục node bằng cách force reconfigure
+force_reconfigure_node_wizard() {
+    echo -e "${YELLOW}=== Force reconfigure replica set ===${NC}"
+    
+    # Lấy IP của server hiện tại
+    local SERVER_IP=$(hostname -I | awk '{print $1}' 2>/dev/null || get_server_ip)
+    
+    read -p "Nhập IP của node (Enter để dùng IP server $SERVER_IP): " NODE_IP
+    NODE_IP=${NODE_IP:-$SERVER_IP}  # Nếu không nhập thì dùng SERVER_IP
+    
+    read -p "Nhập Port của node (Enter để dùng $MONGO_PORT): " NODE_PORT
+    NODE_PORT=${NODE_PORT:-$MONGO_PORT}  # Nếu không nhập thì dùng MONGO_PORT
+    
+    read -p "Nhập IP của PRIMARY node (Enter để dùng 0.0.0.0): " PRIMARY_IP
+    PRIMARY_IP=${PRIMARY_IP:-0.0.0.0}  # Nếu không nhập thì dùng 0.0.0.0
+    
+    read -p "Nhập username admin (Enter để dùng $MONGODB_USER): " ADMIN_USER
+    ADMIN_USER=${ADMIN_USER:-$MONGODB_USER}  # Nếu không nhập thì dùng MONGODB_USER
+    
+    read -s -p "Nhập password admin (Enter để dùng $MONGODB_PASSWORD): " ADMIN_PASS
+    ADMIN_PASS=${ADMIN_PASS:-$MONGODB_PASSWORD}  # Nếu không nhập thì dùng MONGODB_PASSWORD
+    echo
+    
+    echo -e "${YELLOW}Thông tin node:${NC}"
+    echo "IP: $NODE_IP"
+    echo "Port: $NODE_PORT"
+    echo "PRIMARY IP: $PRIMARY_IP"
+    echo "Username: $ADMIN_USER"
+    echo
+    
+    force_reconfigure_node "$NODE_IP" "$NODE_PORT" "$ADMIN_USER" "$ADMIN_PASS" "$PRIMARY_IP"
+    read -p "Nhấn Enter để tiếp tục..." enter
 }
 
 # Chạy hàm chính nếu script được gọi trực tiếp

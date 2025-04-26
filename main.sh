@@ -9,6 +9,7 @@ source scripts/uninstall_mongodb.sh
 source scripts/fix_unreachable_node.sh
 ARBITER_SCRIPT="multil_server/mongodb_arbiter.sh"
 
+
 # Màu sắc cho output đã được định nghĩa trong mongodb_settings.sh
 
 # Hàm cài đặt MongoDB
@@ -29,13 +30,14 @@ show_menu() {
     echo -e "${BLUE}║${NC} ${GREEN}3.${NC} Cấu hình Replica Set                    ${BLUE}║${NC}"
     echo -e "${BLUE}║${NC} ${GREEN}4.${NC} Thêm Arbiter                            ${BLUE}║${NC}"
     echo -e "${BLUE}║${NC} ${GREEN}5.${NC} Sửa lỗi node không reachable            ${BLUE}║${NC}" 
-    echo -e "${BLUE}║${NC} ${GREEN}6.${NC} Xóa MongoDB                             ${BLUE}║${NC}"
+    echo -e "${BLUE}║${NC} ${GREEN}6.${NC} Sửa cấu hình Replica Set                ${BLUE}║${NC}"
+    echo -e "${BLUE}║${NC} ${GREEN}7.${NC} Xóa MongoDB                             ${BLUE}║${NC}"
     echo -e "${BLUE}║${NC} ${RED}0.${NC} Thoát                                   ${BLUE}║${NC}"
     echo -e "${BLUE}╚════════════════════════════════════════════╝${NC}"
     echo -e "${YELLOW}Server IP: $(get_server_ip true)${NC}"
-    echo -e "${YELLOW}MongoDB Version: ${MONGO_VERSION} | Port: ${MONGODB_PORT} | Replica: ${REPLICA_SET_NAME}${NC}"
+    echo -e "${YELLOW}MongoDB Version: ${MONGO_VERSION} | Port: ${MONGO_PORT} | Replica: ${REPLICA_SET_NAME}${NC}"
     echo
-    read -p "$(echo -e ${GREEN}">>${NC} Chọn chức năng [0-6]: ")" choice
+    read -p "$(echo -e ${GREEN}">>${NC} Chọn chức năng [0-7]: ")" choice
     
     case $choice in
         1)
@@ -49,17 +51,15 @@ show_menu() {
             setup_replica
             ;;
         4)   
-            if [ -f "$ARBITER_SCRIPT" ]; then
-                chmod +x "$ARBITER_SCRIPT"
-                "./$ARBITER_SCRIPT"
-            else
-                echo -e "${RED}❌ File script không tồn tại: $ARBITER_SCRIPT${NC}"
-            fi
+             "./$ARBITER_SCRIPT"
             ;;
         5)
             fix_unreachable_node_menu
             ;;
         6)
+            source scripts/fix_replica_hosts.sh
+            ;;
+        7)
             uninstall_mongodb
             ;;
         0)
