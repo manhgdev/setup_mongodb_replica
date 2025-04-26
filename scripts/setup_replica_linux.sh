@@ -730,7 +730,14 @@ setup_secondary() {
     
     # 1. Thu thập thông tin về PRIMARY node
     echo -e "${YELLOW}1. Nhập thông tin PRIMARY node:${NC}"
-    read -p "IP của PRIMARY node: " PRIMARY_IP
+    
+    # Sử dụng PRIMARY_IP đã được nhập trước đó từ menu chính
+    if [ -z "$PRIMARY_IP" ]; then
+        read -p "IP của PRIMARY node: " PRIMARY_IP
+    else
+        echo -e "IP của PRIMARY node: ${GREEN}$PRIMARY_IP${NC}"
+    fi
+    
     read -p "Port của PRIMARY node [$MONGO_PORT]: " PRIMARY_PORT
     PRIMARY_PORT=${PRIMARY_PORT:-$MONGO_PORT}
     read -p "Username [$MONGODB_USER]: " PRIMARY_USER
@@ -913,7 +920,7 @@ EOF"
     else
         # Kiểm tra bằng isMaster
         local is_master=$(mongosh --host $PRIMARY_IP --port $PRIMARY_PORT -u $PRIMARY_USER -p $PRIMARY_PASS --authenticationDatabase $AUTH_DATABASE --eval "db.isMaster()" --quiet)
-        if echo "$is_master" | grep -q "\"ismaster\" : true"; then
+        if echo "$is_master" | grep -q "\"ismaster\" : true\|\"isWritablePrimary\" : true"; then
             echo -e "${GREEN}✅ Node $PRIMARY_IP đã là PRIMARY node${NC}"
             primary_found=true
         fi
@@ -921,7 +928,7 @@ EOF"
     
     if [ "$primary_found" = false ]; then
         echo -e "${RED}❌ Node $PRIMARY_IP không phải là PRIMARY!${NC}"
-        echo -e "${YELLOW}Vui lòng chạy 'initialize_primary' trên node $PRIMARY_IP trước.${NC}"
+        echo -e "${YELLOW}Vui lòng chạy tùy chọn 'Thiết lập PRIMARY Node' trên node $PRIMARY_IP trước.${NC}"
         return 1
     fi
     
@@ -974,6 +981,7 @@ EOF"
 setup_replica_linux() {
     local option
     local SERVER_IP=$(get_server_ip)
+    local PRIMARY_IP=""
     
     while true; do
         echo -e "${GREEN}=================================================${NC}"
@@ -996,7 +1004,9 @@ setup_replica_linux() {
                 setup_primary "$SERVER_IP"
                 ;;
             2)
-                read -p "Nhập địa chỉ IP của PRIMARY: " PRIMARY_IP
+                if [ -z "$PRIMARY_IP" ]; then
+                    read -p "Nhập địa chỉ IP của PRIMARY: " PRIMARY_IP
+                fi
                 setup_secondary
                 ;;
             0)
