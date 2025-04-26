@@ -397,6 +397,36 @@ verify_mongodb_connection() {
     fi
 }
 
+# Xem thông tin cấu hình
+show_config() {
+    echo -e "${BLUE}=== THÔNG TIN CẤU HÌNH ===${NC}"
+    echo -e "${YELLOW}MongoDB Version: ${GREEN}$MONGO_VERSION${NC}"
+    echo -e "${YELLOW}MongoDB Port: ${GREEN}$MONGO_PORT${NC}"
+    echo -e "${YELLOW}Replica Set Name: ${GREEN}$REPLICA_SET_NAME${NC}"
+    echo -e "${YELLOW}Admin Database: ${GREEN}$AUTH_DATABASE${NC}"
+    echo -e "${YELLOW}Admin Username: ${GREEN}$MONGODB_USER${NC}"
+    echo -e "${YELLOW}Admin Password: ${GREEN}$MONGODB_PASSWORD${NC}"
+    echo -e "${YELLOW}Data Directory: ${GREEN}$MONGODB_DATA_DIR${NC}"
+    echo -e "${YELLOW}Log Path: ${GREEN}$MONGODB_LOG_PATH${NC}"
+    echo -e "${YELLOW}Config File: ${GREEN}$MONGODB_CONFIG${NC}"
+    echo -e "${YELLOW}Keyfile: ${GREEN}$MONGODB_KEYFILE${NC}"
+    echo -e "${YELLOW}Bind IP: ${GREEN}$BIND_IP${NC}"
+    echo -e "${YELLOW}Server IP: ${GREEN}$(get_server_ip)${NC}"
+    
+    # Kiểm tra MongoDB đang chạy không
+    if pgrep -x mongod >/dev/null; then
+        echo -e "${YELLOW}Status: ${GREEN}Running${NC}"
+    else
+        echo -e "${YELLOW}Status: ${RED}Stopped${NC}"
+    fi
+    
+    # Kiểm tra cấu hình file
+    if [ -f "$MONGODB_CONFIG" ]; then
+        echo -e "${YELLOW}Config file content:${NC}"
+        cat "$MONGODB_CONFIG"
+    fi
+}
+
 # Kiểm tra MongoDB đã được cài đặt
 check_mongodb() {
     echo -e "${YELLOW}Kiểm tra cài đặt MongoDB...${NC}"
@@ -502,3 +532,120 @@ get_server_ip() {
     # Trả về kết quả không kèm thông báo
     echo "$external_ip"
 } 
+
+# Kiểm tra trạng thái replica set
+check_replica_status() {
+    local host=${1:-$(get_server_ip)}
+    
+    echo -e "${YELLOW}Kiểm tra trạng thái replica set $REPLICA_SET_NAME...${NC}"
+    
+    # Kiểm tra xem MongoDB có đang chạy không
+    if ! nc -z -w5 $host $MONGO_PORT 2>/dev/null; then
+        echo -e "${RED}Không thể kết nối đến MongoDB tại $host:$MONGO_PORT${NC}"
+        echo -e "${RED}Đảm bảo MongoDB đang chạy và port $MONGO_PORT đang mở${NC}"
+        return 1
+    fi
+    
+    # Yêu cầu thông tin đăng nhập
+    read -p "Username (mặc định: $MONGODB_USER): " username
+    read -sp "Password (mặc định: $MONGODB_PASSWORD): " password
+    echo ""
+    
+    # Sử dụng giá trị mặc định nếu không nhập
+    username=${username:-$MONGODB_USER}
+    password=${password:-$MONGODB_PASSWORD}
+    
+    # Thử ping trước khi lấy thông tin chi tiết
+    local ping_result=$(mongosh --host "$host" --port "$MONGO_PORT" -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "try { db.runCommand({ping: 1}); print('OK'); } catch(e) { print('ERROR: ' + e.message); }" --quiet)
+    
+    if [[ "$ping_result" != *"OK"* ]]; then
+        echo -e "${RED}Không thể xác thực với MongoDB. Chi tiết lỗi:${NC}"
+        echo "$ping_result"
+        return 1
+    fi
+    
+    echo -e "${GREEN}✅ Kết nối thành công tới MongoDB${NC}"
+    
+    # Lấy thông tin status với xác thực
+    local status=$(mongosh --host "$host" --port "$MONGO_PORT" -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "rs.status()" --quiet)
+    
+    # Kiểm tra xem có phải replica set không
+    if [[ "$status" == *"not running with --replSet"* ]]; then
+        echo -e "${RED}MongoDB chưa được cấu hình là replica set${NC}"
+        echo -e "${YELLOW}Bạn cần thiết lập PRIMARY node trước (tùy chọn 1)${NC}"
+        return 1
+    fi
+    
+    # Hiển thị thông tin chi tiết hơn về nodes, thay localhost bằng IP thật
+    local members=$(mongosh --host "$host" --port "$MONGO_PORT" -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "
+    try {
+        let result = '';
+        const serverIp = db.adminCommand({ whatsmyuri: 1 }).you.split(':')[0];
+        rs.status().members.forEach(function(m) {
+            // Kiểm tra nếu là localhost thì thay bằng IP thực
+            let name = m.name;
+            let parts = name.split(':');
+            if (parts[0] === 'localhost' || parts[0] === '127.0.0.1') {
+                name = serverIp + ':' + parts[1];
+            }
+            print(name + ' - ' + m.stateStr + (m.health !== 1 ? ' (not reachable/healthy)' : ''));
+        });
+    } catch(e) {
+        print('ERROR: ' + e.message);
+    }
+    " --quiet)
+    
+    echo -e "${GREEN}Thông tin replica set:${NC}"
+    echo "$members"
+    
+    # Kiểm tra node primary, thay localhost bằng IP thật
+    local primary=$(mongosh --host "$host" --port "$MONGO_PORT" -u "$username" -p "$password" --authenticationDatabase "$AUTH_DATABASE" --eval "
+    try {
+        const serverIp = db.adminCommand({ whatsmyuri: 1 }).you.split(':')[0];
+        let primary = rs.isMaster().primary;
+        if (primary) {
+            let parts = primary.split(':');
+            if (parts[0] === 'localhost' || parts[0] === '127.0.0.1') {
+                primary = serverIp + ':' + parts[1];
+            }
+            print(primary);
+        } else {
+            print('NONE');
+        }
+    } catch(e) {
+        print('ERROR: ' + e.message);
+    }
+    " --quiet | grep -v MongoDB)
+    
+    if [ -n "$primary" ] && [ "$primary" != "ERROR" ] && [ "$primary" != "NONE" ]; then
+        echo -e "${GREEN}Primary node: $primary${NC}"
+    else
+        echo -e "${RED}Không tìm thấy primary node${NC}"
+    fi
+    
+    return 0
+}
+
+# Thêm node vào replica set
+add_replica_node() {
+    local secondary_ip=$1
+    local primary_ip=${2:-$(get_server_ip)}
+    
+    # Đảm bảo sử dụng IP thật cho cả primary và secondary
+    if [[ "$secondary_ip" == "localhost" || "$secondary_ip" == "127.0.0.1" ]]; then
+        secondary_ip=$(get_server_ip)
+        echo -e "${YELLOW}Đã chuyển đổi 'localhost' thành IP thật cho secondary: $secondary_ip${NC}"
+    fi
+    
+    if [[ "$primary_ip" == "localhost" || "$primary_ip" == "127.0.0.1" ]]; then
+        primary_ip=$(get_server_ip)
+        echo -e "${YELLOW}Đã chuyển đổi 'localhost' thành IP thật cho primary: $primary_ip${NC}"
+    fi
+    
+    echo -e "${YELLOW}Thêm node $secondary_ip vào replica set $REPLICA_SET_NAME...${NC}"
+    
+    # Thực hiện trên primary với IP thực
+    mongosh --host "$primary_ip" --port "$MONGO_PORT" --eval "rs.add('$secondary_ip:$MONGO_PORT')"
+    
+    echo -e "${GREEN}Đã thêm node $secondary_ip:$MONGO_PORT vào replica set${NC}"
+}
