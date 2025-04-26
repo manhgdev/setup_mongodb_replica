@@ -740,160 +740,203 @@ EOF
     echo -e "${GREEN}✅ Đã tạo file cấu hình tại $MONGODB_CONFIG${NC}"
 }
 
-# Khởi động MongoDB
-start_mongodb() {
-    echo -e "${YELLOW}Khởi động MongoDB...${NC}"
+# Tạo keyfile cho xác thực MongoDB
+create_keyfile() {
+    local is_primary=$1
+    local primary_ip=$2
     
-    # Kiểm tra file cấu hình
-    if [ ! -f "$MONGODB_CONFIG" ]; then
-        echo -e "${RED}❌ Không tìm thấy file cấu hình tại $MONGODB_CONFIG${NC}"
-        echo -e "${YELLOW}Đang tạo file cấu hình mặc định...${NC}"
-        create_config true true
+    echo -e "${YELLOW}Tạo hoặc lấy keyfile cho xác thực...${NC}"
+    
+    # Đảm bảo thư mục tồn tại
+    local keyfile_dir=$(dirname "$MONGODB_KEYFILE")
+    if [ ! -d "$keyfile_dir" ]; then
+        $sudo_cmd mkdir -p "$keyfile_dir"
     fi
     
-    # Kiểm tra syntax của file cấu hình MongoDB
-    echo -e "${YELLOW}Kiểm tra cấu hình MongoDB...${NC}"
-    if [ -x "$(command -v mongod)" ]; then
-        # Kiểm tra cấu hình bằng mongod
-        local check_result=$(mongod --config "$MONGODB_CONFIG" --validate 2>&1 || echo "ERROR")
-        if [[ "$check_result" == *"ERROR"* ]]; then
-            echo -e "${RED}❌ File cấu hình MongoDB không hợp lệ:${NC}"
-            echo "$check_result"
-            echo -e "${YELLOW}Đang sửa chữa file cấu hình...${NC}"
-            # Sửa chữa file cấu hình bằng cách tạo lại
-            create_config true true
-        else
-            echo -e "${GREEN}✅ File cấu hình hợp lệ${NC}"
-        fi
-    fi
-    
-    # Đảm bảo thư mục dữ liệu tồn tại và có quyền truy cập
-    if [ ! -d "$MONGODB_DATA_DIR" ]; then
-        echo -e "${YELLOW}Thư mục dữ liệu không tồn tại, đang tạo...${NC}"
-        $sudo_cmd mkdir -p "$MONGODB_DATA_DIR"
-    fi
-    
-    # Đặt quyền truy cập cho thư mục dữ liệu
-    $sudo_cmd chown -R mongodb:mongodb "$MONGODB_DATA_DIR" 2>/dev/null || true
-    $sudo_cmd chmod 750 "$MONGODB_DATA_DIR" 2>/dev/null || true
-    
-    # Đảm bảo thư mục log tồn tại
-    local log_dir=$(dirname "$MONGODB_LOG_PATH")
-    if [ ! -d "$log_dir" ]; then
-        echo -e "${YELLOW}Thư mục log không tồn tại, đang tạo...${NC}"
-        $sudo_cmd mkdir -p "$log_dir"
-        $sudo_cmd chown -R mongodb:mongodb "$log_dir" 2>/dev/null || true
-    fi
-    
-    # Khởi động MongoDB bằng systemd nếu có
-    if command -v systemctl &>/dev/null && [ -f /etc/systemd/system/mongod.service ]; then
-        echo -e "${YELLOW}Khởi động MongoDB bằng systemd...${NC}"
-        $sudo_cmd systemctl start mongod
-        sleep 3
-        
-        # Kiểm tra trạng thái
-        if systemctl is-active --quiet mongod; then
-            echo -e "${GREEN}MongoDB đã khởi động thành công (systemd)${NC}"
-            return 0
-        else
-            echo -e "${RED}MongoDB không khởi động được bằng systemd, đang thử phương pháp khác...${NC}"
-        fi
-    fi
-    
-    # Nếu không có systemd hoặc systemd không thành công, thử khởi động trực tiếp
-    echo -e "${YELLOW}Khởi động MongoDB trực tiếp...${NC}"
-    $sudo_cmd mongod --config "$MONGODB_CONFIG" --fork
-    
-    # Kiểm tra MongoDB đã khởi động chưa
-    sleep 3
-    if pgrep -x mongod >/dev/null; then
-        echo -e "${GREEN}MongoDB đã khởi động thành công (direct)${NC}"
-        return 0
+    if [ "$is_primary" = true ]; then
+        # Nếu đây là primary node, tạo keyfile mới
+        echo -e "${YELLOW}Tạo keyfile mới cho primary node...${NC}"
+        $sudo_cmd openssl rand -base64 756 > /tmp/mongodb-keyfile
+        $sudo_cmd cp /tmp/mongodb-keyfile "$MONGODB_KEYFILE"
+        $sudo_cmd rm -f /tmp/mongodb-keyfile
     else
-        echo -e "${RED}Không thể khởi động MongoDB${NC}"
+        # Nếu đây là secondary/arbiter node, sao chép keyfile từ primary
+        echo -e "${YELLOW}Lấy keyfile từ primary node ($primary_ip)...${NC}"
         
-        # Xem log lỗi
-        if [ -f "$MONGODB_LOG_PATH" ]; then
-            echo -e "${YELLOW}Xem log lỗi (10 dòng cuối):${NC}"
-            $sudo_cmd tail -n 10 "$MONGODB_LOG_PATH"
-        fi
-        
-        # Kiểm tra quyền truy cập
-        echo -e "${YELLOW}Kiểm tra quyền truy cập:${NC}"
-        ls -la "$MONGODB_DATA_DIR"
-        ls -la "$log_dir"
-        
-        # Thử sửa quyền và khởi động lại
-        echo -e "${YELLOW}Đang sửa quyền và thử lại...${NC}"
-        $sudo_cmd chown -R mongodb:mongodb "$MONGODB_DATA_DIR" 2>/dev/null || true
-        $sudo_cmd chown -R mongodb:mongodb "$log_dir" 2>/dev/null || true
-        $sudo_cmd chmod -R 750 "$MONGODB_DATA_DIR" 2>/dev/null || true
-        $sudo_cmd chmod -R 750 "$log_dir" 2>/dev/null || true
-        
-        # Thử lại một lần nữa
-        $sudo_cmd mongod --config "$MONGODB_CONFIG" --fork
-        sleep 3
-        
-        if pgrep -x mongod >/dev/null; then
-            echo -e "${GREEN}MongoDB đã khởi động thành công (sau khi sửa quyền)${NC}"
-            return 0
-        else
-            echo -e "${RED}Vẫn không thể khởi động MongoDB. Vui lòng kiểm tra cấu hình và log.${NC}"
-            return 1
-        fi
-    fi
-}
-
-# Dừng MongoDB
-stop_mongodb() {
-    echo -e "${YELLOW}Dừng MongoDB...${NC}"
-    
-    # Kiểm tra MongoDB có đang chạy không
-    if ! pgrep -x mongod >/dev/null; then
-        echo -e "${YELLOW}MongoDB không chạy${NC}"
-        return 0
-    fi
-    
-    # Dừng bằng systemd nếu có
-    if command -v systemctl &>/dev/null && [ -f /etc/systemd/system/mongod.service ]; then
-        $sudo_cmd systemctl stop mongod
-        sleep 2
-        
-        # Kiểm tra đã dừng chưa
-        if ! pgrep -x mongod >/dev/null; then
-            echo -e "${GREEN}MongoDB đã dừng thành công (systemd)${NC}"
-            return 0
-        else
-            echo -e "${YELLOW}Không thể dừng MongoDB bằng systemd, đang thử phương pháp khác...${NC}"
-        fi
-    fi
-    
-    # Nếu không có systemd hoặc systemd không thành công, thử dừng bằng kill
-    local pid=$(pgrep -x mongod)
-    if [ -n "$pid" ]; then
-        echo -e "${YELLOW}Dừng MongoDB process (PID: $pid)...${NC}"
-        $sudo_cmd kill $pid
-        sleep 3
-        
-        # Kiểm tra đã dừng chưa
-        if ! pgrep -x mongod >/dev/null; then
-            echo -e "${GREEN}MongoDB đã dừng thành công (kill)${NC}"
-        else
-            # Dùng kill -9 nếu cần
-            echo -e "${YELLOW}Buộc dừng MongoDB...${NC}"
-            $sudo_cmd kill -9 $pid
-            sleep 2
-            
-            if ! pgrep -x mongod >/dev/null; then
-                echo -e "${GREEN}MongoDB đã buộc dừng thành công (kill -9)${NC}"
+        # Nếu là local setup, có thể tạo mới
+        if [[ "$primary_ip" == "$(get_server_ip)" || "$primary_ip" == "localhost" || "$primary_ip" == "127.0.0.1" ]]; then
+            echo -e "${YELLOW}Primary và node hiện tại ở cùng máy, kiểm tra keyfile hiện có...${NC}"
+            if [ -f "$MONGODB_KEYFILE" ]; then
+                echo -e "${GREEN}✅ Keyfile đã tồn tại${NC}"
             else
-                echo -e "${RED}Không thể dừng MongoDB${NC}"
-                return 1
+                echo -e "${YELLOW}Tạo keyfile mới...${NC}"
+                $sudo_cmd openssl rand -base64 756 > /tmp/mongodb-keyfile
+                $sudo_cmd cp /tmp/mongodb-keyfile "$MONGODB_KEYFILE"
+                $sudo_cmd rm -f /tmp/mongodb-keyfile
+            fi
+        else
+            # Cảnh báo người dùng cần sao chép keyfile thủ công
+            echo -e "${YELLOW}Bạn cần sao chép keyfile từ primary node sang node này.${NC}"
+            echo -e "${YELLOW}Trên primary node, keyfile được lưu tại:${NC} ${GREEN}$MONGODB_KEYFILE${NC}"
+            echo -e "${YELLOW}Bạn có thể sử dụng lệnh sau trên primary node:${NC}"
+            echo -e "${GREEN}cat $MONGODB_KEYFILE${NC}"
+            echo -e "${YELLOW}Sau đó tạo file keyfile trên node này với nội dung tương tự${NC}"
+            
+            # Kiểm tra keyfile hiện tại
+            if [ -f "$MONGODB_KEYFILE" ]; then
+                echo -e "${GREEN}✅ Keyfile đã tồn tại trên node này${NC}"
+            else
+                # Tạo file trống để người dùng điền vào sau
+                touch "$MONGODB_KEYFILE" 2>/dev/null || $sudo_cmd touch "$MONGODB_KEYFILE"
+                echo -e "${YELLOW}Đã tạo file keyfile trống, vui lòng điền nội dung vào.${NC}"
+                echo -e "${YELLOW}Nhập nội dung keyfile mà bạn đã lấy từ primary node:${NC}"
+                read -p "Dán nội dung keyfile và nhấn Enter: " keyfile_content
+                if [ -n "$keyfile_content" ]; then
+                    echo "$keyfile_content" > /tmp/mongodb-keyfile
+                    $sudo_cmd cp /tmp/mongodb-keyfile "$MONGODB_KEYFILE"
+                    $sudo_cmd rm -f /tmp/mongodb-keyfile
+                else
+                    echo -e "${RED}Không nhận được nội dung keyfile, vui lòng cấu hình thủ công.${NC}"
+                    $sudo_cmd touch "$MONGODB_KEYFILE"
+                fi
             fi
         fi
     fi
     
-    return 0
+    # Đặt quyền cho keyfile
+    $sudo_cmd chmod 400 "$MONGODB_KEYFILE"
+    $sudo_cmd chown mongodb:mongodb "$MONGODB_KEYFILE" 2>/dev/null || true
+    
+    echo -e "${GREEN}✅ Keyfile đã sẵn sàng tại: $MONGODB_KEYFILE${NC}"
+}
+
+# Kiểm tra trạng thái MongoDB
+check_mongodb_status() {
+    local verbose=${1:-true}
+
+    if [ "$verbose" = true ]; then
+        echo -e "${BLUE}=== Kiểm tra trạng thái ===${NC}"
+    fi
+
+    # Kiểm tra process
+    if pgrep -x mongod >/dev/null; then
+        if [ "$verbose" = true ]; then
+            echo -e "${GREEN}✅ MongoDB đang chạy (process)${NC}"
+        fi
+        
+        # Kiểm tra port
+        local server_ip=$(get_server_ip)
+        if nc -z -w5 $server_ip $MONGO_PORT 2>/dev/null; then
+            if [ "$verbose" = true ]; then
+                echo -e "${GREEN}✅ MongoDB đang lắng nghe trên port $MONGO_PORT${NC}"
+            fi
+            return 0
+        else
+            if [ "$verbose" = true ]; then
+                echo -e "${RED}❌ MongoDB không lắng nghe trên port $MONGO_PORT${NC}"
+                echo -e "${YELLOW}Kiểm tra file cấu hình và log...${NC}"
+                
+                # Hiển thị cấu hình nếu có
+                if [ -f "$MONGODB_CONFIG" ]; then
+                    echo -e "${YELLOW}Cấu hình MongoDB:${NC}"
+                    grep -A5 "net:" "$MONGODB_CONFIG"
+                fi
+                
+                # Hiển thị log
+                if [ -f "$MONGODB_LOG_PATH" ]; then
+                    echo -e "${YELLOW}Log MongoDB (10 dòng cuối):${NC}"
+                    $sudo_cmd tail -n 10 "$MONGODB_LOG_PATH"
+                fi
+            fi
+            return 1
+        fi
+    else
+        if [ "$verbose" = true ]; then
+            echo -e "${RED}❌ MongoDB chưa chạy${NC}"
+        fi
+        return 1
+    fi
+}
+
+# Khởi động MongoDB với kiểm tra chi tiết
+start_and_verify_mongodb() {
+    local max_retries=3
+    local retries=0
+    
+    while [ $retries -lt $max_retries ]; do
+        echo -e "${YELLOW}Đang kiểm tra trạng thái trước khi khởi động...${NC}"
+        if check_mongodb_status false; then
+            echo -e "${GREEN}✅ MongoDB đã chạy, không cần khởi động lại${NC}"
+            return 0
+        fi
+        
+        echo -e "${YELLOW}Khởi động MongoDB (lần thử $((retries+1))/${max_retries})...${NC}"
+        
+        # Dừng MongoDB nếu có lỗi
+        stop_mongodb
+        
+        # Khởi động MongoDB
+        if command -v systemctl &>/dev/null && [ -f /etc/systemd/system/mongod.service ]; then
+            $sudo_cmd systemctl start mongod
+        else
+            $sudo_cmd mongod --config "$MONGODB_CONFIG" --fork
+        fi
+        
+        # Đợi MongoDB khởi động
+        echo -e "${YELLOW}Đợi MongoDB khởi động...${NC}"
+        sleep 5
+        
+        # Kiểm tra lại
+        if check_mongodb_status false; then
+            echo -e "${GREEN}✅ Đã khởi động MongoDB ${NC}"
+            return 0
+        else
+            echo -e "${RED}❌ MongoDB không thể khởi động hoặc không lắng nghe trên port ${MONGO_PORT}${NC}"
+            
+            # Kiểm tra lỗi trong log
+            if [ -f "$MONGODB_LOG_PATH" ]; then
+                echo -e "${YELLOW}Kiểm tra log lỗi:${NC}"
+                $sudo_cmd tail -n 20 "$MONGODB_LOG_PATH" | grep -i "error"
+                
+                # Kiểm tra lỗi keyfile
+                if $sudo_cmd tail -n 20 "$MONGODB_LOG_PATH" | grep -i -q "keyfile"; then
+                    echo -e "${RED}❌ Có lỗi liên quan đến keyfile, đang sửa...${NC}"
+                    $sudo_cmd chmod 400 "$MONGODB_KEYFILE"
+                    $sudo_cmd chown mongodb:mongodb "$MONGODB_KEYFILE" 2>/dev/null || true
+                fi
+                
+                # Kiểm tra lỗi log path
+                if $sudo_cmd tail -n 20 "$MONGODB_LOG_PATH" | grep -i -q "log file"; then
+                    echo -e "${RED}❌ Có lỗi liên quan đến file log, đang sửa...${NC}"
+                    local log_dir=$(dirname "$MONGODB_LOG_PATH")
+                    $sudo_cmd mkdir -p "$log_dir"
+                    $sudo_cmd touch "$MONGODB_LOG_PATH"
+                    $sudo_cmd chmod 644 "$MONGODB_LOG_PATH"
+                    $sudo_cmd chown mongodb:mongodb "$MONGODB_LOG_PATH" 2>/dev/null || true
+                fi
+                
+                # Kiểm tra lỗi data path
+                if $sudo_cmd tail -n 20 "$MONGODB_LOG_PATH" | grep -i -q "data directory"; then
+                    echo -e "${RED}❌ Có lỗi liên quan đến thư mục dữ liệu, đang sửa...${NC}"
+                    $sudo_cmd mkdir -p "$MONGODB_DATA_DIR"
+                    $sudo_cmd chmod 750 "$MONGODB_DATA_DIR"
+                    $sudo_cmd chown -R mongodb:mongodb "$MONGODB_DATA_DIR" 2>/dev/null || true
+                fi
+            fi
+            
+            retries=$((retries+1))
+            
+            if [ $retries -lt $max_retries ]; then
+                echo -e "${YELLOW}Thử lại sau 5 giây...${NC}"
+                sleep 5
+            fi
+        fi
+    done
+    
+    # Nếu vẫn không khởi động được sau nhiều lần thử
+    echo -e "${RED}❌ Không thể khởi động MongoDB sau ${max_retries} lần thử.${NC}"
+    echo -e "${YELLOW}Vui lòng kiểm tra cấu hình và log thủ công. Có thể cần khởi động lại máy chủ.${NC}"
+    return 1
 }
 
 # Hàm setup_replica để gọi từ main.sh
@@ -959,3 +1002,174 @@ setup_replica_linux() {
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     setup_replica_linux
 fi
+
+# Dừng MongoDB
+stop_mongodb() {
+    echo -e "${YELLOW}Dừng MongoDB...${NC}"
+    
+    # Kiểm tra MongoDB có đang chạy không
+    if ! pgrep -x mongod >/dev/null; then
+        echo -e "${YELLOW}MongoDB không chạy${NC}"
+        return 0
+    fi
+    
+    # Dừng bằng systemd nếu có
+    if command -v systemctl &>/dev/null && [ -f /etc/systemd/system/mongod.service ]; then
+        $sudo_cmd systemctl stop mongod
+        sleep 2
+        
+        # Kiểm tra đã dừng chưa
+        if ! pgrep -x mongod >/dev/null; then
+            echo -e "${GREEN}MongoDB đã dừng thành công (systemd)${NC}"
+            return 0
+        else
+            echo -e "${YELLOW}Không thể dừng MongoDB bằng systemd, đang thử phương pháp khác...${NC}"
+        fi
+    fi
+    
+    # Nếu không có systemd hoặc systemd không thành công, thử dừng bằng kill
+    local pid=$(pgrep -x mongod)
+    if [ -n "$pid" ]; then
+        echo -e "${YELLOW}Dừng MongoDB process (PID: $pid)...${NC}"
+        $sudo_cmd kill $pid
+        sleep 3
+        
+        # Kiểm tra đã dừng chưa
+        if ! pgrep -x mongod >/dev/null; then
+            echo -e "${GREEN}MongoDB đã dừng thành công (kill)${NC}"
+        else
+            # Dùng kill -9 nếu cần
+            echo -e "${YELLOW}Buộc dừng MongoDB...${NC}"
+            $sudo_cmd kill -9 $pid
+            sleep 2
+            
+            if ! pgrep -x mongod >/dev/null; then
+                echo -e "${GREEN}MongoDB đã buộc dừng thành công (kill -9)${NC}"
+            else
+                echo -e "${RED}Không thể dừng MongoDB${NC}"
+                return 1
+            fi
+        fi
+    fi
+    
+    return 0
+}
+
+# Khởi động MongoDB
+start_mongodb() {
+    echo -e "${YELLOW}Khởi động MongoDB...${NC}"
+    
+    # Kiểm tra file cấu hình
+    if [ ! -f "$MONGODB_CONFIG" ]; then
+        echo -e "${RED}❌ Không tìm thấy file cấu hình tại $MONGODB_CONFIG${NC}"
+        echo -e "${YELLOW}Đang tạo file cấu hình mặc định...${NC}"
+        create_config true true
+    fi
+    
+    # Kiểm tra syntax của file cấu hình MongoDB
+    echo -e "${YELLOW}Kiểm tra cấu hình MongoDB...${NC}"
+    if [ -x "$(command -v mongod)" ]; then
+        # Kiểm tra cấu hình bằng mongod
+        local check_result=$(mongod --config "$MONGODB_CONFIG" --validate 2>&1 || echo "ERROR")
+        if [[ "$check_result" == *"ERROR"* ]]; then
+            echo -e "${RED}❌ File cấu hình MongoDB không hợp lệ:${NC}"
+            echo "$check_result"
+            echo -e "${YELLOW}Đang sửa chữa file cấu hình...${NC}"
+            # Sửa chữa file cấu hình bằng cách tạo lại
+            create_config true true
+        else
+            echo -e "${GREEN}✅ File cấu hình hợp lệ${NC}"
+        fi
+    fi
+    
+    # Đảm bảo thư mục dữ liệu tồn tại và có quyền truy cập
+    if [ ! -d "$MONGODB_DATA_DIR" ]; then
+        echo -e "${YELLOW}Thư mục dữ liệu không tồn tại, đang tạo...${NC}"
+        $sudo_cmd mkdir -p "$MONGODB_DATA_DIR"
+    fi
+    
+    # Đặt quyền truy cập cho thư mục dữ liệu
+    $sudo_cmd chown -R mongodb:mongodb "$MONGODB_DATA_DIR" 2>/dev/null || true
+    $sudo_cmd chmod 750 "$MONGODB_DATA_DIR" 2>/dev/null || true
+    
+    # Đảm bảo thư mục log tồn tại
+    local log_dir=$(dirname "$MONGODB_LOG_PATH")
+    if [ ! -d "$log_dir" ]; then
+        echo -e "${YELLOW}Thư mục log không tồn tại, đang tạo...${NC}"
+        $sudo_cmd mkdir -p "$log_dir"
+        $sudo_cmd chown -R mongodb:mongodb "$log_dir" 2>/dev/null || true
+    fi
+    
+    # Đảm bảo file log có thể ghi được
+    $sudo_cmd touch "$MONGODB_LOG_PATH" 2>/dev/null || true
+    $sudo_cmd chmod 644 "$MONGODB_LOG_PATH" 2>/dev/null || true
+    $sudo_cmd chown mongodb:mongodb "$MONGODB_LOG_PATH" 2>/dev/null || true
+    
+    # Khởi động MongoDB bằng systemd nếu có
+    if command -v systemctl &>/dev/null && [ -f /etc/systemd/system/mongod.service ]; then
+        echo -e "${YELLOW}Khởi động MongoDB bằng systemd...${NC}"
+        $sudo_cmd systemctl start mongod
+        sleep 3
+        
+        # Kiểm tra trạng thái
+        if systemctl is-active --quiet mongod; then
+            echo -e "${GREEN}MongoDB đã khởi động thành công (systemd)${NC}"
+            return 0
+        else
+            echo -e "${RED}MongoDB không khởi động được bằng systemd, đang thử phương pháp khác...${NC}"
+        fi
+    fi
+    
+    # Nếu không có systemd hoặc systemd không thành công, thử khởi động trực tiếp
+    echo -e "${YELLOW}Khởi động MongoDB trực tiếp...${NC}"
+    $sudo_cmd mongod --config "$MONGODB_CONFIG" --fork
+    
+    # Kiểm tra MongoDB đã khởi động chưa
+    sleep 3
+    if pgrep -x mongod >/dev/null; then
+        echo -e "${GREEN}MongoDB đã khởi động thành công (direct)${NC}"
+        sleep 2
+        # Kiểm tra xem có thể kết nối được không
+        check_mongodb_status false
+        return 0
+    else
+        echo -e "${RED}Không thể khởi động MongoDB${NC}"
+        
+        # Xem log lỗi
+        if [ -f "$MONGODB_LOG_PATH" ]; then
+            echo -e "${YELLOW}Xem log lỗi (10 dòng cuối):${NC}"
+            $sudo_cmd tail -n 10 "$MONGODB_LOG_PATH"
+        fi
+        
+        # Kiểm tra quyền truy cập
+        echo -e "${YELLOW}Kiểm tra quyền truy cập:${NC}"
+        ls -la "$MONGODB_DATA_DIR"
+        ls -la "$log_dir"
+        
+        # Thử sửa quyền cho keyfile nếu có
+        if [ -f "$MONGODB_KEYFILE" ]; then
+            echo -e "${YELLOW}Sửa quyền cho keyfile...${NC}"
+            $sudo_cmd chmod 400 "$MONGODB_KEYFILE"
+            $sudo_cmd chown mongodb:mongodb "$MONGODB_KEYFILE" 2>/dev/null || true
+        fi
+        
+        # Thử sửa quyền và khởi động lại
+        echo -e "${YELLOW}Đang sửa quyền và thử lại...${NC}"
+        $sudo_cmd chown -R mongodb:mongodb "$MONGODB_DATA_DIR" 2>/dev/null || true
+        $sudo_cmd chown -R mongodb:mongodb "$log_dir" 2>/dev/null || true
+        $sudo_cmd chmod -R 750 "$MONGODB_DATA_DIR" 2>/dev/null || true
+        $sudo_cmd chmod -R 750 "$log_dir" 2>/dev/null || true
+        
+        # Thử lại một lần nữa
+        $sudo_cmd mongod --config "$MONGODB_CONFIG" --fork
+        sleep 3
+        
+        if pgrep -x mongod >/dev/null; then
+            echo -e "${GREEN}MongoDB đã khởi động thành công (sau khi sửa quyền)${NC}"
+            return 0
+        else
+            echo -e "${RED}Vẫn không thể khởi động MongoDB. Vui lòng kiểm tra cấu hình và log.${NC}"
+            return 1
+        fi
+    fi
+}
