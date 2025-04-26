@@ -18,34 +18,10 @@ MONGODB_PASSWORD="manhnk"
 AUTH_DATABASE="admin"
 MAX_SERVERS=7
 
-# Đường dẫn - Linux
-if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-    HOME_DIR="${HOME}"
-    MONGODB_DATA_DIR="${HOME_DIR}/.mongodb/data"
-    MONGODB_LOG_DIR="${HOME_DIR}/.mongodb/logs"
-    MONGODB_CONFIG_DIR="${HOME_DIR}/.mongodb/config"
-    MONGODB_LOG_PATH="${MONGODB_LOG_DIR}/mongod.log"
-    MONGODB_CONFIG="${MONGODB_CONFIG_DIR}/mongod.conf"
-    MONGODB_KEYFILE="/etc/mongodb-keyfile"
-# Đường dẫn - macOS
-elif [[ "$OSTYPE" == "darwin"* ]]; then
-    MONGODB_DATA_DIR="/usr/local/var/mongodb"
-    MONGODB_LOG_DIR="/usr/local/var/log/mongodb"
-    MONGODB_CONFIG_DIR="/usr/local/etc/mongodb"
-    MONGODB_LOG_PATH="$MONGODB_LOG_DIR/mongod.log"
-    MONGODB_CONFIG="$MONGODB_CONFIG_DIR/mongod.conf"
-    MONGODB_KEYFILE="$MONGODB_CONFIG_DIR/mongodb-keyfile"
-# Mặc định
-else
-    HOME_DIR="${HOME}"
-    MONGODB_DATA_DIR="${HOME_DIR}/.mongodb/data"
-    MONGODB_LOG_DIR="${HOME_DIR}/.mongodb/logs"
-    MONGODB_CONFIG_DIR="${HOME_DIR}/.mongodb/config"
-    MONGODB_LOG_PATH="${MONGODB_LOG_DIR}/mongod.log"
-    MONGODB_CONFIG="${MONGODB_CONFIG_DIR}/mongod.conf"
-    MONGODB_KEYFILE="${MONGODB_CONFIG_DIR}/mongodb-keyfile"
-fi
-
-# Đồng bộ các biến trùng lặp
-MONGODB_PORT="$MONGO_PORT"
+# Đường dẫn
+HOME_DIR="${HOME}"
+MONGODB_DATA_DIR="/data/rs0"
+MONGODB_LOG_PATH="/var/log/mongodb/mongod.log"
+MONGODB_CONFIG="/etc/mongod.conf"
+MONGODB_KEYFILE="/etc/mongodb-keyfile"
 
