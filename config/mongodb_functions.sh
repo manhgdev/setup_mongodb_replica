@@ -347,51 +347,19 @@ start_mongodb() {
 
 # Cấu hình tường lửa
 configure_firewall() {
-    echo -e "${YELLOW}Cấu hình tường lửa cho MongoDB...${NC}"
-    
-    # Kiểm tra quyền
-    if [ "$(id -u)" -ne 0 ] && [ -z "$sudo_cmd" ]; then
-        echo -e "${YELLOW}Không có quyền cấu hình tường lửa, bỏ qua bước này${NC}"
-        return 1
-    fi
-    
-    # Kiểm tra UFW
-    if command -v ufw &>/dev/null && $sudo_cmd ufw status | grep -q "active"; then
-        echo -e "${YELLOW}Phát hiện UFW đang hoạt động, cấu hình UFW...${NC}"
-        $sudo_cmd ufw allow "$MONGO_PORT/tcp" comment "MongoDB"
-        echo -e "${GREEN}Đã cấu hình UFW cho MongoDB port $MONGO_PORT${NC}"
-        return 0
-    fi
-    
-    # Kiểm tra firewalld
-    if command -v firewall-cmd &>/dev/null && $sudo_cmd systemctl is-active firewalld >/dev/null 2>&1; then
-        echo -e "${YELLOW}Phát hiện firewalld đang hoạt động, cấu hình firewalld...${NC}"
-        $sudo_cmd firewall-cmd --permanent --add-port="$MONGO_PORT/tcp"
-        $sudo_cmd firewall-cmd --reload
-        echo -e "${GREEN}Đã cấu hình firewalld cho MongoDB port $MONGO_PORT${NC}"
-        return 0
-    fi
-    
-    # Kiểm tra iptables
-    if command -v iptables &>/dev/null; then
-        echo -e "${YELLOW}Cấu hình iptables...${NC}"
-        $sudo_cmd iptables -A INPUT -p tcp --dport "$MONGO_PORT" -j ACCEPT
-        
-        # Lưu cấu hình iptables nếu có công cụ phù hợp
-        if command -v iptables-save &>/dev/null; then
-            if [ -d /etc/iptables ]; then
-                $sudo_cmd iptables-save > /etc/iptables/rules.v4
-            elif [ -f /etc/sysconfig/iptables ]; then
-                $sudo_cmd iptables-save > /etc/sysconfig/iptables
-            fi
-        fi
-        
-        echo -e "${GREEN}Đã cấu hình iptables cho MongoDB port $MONGO_PORT${NC}"
-        return 0
-    fi
-    
-    echo -e "${YELLOW}Không phát hiện tường lửa nào đang hoạt động${NC}"
-    return 0
+  local port=$1
+  echo -e "${YELLOW}Cấu hình tường lửa...${NC}"
+  
+  if command -v ufw &> /dev/null; then
+    sudo ufw allow $MONGO_PORT/tcp
+  fi
+  
+  if command -v firewall-cmd &> /dev/null; then
+    sudo firewall-cmd --permanent --add-port=$MONGO_PORT/tcp
+    sudo firewall-cmd --reload
+  fi
+  
+  echo -e "${GREEN}✓ Đã cấu hình tường lửa${NC}"
 }
 
 # Kiểm tra kết nối MongoDB
