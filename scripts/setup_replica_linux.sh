@@ -949,49 +949,68 @@ setup_replica_linux() {
         echo -e "${BLUE}╠════════════════════════════════════════════╣${NC}"
         echo -e "${BLUE}║${NC} ${GREEN}1.${NC} Thiết lập PRIMARY node                  ${BLUE}║${NC}"
         echo -e "${BLUE}║${NC} ${GREEN}2.${NC} Thiết lập SECONDARY node                ${BLUE}║${NC}"
-        echo -e "${BLUE}║${NC} ${GREEN}3.${NC} Kiểm tra trạng thái replica set         ${BLUE}║${NC}"
-        echo -e "${BLUE}║${NC} ${GREEN}4.${NC} Khởi động lại MongoDB                   ${BLUE}║${NC}"
-        echo -e "${BLUE}║${NC} ${GREEN}5.${NC} Dừng MongoDB                            ${BLUE}║${NC}"
-        echo -e "${BLUE}║${NC} ${GREEN}6.${NC} Xem thông tin cấu hình                  ${BLUE}║${NC}"
+        echo -e "${BLUE}║${NC} ${GREEN}3.${NC} Thiết lập ARBITER node                  ${BLUE}║${NC}"
+        echo -e "${BLUE}║${NC} ${GREEN}4.${NC} Kiểm tra trạng thái replica set         ${BLUE}║${NC}"
+        echo -e "${BLUE}║${NC} ${GREEN}5.${NC} Khởi động lại MongoDB                   ${BLUE}║${NC}"
+        echo -e "${BLUE}║${NC} ${GREEN}6.${NC} Dừng MongoDB                            ${BLUE}║${NC}"
+        echo -e "${BLUE}║${NC} ${GREEN}7.${NC} Xem thông tin cấu hình                  ${BLUE}║${NC}"
         echo -e "${BLUE}║${NC} ${RED}0.${NC} Quay lại menu chính                       ${BLUE}║${NC}"
         echo -e "${BLUE}╚════════════════════════════════════════════╝${NC}"
         local server_ip=$(get_server_ip true || echo 'không có')
         local port_value=${MONGO_PORT:-$MONGODB_PORT}
+        port_value=${port_value:-27017}
         echo "Server IP: $server_ip"
-        echo "MongoDB Version: ${MONGO_VERSION:-8.0} | Port: ${port_value:-27017} | Replica: ${REPLICA_SET_NAME:-rs0}"
+        echo "MongoDB Version: ${MONGO_VERSION:-8.0} | Port: $port_value | Replica: ${REPLICA_SET_NAME:-rs0}"
+        
+        # Kiểm tra trạng thái MongoDB
+        if check_mongodb_status false; then
+            echo -e "${GREEN}MongoDB đang chạy trên $server_ip:$port_value${NC}"
+        else
+            echo -e "${RED}MongoDB không chạy hoặc không hoạt động bình thường${NC}"
+        fi
         echo
         
-        read -p ">> Chọn chức năng [0-6]: " choice
+        read -p ">> Chọn chức năng [0-7]: " choice
         
         case $choice in
             1) setup_primary_node; read -p "Nhấn Enter để tiếp tục..." ;;
             2) setup_secondary_node; read -p "Nhấn Enter để tiếp tục..." ;;
-            3) 
+            3) setup_arbiter_node; read -p "Nhấn Enter để tiếp tục..." ;;
+            4) 
                # Kiểm tra trạng thái MongoDB trước khi chạy check_replica_status
                local server_ip=$(get_server_ip)
-               echo -e "${YELLOW}Kiểm tra trạng thái MongoDB tại $server_ip:$MONGO_PORT...${NC}"
+               echo -e "${YELLOW}Kiểm tra trạng thái MongoDB tại $server_ip:$port_value...${NC}"
                
                # Kiểm tra port đang mở
-               if nc -z -w5 $server_ip $MONGO_PORT 2>/dev/null; then
-                 echo -e "${GREEN}✅ MongoDB đang chạy và port $MONGO_PORT đang mở${NC}"
+               if check_mongodb_status; then
+                 echo -e "${GREEN}✅ MongoDB đang chạy và sẵn sàng truy vấn${NC}"
                  check_replica_status
                else
-                 echo -e "${RED}❌ MongoDB không chạy hoặc port $MONGO_PORT không mở${NC}"
-                 echo -e "${YELLOW}Kiểm tra trạng thái service:${NC}"
-                 $sudo_cmd systemctl status mongod || true
+                 echo -e "${RED}❌ MongoDB không chạy hoặc không hoạt động bình thường${NC}"
                  echo -e "${YELLOW}Bạn có muốn khởi động lại MongoDB không? (y/n)${NC}"
                  read -p "> " restart_choice
                  if [[ "$restart_choice" == "y" || "$restart_choice" == "Y" ]]; then
-                   stop_mongodb && start_mongodb && sleep 5
-                   echo -e "${YELLOW}Đang kiểm tra lại trạng thái...${NC}"
-                   check_replica_status
+                   echo -e "${YELLOW}Đang khởi động lại MongoDB...${NC}"
+                   start_and_verify_mongodb
+                   
+                   if check_mongodb_status false; then
+                     echo -e "${GREEN}✅ MongoDB đã khởi động, đang kiểm tra replica set${NC}"
+                     check_replica_status
+                   else
+                     echo -e "${RED}❌ Không thể khởi động MongoDB, không thể kiểm tra replica set${NC}"
+                   fi
                  fi
                fi
                read -p "Nhấn Enter để tiếp tục..." 
                ;;
-            4) stop_mongodb && start_mongodb; read -p "Nhấn Enter để tiếp tục..." ;;
-            5) stop_mongodb; read -p "Nhấn Enter để tiếp tục..." ;;
-            6) show_config; read -p "Nhấn Enter để tiếp tục..." ;;
+            5) 
+               echo -e "${YELLOW}Đang khởi động lại MongoDB...${NC}"
+               stop_mongodb && sleep 2
+               start_and_verify_mongodb
+               read -p "Nhấn Enter để tiếp tục..." 
+               ;;
+            6) stop_mongodb; read -p "Nhấn Enter để tiếp tục..." ;;
+            7) show_config; read -p "Nhấn Enter để tiếp tục..." ;;
             0) return 0 ;;
             *) echo "❌ Lựa chọn không hợp lệ. Vui lòng chọn lại."; read -p "Nhấn Enter để tiếp tục..." ;;
         esac
@@ -1088,10 +1107,6 @@ start_mongodb() {
         $sudo_cmd mkdir -p "$MONGODB_DATA_DIR"
     fi
     
-    # Đặt quyền truy cập cho thư mục dữ liệu
-    $sudo_cmd chown -R mongodb:mongodb "$MONGODB_DATA_DIR" 2>/dev/null || true
-    $sudo_cmd chmod 750 "$MONGODB_DATA_DIR" 2>/dev/null || true
-    
     # Đảm bảo thư mục log tồn tại
     local log_dir=$(dirname "$MONGODB_LOG_PATH")
     if [ ! -d "$log_dir" ]; then
@@ -1172,4 +1187,61 @@ start_mongodb() {
             return 1
         fi
     fi
+}
+
+fix_unreachable_node_menu() {
+    while true; do
+        clear
+        echo -e "${BLUE}╔════════════════════════════════════════════╗${NC}"
+        echo -e "${BLUE}║${NC}      ${YELLOW}FIX UNREACHABLE NODE WIZARD${NC}          ${BLUE}║${NC}"
+        echo -e "${BLUE}╠════════════════════════════════════════════╣${NC}"
+        echo -e "${BLUE}║${NC} ${GREEN}1.${NC} Kiểm tra và sửa lỗi node không kết nối  ${BLUE}║${NC}"
+        echo -e "${BLUE}║${NC} ${GREEN}2.${NC} Khôi phục node bằng cách xóa và thêm lại ${BLUE}║${NC}"
+        echo -e "${BLUE}║${NC} ${GREEN}3.${NC} Cấu hình lại node không kết nối được    ${BLUE}║${NC}"
+        echo -e "${BLUE}║${NC} ${RED}0.${NC} Quay lại                                  ${BLUE}║${NC}"
+        echo -e "${BLUE}╚════════════════════════════════════════════╝${NC}"
+        
+        # Hiển thị trạng thái hiện tại
+        local node_ip
+        read -p "Nhập IP của node cần sửa (mặc định: $(get_server_ip)): " node_ip
+        node_ip=${node_ip:-$(get_server_ip)}
+        
+        # Kiểm tra trạng thái MongoDB trên node đó
+        echo -e "${YELLOW}Kiểm tra trạng thái node $node_ip...${NC}"
+        
+        # Hiển thị các thông tin quan trọng
+        if ping -c 1 -W 2 $node_ip &>/dev/null; then
+            echo -e "${GREEN}✅ Node $node_ip có thể ping được${NC}"
+        else
+            echo -e "${RED}❌ Node $node_ip không thể ping được${NC}"
+        fi
+        
+        if check_mongodb_status false $node_ip; then
+            echo -e "${GREEN}✅ MongoDB đang chạy trên $node_ip${NC}"
+        else
+            echo -e "${RED}❌ MongoDB không chạy hoặc không hoạt động bình thường trên $node_ip${NC}"
+        fi
+        
+        read -p ">> Chọn chức năng [0-3]: " choice
+        
+        case $choice in
+            1)
+                echo -e "${YELLOW}Đang chạy kiểm tra và sửa lỗi node không kết nối...${NC}"
+                check_and_fix_unreachable $node_ip
+                read -p "Nhấn Enter để tiếp tục..." 
+                ;;
+            2) 
+                echo -e "${YELLOW}Đang khôi phục node bằng cách xóa và thêm lại...${NC}"
+                force_recover_node $node_ip
+                read -p "Nhấn Enter để tiếp tục..." 
+                ;;
+            3)
+                echo -e "${YELLOW}Đang cấu hình lại node không kết nối được...${NC}"
+                force_reconfigure_node $node_ip
+                read -p "Nhấn Enter để tiếp tục..." 
+                ;;
+            0) return 0 ;;
+            *) echo "❌ Lựa chọn không hợp lệ. Vui lòng chọn lại."; read -p "Nhấn Enter để tiếp tục..." ;;
+        esac
+    done
 }
