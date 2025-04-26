@@ -108,8 +108,6 @@ create_config() {
 # Lưu trữ
 storage:
   dbPath: $MONGODB_DATA_DIR
-  journal:
-    enabled: true
 
 # Log
 systemLog:

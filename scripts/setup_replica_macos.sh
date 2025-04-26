@@ -63,8 +63,6 @@ systemLog:
   logAppend: true
 storage:
   dbPath: "$MONGODB_DATA_DIR"
-  journal:
-    enabled: true
 net:
   port: $MONGODB_PORT
   bindIp: 0.0.0.0
