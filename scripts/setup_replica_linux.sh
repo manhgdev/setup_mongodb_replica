@@ -2,11 +2,25 @@
 # MongoDB Replica Set Setup Script
 # Script thiết lập Replica Set MongoDB tự động
 
-# Đọc các biến cấu hình và hàm chức năng nếu chưa import
-if [ -z "$REPLICA_SET_NAME" ]; then
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    source "${SCRIPT_DIR}/../config/mongodb_settings.sh"
-    source "${SCRIPT_DIR}/../config/mongodb_functions.sh"
+# Get the absolute path of the script directory
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+# Import required configuration files
+if [ -f "$SCRIPT_DIR/../config/mongodb_settings.sh" ]; then
+    source "$SCRIPT_DIR/../config/mongodb_settings.sh"
+fi
+
+if [ -f "$SCRIPT_DIR/../config/mongodb_functions.sh" ]; then
+    source "$SCRIPT_DIR/../config/mongodb_functions.sh"
+fi
+
+# Define colors if not defined
+if [ -z "$BLUE" ] || [ -z "$GREEN" ] || [ -z "$YELLOW" ] || [ -z "$RED" ] || [ -z "$NC" ]; then
+    BLUE='\033[0;34m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[0;33m'
+    RED='\033[0;31m'
+    NC='\033[0m'
 fi
 
 # Thiết lập sudo_cmd nếu chưa được định nghĩa
@@ -316,3 +330,8 @@ setup_replica_linux() {
         esac
     done
 }
+
+# Chỉ chạy setup_replica_linux nếu script được gọi trực tiếp
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    setup_replica_linux
+fi
