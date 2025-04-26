@@ -1,13 +1,16 @@
 #!/bin/bash
 
-# Màu sắc cho output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+# Load config từ file chung
+CONFIG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/config"
+CONFIG_FILE="${CONFIG_DIR}/mongodb_settings.sh"
 
-# Biến cấu hình
-MONGO_PORT="27017"
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "Không tìm thấy file cấu hình: $CONFIG_FILE"
+    exit 1
+fi
+
+# Đọc file cấu hình
+source "$CONFIG_FILE"
 
 # Kiểm tra và sửa các vấn đề có thể gây ra lỗi không reachable
 check_and_fix_unreachable() {
@@ -437,11 +440,11 @@ fix_unreachable_node_menu() {
     read -p "Nhập IP của PRIMARY node (Enter để dùng 171.244.21.188): " PRIMARY_IP
     PRIMARY_IP=${PRIMARY_IP:-171.244.21.188}  # Nếu không nhập thì dùng 171.244.21.188
     
-    read -p "Nhập username admin (Enter để dùng manhg): " ADMIN_USER
-    ADMIN_USER=${ADMIN_USER:-manhg}  # Nếu không nhập thì dùng manhg
+    read -p "Nhập username admin (Enter để dùng $MONGODB_USER): " ADMIN_USER
+    ADMIN_USER=${ADMIN_USER:-$MONGODB_USER}  # Nếu không nhập thì dùng MONGODB_USER
     
-    read -s -p "Nhập password admin (Enter để dùng manhnk): " ADMIN_PASS
-    ADMIN_PASS=${ADMIN_PASS:-manhnk}  # Nếu không nhập thì dùng manhnk
+    read -s -p "Nhập password admin (Enter để dùng $MONGODB_PASSWORD): " ADMIN_PASS
+    ADMIN_PASS=${ADMIN_PASS:-$MONGODB_PASSWORD}  # Nếu không nhập thì dùng MONGODB_PASSWORD
     echo
     
     echo -e "${YELLOW}Thông tin node:${NC}"
@@ -449,6 +452,7 @@ fix_unreachable_node_menu() {
     echo "Port: $NODE_PORT"
     echo "PRIMARY IP: $PRIMARY_IP"
     echo "Username: $ADMIN_USER"
+    echo "Config file: $CONFIG_FILE"
     echo
     
     echo -e "${YELLOW}Chọn hành động:${NC}"
