@@ -1,8 +1,7 @@
 #!/bin/bash
 
-PRIMARY_HOST="$1"
-MONGODB_USER="$2"
-MONGODB_PASS="$3"
+MONGODB_USER="manhg"
+MONGODB_PASS="manhnk"
 AUTH_DB="admin"
 
 # Hàm lấy IP của node hiện tại
