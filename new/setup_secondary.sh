@@ -33,19 +33,43 @@ create_keyfile() {
         echo -e "${GREEN}Đã copy keyfile từ primary thành công${NC}"
     else
         echo -e "${RED}Không thể copy keyfile từ primary.${NC}"
-        echo -e "${YELLOW}Hướng dẫn thủ công:${NC}"
-        echo "1. SSH vào máy chủ primary ($PRIMARY_IP)"
-        echo "2. Chạy lệnh: sudo cat ${MONGODB_KEYFILE}"
-        echo "3. Copy toàn bộ nội dung keyfile"
-        echo "4. Tạo file ${MONGODB_KEYFILE} trên máy này"
-        echo "5. Dán nội dung keyfile vào file vừa tạo"
-        echo "6. Chạy các lệnh sau:"
-        echo "   sudo chmod 400 ${MONGODB_KEYFILE}"
-        echo "   sudo chown mongodb:mongodb ${MONGODB_KEYFILE}"
+        #!/bin/bash
+
+        echo "====== FIX LỖI MONGODB KEYFILE KHÔNG ĐỒNG BỘ ======"
+
+        # Lưu lại keyfile hiện tại
+        echo "Lưu lại keyfile hiện tại..."
+        sudo cp /etc/mongodb-keyfile /etc/mongodb-keyfile.bak
+
+        # Yêu cầu người dùng nhập nội dung keyfile từ server primary
+        echo "Vui lòng cung cấp nội dung keyfile từ server primary:"
+        echo "Để lấy nội dung keyfile từ server primary, hãy chạy lệnh: sudo cat /etc/mongodb-keyfile"
+        echo "Sau đó copy toàn bộ nội dung vào đây và nhấn CTRL+D khi hoàn tất:"
+
+        sudo bash -c 'cat > /etc/mongodb-keyfile'
+        echo "Đã nhập keyfile mới"
+
+        # Sửa quyền cho keyfile
+        echo "Sửa quyền cho keyfile..."
+        sudo chmod 400 /etc/mongodb-keyfile
+        sudo chown mongodb:mongodb /etc/mongodb-keyfile
+
+        # Kiểm tra quyền
+        echo "Kiểm tra quyền của keyfile..."
+        ls -la /etc/mongodb-keyfile
+
+        # Khởi động lại MongoDB
+        echo "Khởi động lại MongoDB..."
+        sudo systemctl restart mongod
+
+        # Kiểm tra trạng thái
+        echo "Kiểm tra trạng thái MongoDB..."
+        sleep 3
+        sudo systemctl status mongod
+
         echo ""
-        echo "Sau khi hoàn thành, chạy lại script này để tiếp tục."
-        exit 1
-    fi
+        echo "Nếu MongoDB đã khởi động thành công, bạn có thể thử kết nối lại với replica set."
+            fi
     
     # Thiết lập quyền
     chmod 400 "$MONGODB_KEYFILE"
