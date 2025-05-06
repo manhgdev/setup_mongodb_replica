@@ -18,6 +18,62 @@ BLUE='\033[0;34m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
+# Hàm kiểm tra kết nối MongoDB
+check_mongodb_connection() {
+    local host=$1
+    local user=$2
+    local pass=$3
+    local auth_db=$4
+    
+    if [ -z "$user" ]; then
+        mongosh --host "$host" --quiet --eval "db.runCommand({ping: 1}).ok" 2>/dev/null
+    else
+        mongosh --host "$host" -u "$user" -p "$pass" --authenticationDatabase "$auth_db" --quiet --eval "db.runCommand({ping: 1}).ok" 2>/dev/null
+    fi
+}
+
+# Hàm kiểm tra trạng thái replica set
+check_replica_set_status() {
+    local host=$1
+    local user=$2
+    local pass=$3
+    local auth_db=$4
+    
+    if [ -z "$user" ]; then
+        mongosh --host "$host" --quiet --eval "rs.status().ok" 2>/dev/null
+    else
+        mongosh --host "$host" -u "$user" -p "$pass" --authenticationDatabase "$auth_db" --quiet --eval "rs.status().ok" 2>/dev/null
+    fi
+}
+
+# Hàm kiểm tra và xóa member trùng lặp
+remove_duplicate_members() {
+    local host=$1
+    local user=$2
+    local pass=$3
+    local auth_db=$4
+    local current_host=$5
+    
+    mongosh --host "$host" -u "$user" -p "$pass" --authenticationDatabase "$auth_db" --quiet --eval "
+        var cfg = rs.conf();
+        var members = cfg.members;
+        var seen = {};
+        var newMembers = [];
+        
+        for (var i = 0; i < members.length; i++) {
+            var member = members[i];
+            if (!seen[member.host]) {
+                seen[member.host] = true;
+                newMembers.push(member);
+            }
+        }
+        
+        cfg.members = newMembers;
+        cfg.version += 1;
+        rs.reconfig(cfg);
+    "
+}
+
 # Hàm tạo keyfile
 create_keyfile() {
     local PRIMARY_IP=$1
@@ -33,43 +89,29 @@ create_keyfile() {
         echo -e "${GREEN}Đã copy keyfile từ primary thành công${NC}"
     else
         echo -e "${RED}Không thể copy keyfile từ primary.${NC}"
-        #!/bin/bash
-
         echo "====== FIX LỖI MONGODB KEYFILE KHÔNG ĐỒNG BỘ ======"
-
+        
         # Lưu lại keyfile hiện tại
         echo "Lưu lại keyfile hiện tại..."
         sudo cp /etc/mongodb-keyfile /etc/mongodb-keyfile.bak
-
+        
         # Yêu cầu người dùng nhập nội dung keyfile từ server primary
         echo "Vui lòng cung cấp nội dung keyfile từ server primary:"
         echo "Để lấy nội dung keyfile từ server primary, hãy chạy lệnh: sudo cat /etc/mongodb-keyfile"
         echo "Sau đó copy toàn bộ nội dung vào đây và nhấn CTRL+D khi hoàn tất:"
-
+        
         sudo bash -c 'cat > /etc/mongodb-keyfile'
         echo "Đã nhập keyfile mới"
-
+        
         # Sửa quyền cho keyfile
         echo "Sửa quyền cho keyfile..."
         sudo chmod 400 /etc/mongodb-keyfile
         sudo chown mongodb:mongodb /etc/mongodb-keyfile
-
+        
         # Kiểm tra quyền
         echo "Kiểm tra quyền của keyfile..."
         ls -la /etc/mongodb-keyfile
-
-        # Khởi động lại MongoDB
-        echo "Khởi động lại MongoDB..."
-        sudo systemctl restart mongod
-
-        # Kiểm tra trạng thái
-        echo "Kiểm tra trạng thái MongoDB..."
-        sleep 3
-        sudo systemctl status mongod
-
-        echo ""
-        echo "Nếu MongoDB đã khởi động thành công, bạn có thể thử kết nối lại với replica set."
-            fi
+    fi
     
     # Thiết lập quyền
     chmod 400 "$MONGODB_KEYFILE"
@@ -121,12 +163,19 @@ if [ -z "$SECONDARY_IP" ] || [[ ! $SECONDARY_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9
     fi
 fi
 
-PRIMARY_IP="${PRIMARY_IP}:27017"
+PRIMARY_HOST="${PRIMARY_IP}:27017"
 SECONDARY_HOST="${SECONDARY_IP}:27017"
 
 echo -e "${YELLOW}Bắt đầu thiết lập MongoDB Secondary Node...${NC}"
-echo -e "${YELLOW}PRIMARY node: $PRIMARY_IP${NC}"
+echo -e "${YELLOW}PRIMARY node: $PRIMARY_HOST${NC}"
 echo -e "${YELLOW}SECONDARY node: $SECONDARY_HOST${NC}"
+
+# Kiểm tra kết nối tới PRIMARY node
+echo -e "${YELLOW}Kiểm tra kết nối tới PRIMARY node...${NC}"
+if ! check_mongodb_connection "$PRIMARY_HOST" "$MONGODB_USER" "$MONGODB_PASS" "admin"; then
+    echo -e "${RED}Không thể kết nối tới PRIMARY node. Vui lòng kiểm tra lại.${NC}"
+    exit 1
+fi
 
 # Tạo keyfile từ PRIMARY node
 create_keyfile "$PRIMARY_IP"
@@ -153,19 +202,22 @@ sudo cp "$MONGODB_CONFIG" "${MONGODB_CONFIG}.bak.$(date +%Y%m%d%H%M%S)"
 
 # Kiểm tra xem đã có thể đăng nhập với tài khoản admin chưa
 echo -e "${YELLOW}Kiểm tra xem đã cài đặt authentication chưa...${NC}"
-AUTH_STATUS=$(mongosh --port 27017 -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "try { db.runCommand({ping: 1}).ok } catch(e) { 0 }" 2>/dev/null)
+AUTH_STATUS=$(check_mongodb_connection "localhost:27017" "$MONGODB_USER" "$MONGODB_PASS" "admin")
 
 if [ "$AUTH_STATUS" == "1" ]; then
     # Trường hợp 2: Đã cài đặt authentication thành công
     echo -e "${GREEN}Đã cài đặt authentication thành công. Sử dụng tài khoản hiện có.${NC}"
     
     # Kiểm tra replica set
-    RS_STATUS=$(mongosh --port 27017 -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "try { rs.status().ok } catch(e) { 0 }" 2>/dev/null)
+    RS_STATUS=$(check_replica_set_status "localhost:27017" "$MONGODB_USER" "$MONGODB_PASS" "admin")
     
     if [ "$RS_STATUS" == "1" ]; then
         echo -e "${GREEN}Replica Set đã được cấu hình đúng.${NC}"
     else
         echo -e "${YELLOW}Replica Set chưa được cấu hình đúng. Đang cập nhật...${NC}"
+        
+        # Xóa member trùng lặp trước khi thêm mới
+        remove_duplicate_members "$PRIMARY_HOST" "$MONGODB_USER" "$MONGODB_PASS" "admin" "$SECONDARY_HOST"
         
         # Cập nhật cấu hình replication
         if ! grep -q "^replication:" "$MONGODB_CONFIG"; then
@@ -181,13 +233,13 @@ if [ "$AUTH_STATUS" == "1" ]; then
         
         # Join vào Replica Set từ PRIMARY
         echo -e "${YELLOW}Đang join vào Replica Set từ PRIMARY...${NC}"
-        mongosh --host "$PRIMARY_IP" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "rs.add(\"$SECONDARY_HOST\")"
+        mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "rs.add(\"$SECONDARY_HOST\")"
         sleep 2
-        mongosh --host "$PRIMARY_IP" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "
+        mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "
             var cfg = rs.conf();
             for (var i = 0; i < cfg.members.length; i++) {
                 if (cfg.members[i].host === '$SECONDARY_HOST') {
-                    cfg.members[i].priority = 5;
+                    cfg.members[i].priority = 1;
                 }
             }
             cfg.version += 1;
@@ -252,9 +304,12 @@ EOF
         exit 1
     fi
     
+    # Xóa member trùng lặp trước khi thêm mới
+    remove_duplicate_members "$PRIMARY_HOST" "$MONGODB_USER" "$MONGODB_PASS" "admin" "$SECONDARY_HOST"
+    
     # Join vào Replica Set từ PRIMARY
     echo -e "${YELLOW}Đang join vào Replica Set từ PRIMARY...${NC}"
-    mongosh --host "$PRIMARY_IP" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "rs.add(\"$SECONDARY_HOST\")"
+    mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "rs.add(\"$SECONDARY_HOST\")"
     
     # Đợi một chút để Replica Set cập nhật
     sleep 5
