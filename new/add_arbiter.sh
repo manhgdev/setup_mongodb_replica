@@ -198,6 +198,10 @@ if [ "$PRIMARY_READY" = false ]; then
     exit 1
 fi
 
+# Thiết lập write concern trước khi thêm ARBITER
+echo -e "${YELLOW}Thiết lập write concern...${NC}"
+mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "db.adminCommand({setDefaultRWConcern: 1, defaultWriteConcern: {w: 'majority'}})"
+
 # Join vào Replica Set từ PRIMARY
 echo -e "${YELLOW}Đang join vào Replica Set từ PRIMARY...${NC}"
 mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "rs.addArb(\"$ARBITER_HOST\")" || {

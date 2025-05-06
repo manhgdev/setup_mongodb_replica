@@ -1,1 +1,2 @@
-/mongodb_backup_transfer/*
+backup/.*
+backup_express_api_new/.*

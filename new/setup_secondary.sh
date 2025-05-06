@@ -32,10 +32,19 @@ create_keyfile() {
     if scp -o StrictHostKeyChecking=no ${ssh_user}@${PRIMARY_IP}:${MONGODB_KEYFILE} ${MONGODB_KEYFILE}; then
         echo -e "${GREEN}Đã copy keyfile từ primary thành công${NC}"
     else
-        echo -e "${RED}Không thể copy keyfile từ primary. Tạo keyfile mới...${NC}"
-        openssl rand -base64 756 > "$MONGODB_KEYFILE"
-        echo -e "${YELLOW}Cảnh báo: Sử dụng keyfile mới có thể gây ra vấn đề với xác thực replica set${NC}"
-        echo -e "${YELLOW}Nên copy keyfile từ primary node thủ công để đảm bảo tính nhất quán${NC}"
+        echo -e "${RED}Không thể copy keyfile từ primary.${NC}"
+        echo -e "${YELLOW}Hướng dẫn thủ công:${NC}"
+        echo "1. SSH vào máy chủ primary ($PRIMARY_IP)"
+        echo "2. Chạy lệnh: sudo cat ${MONGODB_KEYFILE}"
+        echo "3. Copy toàn bộ nội dung keyfile"
+        echo "4. Tạo file ${MONGODB_KEYFILE} trên máy này"
+        echo "5. Dán nội dung keyfile vào file vừa tạo"
+        echo "6. Chạy các lệnh sau:"
+        echo "   sudo chmod 400 ${MONGODB_KEYFILE}"
+        echo "   sudo chown mongodb:mongodb ${MONGODB_KEYFILE}"
+        echo ""
+        echo "Sau khi hoàn thành, chạy lại script này để tiếp tục."
+        exit 1
     fi
     
     # Thiết lập quyền
