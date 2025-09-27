@@ -272,6 +272,10 @@ else
 # Where and how to store data.
 storage:
   dbPath: /var/lib/mongodb
+  wiredTiger:
+    engineConfig:
+      # Đặt giới hạn Cache rõ ràng (ví dụ: 2 GB)
+      cacheSizeGB: 2
 
 # where to write logging data.
 systemLog:
@@ -343,6 +347,10 @@ EOF
 # Where and how to store data.
 storage:
   dbPath: /var/lib/mongodb
+  wiredTiger:
+    engineConfig:
+      # Đặt giới hạn Cache rõ ràng (ví dụ: 2 GB)
+      cacheSizeGB: 2
 
 # where to write logging data.
 systemLog:
