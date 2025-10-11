@@ -231,17 +231,6 @@ echo -e "${GREEN}Hoàn thành việc dọn dẹp và chuẩn bị. Tiếp tục 
 # Khởi động MongoDB với cấu hình Arbiter
 echo -e "${YELLOW}Khởi động MongoDB Arbiter...${NC}"
 
-# Kiểm tra cấu hình trước
-echo -e "${YELLOW}Kiểm tra cấu hình...${NC}"
-CONFIG_CHECK=$(sudo mongod --config "$MONGODB_CONFIG" --configtest 2>&1)
-if [ $? -ne 0 ]; then
-    echo -e "${RED}Cấu hình MongoDB không hợp lệ!${NC}"
-    echo "Chi tiết lỗi: $CONFIG_CHECK"
-    echo "Nội dung cấu hình:"
-    cat "$MONGODB_CONFIG"
-    exit 1
-fi
-
 # Dừng MongoDB hiện tại
 sudo systemctl stop mongod 2>/dev/null || true
 sudo pkill -f mongod 2>/dev/null || true
