@@ -35,72 +35,28 @@ create_arbiter_config() {
     
     echo -e "${YELLOW}Tạo cấu hình MongoDB cho Arbiter...${NC}"
     
-    # Tạo backup cấu hình hiện tại nếu tồn tại
-    if [ -f "$MONGODB_CONFIG" ]; then
-        sudo cp "$MONGODB_CONFIG" "${MONGODB_CONFIG}.bak.$(date +%Y%m%d%H%M%S)"
-    fi
-    
     # Tạo cấu hình đặc biệt cho Arbiter
     cat > "/tmp/mongod-arbiter.conf" << EOF
-# mongod.conf for Arbiter Node
-
-# Where and how to store data - Arbiter không cần lưu trữ data
 storage:
   dbPath: $MONGODB_DATA_DIR
-  wiredTiger:
-    engineConfig:
-      cacheSizeGB: 0.25  # Cache nhỏ cho arbiter
-
-# where to write logging data.
 systemLog:
   destination: file
   logAppend: true
   path: $MONGODB_LOG_PATH
-
-# network interfaces
 net:
   port: $ARBITER_PORT
   bindIp: 0.0.0.0
-
-# security
 security:
   authorization: enabled
   keyFile: $MONGODB_KEYFILE
-
-# replication
 replication:
-  replSetName: "$REPLICA_SET_NAME"
-
+  replSetName: $REPLICA_SET_NAME
 EOF
     
-    # Copy cấu hình
+    # Copy cấu hình và set quyền
     sudo cp "/tmp/mongod-arbiter.conf" "$MONGODB_CONFIG"
-    sudo chmod 644 "$MONGODB_CONFIG"
-    
-    # Đảm bảo các thư mục tồn tại với quyền đúng
-    echo -e "${YELLOW}Kiểm tra và tạo thư mục cần thiết...${NC}"
-    
-    # Tạo các thư mục
-    sudo mkdir -p "$MONGODB_DATA_DIR"
-    sudo mkdir -p "$(dirname "$MONGODB_LOG_PATH")"
-    sudo mkdir -p /var/run/mongodb
-    
-    # Tạo user mongodb nếu chưa có
-    if ! getent passwd mongodb >/dev/null 2>&1; then
-        echo -e "${YELLOW}Tạo user mongodb...${NC}"
-        sudo useradd -r -d /var/lib/mongodb -s /bin/false mongodb 2>/dev/null || true
-    fi
-    
-    # Set ownership cho mongodb user
-    sudo chown -R mongodb:mongodb "$MONGODB_DATA_DIR" 2>/dev/null || true
-    sudo chown -R mongodb:mongodb "$(dirname "$MONGODB_LOG_PATH")" 2>/dev/null || true  
-    sudo chown -R mongodb:mongodb /var/run/mongodb 2>/dev/null || true
-    
-    # Set quyền cho keyfile
-    if [ -f "$MONGODB_KEYFILE" ]; then
-        sudo chown mongodb:mongodb "$MONGODB_KEYFILE" 2>/dev/null || true
-        sudo chmod 600 "$MONGODB_KEYFILE"
-    fi
+    sudo mkdir -p "$MONGODB_DATA_DIR" "$(dirname "$MONGODB_LOG_PATH")"
+    sudo chown -R mongodb:mongodb "$MONGODB_DATA_DIR" "$(dirname "$MONGODB_LOG_PATH")" 2>/dev/null || true
     
     echo -e "${GREEN}Đã tạo cấu hình MongoDB cho Arbiter${NC}"
 }
@@ -275,53 +231,35 @@ echo -e "${GREEN}Hoàn thành việc dọn dẹp và chuẩn bị. Tiếp tục 
 # Khởi động MongoDB với cấu hình Arbiter
 echo -e "${YELLOW}Khởi động MongoDB Arbiter...${NC}"
 
-# Kiểm tra cấu hình trước khi khởi động
-echo -e "${YELLOW}Kiểm tra cấu hình MongoDB...${NC}"
-if ! sudo mongod --config "$MONGODB_CONFIG" --configtest 2>/dev/null; then
+# Kiểm tra cấu hình trước
+echo -e "${YELLOW}Kiểm tra cấu hình...${NC}"
+CONFIG_CHECK=$(sudo mongod --config "$MONGODB_CONFIG" --configtest 2>&1)
+if [ $? -ne 0 ]; then
     echo -e "${RED}Cấu hình MongoDB không hợp lệ!${NC}"
-    echo -e "${YELLOW}Kiểm tra cấu hình tại: $MONGODB_CONFIG${NC}"
-    sudo cat "$MONGODB_CONFIG"
+    echo "Chi tiết lỗi: $CONFIG_CHECK"
+    echo "Nội dung cấu hình:"
+    cat "$MONGODB_CONFIG"
     exit 1
 fi
 
-echo -e "${GREEN}Cấu hình MongoDB hợp lệ. Đang khởi động...${NC}"
+# Dừng MongoDB hiện tại
+sudo systemctl stop mongod 2>/dev/null || true
+sudo pkill -f mongod 2>/dev/null || true
+sleep 2
 
-# Thử khởi động bằng systemctl trước
+# Khởi động MongoDB
 if sudo systemctl start mongod; then
-    echo -e "${GREEN}MongoDB service đã được khởi động bằng systemctl${NC}"
-    START_METHOD="systemctl"
+    echo -e "${GREEN}MongoDB đã khởi động${NC}"
 else
-    echo -e "${YELLOW}Systemctl không thành công, thử khởi động trực tiếp...${NC}"
-    # Thử khởi động trực tiếp không fork (foreground)
-    echo -e "${YELLOW}Khởi động MongoDB ở background mode...${NC}"
-    nohup sudo -u mongodb mongod --config "$MONGODB_CONFIG" > /tmp/mongod-startup.log 2>&1 &
-    MONGOD_PID=$!
-    echo "MongoDB PID: $MONGOD_PID"
-    echo -e "${GREEN}MongoDB đã được khởi động trực tiếp (background)${NC}"
-    START_METHOD="direct"
+    nohup sudo -u mongodb mongod --config "$MONGODB_CONFIG" > /tmp/mongod.log 2>&1 &
+    echo -e "${GREEN}MongoDB đã khởi động (direct)${NC}"
 fi
 
-echo -e "${YELLOW}Đợi MongoDB khởi động hoàn tất...${NC}"
-sleep 10
+sleep 5
 
 # Kiểm tra MongoDB đã khởi động thành công
-echo -e "${YELLOW}Kiểm tra trạng thái MongoDB...${NC}"
-if systemctl is-active --quiet mongod; then
-    echo -e "${GREEN}MongoDB service đang chạy${NC}"
-elif pgrep -f mongod >/dev/null; then
-    echo -e "${GREEN}MongoDB process đang chạy${NC}"
-else
-    echo -e "${RED}MongoDB Arbiter không khởi động được.${NC}"
-    echo -e "${YELLOW}Kiểm tra logs tại: $MONGODB_LOG_PATH${NC}"
-    echo -e "${YELLOW}Logs cuối cùng:${NC}"
-    sudo tail -20 "$MONGODB_LOG_PATH" 2>/dev/null || echo "Không thể đọc log file"
-    
-    echo -e "${YELLOW}Kiểm tra lỗi cấu hình:${NC}"
-    sudo mongod --config "$MONGODB_CONFIG" --logpath /tmp/mongod-test.log --fork --pidfilepath /tmp/mongod-test.pid 2>&1 || {
-        echo -e "${RED}Lỗi cấu hình MongoDB:${NC}"
-        cat /tmp/mongod-test.log 2>/dev/null || echo "Không thể đọc test log"
-    }
-    
+if ! pgrep -f mongod >/dev/null; then
+    echo -e "${RED}MongoDB không khởi động được${NC}"
     exit 1
 fi
 
