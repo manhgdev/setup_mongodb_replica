@@ -275,7 +275,7 @@ storage:
   wiredTiger:
     engineConfig:
       # Đặt giới hạn Cache rõ ràng (ví dụ: 2 GB)
-      cacheSizeGB: 2
+      cacheSizeGB: 4
 
 # where to write logging data.
 systemLog:
@@ -350,7 +350,7 @@ storage:
   wiredTiger:
     engineConfig:
       # Đặt giới hạn Cache rõ ràng (ví dụ: 2 GB)
-      cacheSizeGB: 2
+      cacheSizeGB: 4
 
 # where to write logging data.
 systemLog:

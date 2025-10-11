@@ -10,7 +10,7 @@ MONGODB_CONFIG="/etc/mongod-arbiter.conf"
 MONGODB_KEYFILE="/etc/mongodb-keyfile"
 MONGODB_USER="manhg"
 MONGODB_PASS="manhnk"
-MONGODB_PORT="27018"
+MONGODB_PORT="27017"
 
 # Định nghĩa màu sắc cho terminal
 YELLOW='\033[1;33m'
@@ -31,32 +31,36 @@ get_current_ip() {
     echo "$ip"
 }
 
-# Yêu cầu người dùng nhập IP của PRIMARY node
-echo -e "${YELLOW}Vui lòng nhập IP của node:${NC}"
+# Yêu cầu người dùng nhập IP của các node
+echo -e "${YELLOW}Vui lòng nhập IP của các node:${NC}"
 read -p "PRIMARY node IP: " PRIMARY_IP
+read -p "ARBITER node IP: " ARBITER_IP
 
+# Nếu không nhập PRIMARY IP, tự động lấy IP hiện tại
 if [ -z "$PRIMARY_IP" ]; then
   PRIMARY_IP=$(get_current_ip)
 fi
 
-# Tự động lấy IP của ARBITER node (node hiện tại)
-ARBITER_IP=$(get_current_ip)
-echo "ARBITER_IP IP: $ARBITER_IP"
+# Nếu không nhập ARBITER IP, tự động lấy IP hiện tại
+if [ -z "$ARBITER_IP" ]; then
+    ARBITER_IP=$(get_current_ip)
+    echo -e "${BLUE}Tự động lấy ARBITER IP: $ARBITER_IP${NC}"
+fi
 
-# Nếu không lấy được IP tự động, yêu cầu nhập
+# Kiểm tra IP ARBITER hợp lệ
 if [ -z "$ARBITER_IP" ] || [[ ! $ARBITER_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    echo -e "${YELLOW}Không thể tự động lấy IP của node hiện tại.${NC}"
+    echo -e "${RED}IP ARBITER không hợp lệ hoặc không thể tự động lấy được.${NC}"
     echo -e "${YELLOW}Vui lòng nhập IP của ARBITER node (node hiện tại):${NC}"
     read -p "ARBITER node IP: " ARBITER_IP
     
-    # Kiểm tra IP ARBITER hợp lệ
+    # Kiểm tra lại IP ARBITER sau khi nhập
     if [[ ! $ARBITER_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         echo -e "${RED}IP ARBITER không hợp lệ. Vui lòng nhập lại.${NC}"
         exit 1
     fi
 fi
 
-PRIMARY_HOST="${PRIMARY_IP}:27017"
+PRIMARY_HOST="${PRIMARY_IP}:${MONGODB_PORT}"
 ARBITER_HOST="${ARBITER_IP}:${MONGODB_PORT}"
 
 echo -e "${YELLOW}Bắt đầu thiết lập MongoDB ARBITER Node...${NC}"
