@@ -21,9 +21,9 @@ source "$LIB_DIR/create_keyfile.sh"
 
 # Định nghĩa các biến môi trường
 REPLICA_SET_NAME="rs0"
-MONGODB_DATA_DIR="/data/rs0-arbiter"
-MONGODB_LOG_PATH="/var/log/mongodb/mongod-arbiter.log"
-MONGODB_CONFIG="/etc/mongod-arbiter.conf"
+MONGODB_DATA_DIR="/var/lib/mongodb"
+MONGODB_LOG_PATH="/var/log/mongodb/mongod.log"
+MONGODB_CONFIG="/etc/mongod.conf"
 MONGODB_KEYFILE="/etc/mongodb-keyfile"
 MONGODB_USER="manhg"
 MONGODB_PASS="manhnk"
@@ -37,20 +37,34 @@ create_arbiter_config() {
     
     # Tạo cấu hình đặc biệt cho Arbiter
     cat > "/tmp/mongod-arbiter.conf" << EOF
+# mongod.conf for Arbiter Node
+
+# Where and how to store data - Arbiter không cần lưu trữ data
 storage:
   dbPath: $MONGODB_DATA_DIR
+  wiredTiger:
+    engineConfig:
+      cacheSizeGB: 0.25  # Cache nhỏ cho arbiter
+
+# where to write logging data.
 systemLog:
   destination: file
   logAppend: true
   path: $MONGODB_LOG_PATH
+
+# network interfaces
 net:
   port: $ARBITER_PORT
   bindIp: 0.0.0.0
+
+# security
 security:
   authorization: enabled
   keyFile: $MONGODB_KEYFILE
+
+# replication
 replication:
-  replSetName: $REPLICA_SET_NAME
+  replSetName: "$REPLICA_SET_NAME"
 EOF
     
     # Copy cấu hình và set quyền
@@ -141,19 +155,22 @@ create_arbiter_config "$ARBITER_IP"
 # Khởi động MongoDB Arbiter trên port 27017
 echo -e "${YELLOW}Khởi động MongoDB Arbiter trên port 27017...${NC}"
 
-# Chỉ cần khởi động đơn giản
-if sudo systemctl restart mongod; then
+# Dừng MongoDB hiện tại nếu có
+sudo systemctl stop mongod 2>/dev/null || true
+sleep 2
+
+# Khởi động MongoDB với cấu hình mới
+if sudo systemctl start mongod; then
     echo -e "${GREEN}MongoDB đã khởi động trên port 27017${NC}"
+    sleep 5
 else
-    sudo mongod --config "$MONGODB_CONFIG" --fork
-    echo -e "${GREEN}MongoDB đã khởi động trực tiếp trên port 27017${NC}"
+    echo -e "${RED}Không thể khởi động MongoDB bằng systemctl${NC}"
+    exit 1
 fi
 
-sleep 3
-
 # Kiểm tra MongoDB đã khởi động thành công
-if ! pgrep -f mongod >/dev/null; then
-    echo -e "${RED}MongoDB không khởi động được${NC}"
+if ! systemctl is-active --quiet mongod; then
+    echo -e "${RED}MongoDB không khởi động được. Kiểm tra logs tại $MONGODB_LOG_PATH${NC}"
     exit 1
 fi
 
