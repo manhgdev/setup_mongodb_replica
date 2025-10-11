@@ -4,7 +4,8 @@
 
 # Thiết lập error handling
 # set -e  # Tạm thời disable để tránh script bị terminate
-trap 'echo -e "${RED}Script bị ngắt! Đang dọn dẹp...${NC}"; exit 1' INT TERM
+# Disable trap để tránh script bị ngắt khi kill process
+# trap 'echo -e "${RED}Script bị ngắt! Đang dọn dẹp...${NC}"; exit 1' INT TERM
 
 # Lấy đường dẫn thư mục chứa script
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -181,27 +182,48 @@ sleep 2
 
 # Kiểm tra và dừng process mongod còn lại một cách an toàn
 echo -e "${YELLOW}Kiểm tra process mongod còn lại...${NC}"
-MONGOD_PIDS=$(pgrep -f mongod 2>/dev/null || true)
+
+# Lấy danh sách process mongod (trừ script này)
+MONGOD_PIDS=$(pgrep -f "mongod" 2>/dev/null | grep -v $$ | head -10 || true)
+
 if [ ! -z "$MONGOD_PIDS" ]; then
-    echo -e "${YELLOW}Tìm thấy process mongod đang chạy, đang dừng an toàn...${NC}"
-    echo "$MONGOD_PIDS" | while read pid; do
-        if [ ! -z "$pid" ]; then
-            echo "Dừng process mongod với PID: $pid"
-            sudo kill -TERM "$pid" 2>/dev/null || true
+    echo -e "${YELLOW}Tìm thấy process mongod đang chạy, đang dừng từng process...${NC}"
+    
+    # Dừng từng process một cách cẩn thận
+    for pid in $MONGOD_PIDS; do
+        if [ ! -z "$pid" ] && [ "$pid" != "$$" ]; then
+            # Kiểm tra process có tồn tại không
+            if kill -0 "$pid" 2>/dev/null; then
+                echo "Đang dừng process mongod với PID: $pid"
+                # Sử dụng SIGTERM trước
+                sudo kill -TERM "$pid" 2>/dev/null || true
+                sleep 1
+                
+                # Kiểm tra process đã dừng chưa
+                if kill -0 "$pid" 2>/dev/null; then
+                    echo "Process $pid vẫn chạy, đợi thêm..."
+                    sleep 2
+                    
+                    # Nếu vẫn chạy thì force kill
+                    if kill -0 "$pid" 2>/dev/null; then
+                        echo "Force kill process $pid"
+                        sudo kill -9 "$pid" 2>/dev/null || true
+                    fi
+                fi
+            fi
         fi
     done
+    
+    # Đợi một chút để các process dừng hoàn toàn
     sleep 3
     
-    # Kiểm tra lại và force kill nếu cần
-    REMAINING_PIDS=$(pgrep -f mongod 2>/dev/null || true)
+    # Kiểm tra lại có process nào còn lại không
+    REMAINING_PIDS=$(pgrep -f "mongod" 2>/dev/null | grep -v $$ || true)
     if [ ! -z "$REMAINING_PIDS" ]; then
-        echo -e "${YELLOW}Vẫn còn process mongod, đang force kill...${NC}"
-        echo "$REMAINING_PIDS" | while read pid; do
-            if [ ! -z "$pid" ]; then
-                echo "Force kill process mongod với PID: $pid"
-                sudo kill -9 "$pid" 2>/dev/null || true
-            fi
-        done
+        echo -e "${YELLOW}Vẫn còn một số process mongod, thử dừng bằng pkill...${NC}"
+        # Chỉ sử dụng pkill cho những process cụ thể
+        sudo pkill -f "mongod --config" 2>/dev/null || true
+        sudo pkill -f "mongod.conf" 2>/dev/null || true
         sleep 2
     fi
 else
