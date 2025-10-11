@@ -71,10 +71,6 @@ security:
 replication:
   replSetName: "$REPLICA_SET_NAME"
 
-# processManagement
-processManagement:
-  fork: true
-  pidFilePath: /var/run/mongodb/mongod.pid
 EOF
     
     # Copy cấu hình
