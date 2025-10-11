@@ -308,6 +308,99 @@ for (var i = 0; i < status.members.length; i++) {
 
 echo "$ARBITER_STATUS"
 
+# Nếu arbiter bị "not reachable", thử sửa tự động
+if [[ "$ARBITER_STATUS" == *"not reachable"* ]] || [[ "$ARBITER_STATUS" == *"(not reachable/healthy)"* ]]; then
+    echo -e "${YELLOW}Phát hiện arbiter 'not reachable', đang thử sửa...${NC}"
+    
+    # 1. Kiểm tra firewall và network
+    echo -e "${YELLOW}1. Kiểm tra network và firewall...${NC}"
+    
+    # Mở port 27017 trên firewall
+    echo "Mở port 27017 trên firewall..."
+    sudo ufw allow 27017/tcp 2>/dev/null || echo "UFW không khả dụng hoặc đã mở port"
+    sudo firewall-cmd --permanent --add-port=27017/tcp 2>/dev/null && sudo firewall-cmd --reload 2>/dev/null || echo "firewall-cmd không khả dụng"
+    
+    # 2. Kiểm tra MongoDB binding
+    echo -e "${YELLOW}2. Kiểm tra MongoDB binding...${NC}"
+    if ! netstat -tlnp 2>/dev/null | grep ":27017.*0.0.0.0:" >/dev/null; then
+        echo "MongoDB không bind trên 0.0.0.0, thử restart..."
+        sudo systemctl restart mongod || sudo mongod --config "$MONGODB_CONFIG" --fork
+        sleep 5
+    fi
+    
+    # 3. Cập nhật IP arbiter trong replica set config
+    echo -e "${YELLOW}3. Cập nhật cấu hình arbiter với IP chính xác...${NC}"
+    
+    # Lấy IP chính xác của arbiter
+    CORRECT_IP=$(get_current_ip)
+    CORRECT_ARBITER_HOST="${CORRECT_IP}:27017"
+    
+    if [ "$CORRECT_ARBITER_HOST" != "$ARBITER_HOST" ]; then
+        echo "Cập nhật IP arbiter từ $ARBITER_HOST thành $CORRECT_ARBITER_HOST"
+        
+        UPDATE_RESULT=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
+        try {
+            var cfg = rs.conf();
+            var updated = false;
+            
+            // Tìm và cập nhật arbiter host
+            for (var i = 0; i < cfg.members.length; i++) {
+                if (cfg.members[i].arbiterOnly === true) {
+                    print('Cập nhật arbiter host từ: ' + cfg.members[i].host + ' thành: $CORRECT_ARBITER_HOST');
+                    cfg.members[i].host = '$CORRECT_ARBITER_HOST';
+                    updated = true;
+                    break;
+                }
+            }
+            
+            if (updated) {
+                cfg.version += 1;
+                rs.reconfig(cfg, {force: false});
+                print('SUCCESS: Đã cập nhật cấu hình arbiter');
+            } else {
+                print('ERROR: Không tìm thấy arbiter trong cấu hình');
+            }
+        } catch(e) {
+            print('ERROR: ' + e.message);
+        }" 2>&1)
+        
+        echo "Kết quả cập nhật: $UPDATE_RESULT"
+        ARBITER_HOST="$CORRECT_ARBITER_HOST"
+    fi
+    
+    # 4. Đợi và kiểm tra lại
+    echo -e "${YELLOW}4. Đợi replica set cập nhật...${NC}"
+    sleep 10
+    
+    # Kiểm tra lại trạng thái
+    ARBITER_STATUS_FIXED=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
+    var status = rs.status();
+    for (var i = 0; i < status.members.length; i++) {
+        if (status.members[i].name === '$ARBITER_HOST' || status.members[i].name === '$CORRECT_ARBITER_HOST') {
+            print('Arbiter State: ' + status.members[i].stateStr);
+            print('Arbiter Health: ' + status.members[i].health);
+            if (status.members[i].stateStr === 'ARBITER') {
+                print('STATUS: FIXED');
+            }
+            break;
+        }
+    }
+    " 2>/dev/null)
+    
+    echo "Trạng thái arbiter sau khi sửa: $ARBITER_STATUS_FIXED"
+    
+    if [[ "$ARBITER_STATUS_FIXED" == *"ARBITER"* ]]; then
+        echo -e "${GREEN}✓ Đã sửa thành công lỗi 'not reachable'${NC}"
+    else
+        echo -e "${RED}✗ Vẫn chưa sửa được lỗi 'not reachable'${NC}"
+        echo -e "${YELLOW}Các bước kiểm tra thủ công:${NC}"
+        echo "1. Kiểm tra firewall: sudo ufw status"
+        echo "2. Kiểm tra network: ping $CORRECT_IP"
+        echo "3. Kiểm tra MongoDB binding: netstat -tlnp | grep 27017"
+        echo "4. Kiểm tra logs: tail -f $MONGODB_LOG_PATH"
+    fi
+fi
+
 # Hoàn thành
 echo -e "${GREEN}================================================================${NC}"
 echo -e "${GREEN}        MongoDB Arbiter Node đã được thiết lập thành công!      ${NC}"
