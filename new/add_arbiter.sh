@@ -22,7 +22,7 @@ MONGODB_CONFIG="/etc/mongod.conf"
 MONGODB_KEYFILE="/etc/mongodb-keyfile"
 MONGODB_USER="manhg"
 MONGODB_PASS="manhnk"
-ARBITER_PORT="27018"  # Port khác để tránh xung đột
+ARBITER_PORT="27017"  # Sử dụng port mặc định MongoDB
 
 # Hàm tạo cấu hình MongoDB cho Arbiter
 create_arbiter_config() {
@@ -42,8 +42,6 @@ create_arbiter_config() {
 # Where and how to store data - Arbiter không cần lưu trữ data
 storage:
   dbPath: $MONGODB_DATA_DIR
-  journal:
-    enabled: false  # Arbiter không cần journal
   wiredTiger:
     engineConfig:
       cacheSizeGB: 0.25  # Cache nhỏ cho arbiter
@@ -71,7 +69,7 @@ replication:
 # processManagement
 processManagement:
   fork: true
-  pidFilePath: /var/run/mongodb/mongod-arbiter.pid
+  pidFilePath: /var/run/mongodb/mongod.pid
 EOF
     
     # Copy cấu hình
@@ -175,8 +173,19 @@ create_arbiter_config "$ARBITER_IP"
 # Dừng MongoDB hiện tại nếu đang chạy
 echo -e "${YELLOW}Dừng MongoDB hiện tại (nếu có)...${NC}"
 sudo systemctl stop mongod 2>/dev/null || true
+sleep 2
+
+# Dừng tất cả process mongod nếu vẫn còn chạy
+echo -e "${YELLOW}Kiểm tra và dừng process mongod còn lại...${NC}"
 sudo pkill -f mongod 2>/dev/null || true
 sleep 3
+
+# Kiểm tra xem có process mongod nào còn chạy không
+if pgrep -f mongod >/dev/null; then
+    echo -e "${YELLOW}Vẫn còn process mongod đang chạy, đang force kill...${NC}"
+    sudo pkill -9 -f mongod 2>/dev/null || true
+    sleep 2
+fi
 
 # Xóa lock file nếu có
 if [ -f "/var/lib/mongodb/mongod.lock" ]; then
@@ -184,16 +193,45 @@ if [ -f "/var/lib/mongodb/mongod.lock" ]; then
     sudo rm -f /var/lib/mongodb/mongod.lock
 fi
 
+# Kiểm tra và tạo thư mục pid nếu cần
+sudo mkdir -p /var/run/mongodb
+if getent passwd mongodb >/dev/null 2>&1; then
+    sudo chown mongodb:mongodb /var/run/mongodb
+fi
+
 # Khởi động MongoDB với cấu hình Arbiter
 echo -e "${YELLOW}Khởi động MongoDB Arbiter...${NC}"
-sudo systemctl start mongod
+
+# Thử khởi động bằng systemctl trước
+if sudo systemctl start mongod; then
+    echo -e "${GREEN}MongoDB service đã được khởi động bằng systemctl${NC}"
+else
+    echo -e "${YELLOW}Systemctl không thành công, thử khởi động trực tiếp...${NC}"
+    # Thử khởi động trực tiếp nếu systemctl không hoạt động
+    sudo -u mongodb mongod --config "$MONGODB_CONFIG" --fork
+fi
+
+echo -e "${YELLOW}Đợi MongoDB khởi động hoàn tất...${NC}"
 sleep 10
 
 # Kiểm tra MongoDB đã khởi động thành công
-if ! systemctl is-active --quiet mongod; then
+echo -e "${YELLOW}Kiểm tra trạng thái MongoDB...${NC}"
+if systemctl is-active --quiet mongod; then
+    echo -e "${GREEN}MongoDB service đang chạy${NC}"
+elif pgrep -f mongod >/dev/null; then
+    echo -e "${GREEN}MongoDB process đang chạy${NC}"
+else
     echo -e "${RED}MongoDB Arbiter không khởi động được.${NC}"
     echo -e "${YELLOW}Kiểm tra logs tại: $MONGODB_LOG_PATH${NC}"
-    sudo tail -20 "$MONGODB_LOG_PATH"
+    echo -e "${YELLOW}Logs cuối cùng:${NC}"
+    sudo tail -20 "$MONGODB_LOG_PATH" 2>/dev/null || echo "Không thể đọc log file"
+    
+    echo -e "${YELLOW}Kiểm tra lỗi cấu hình:${NC}"
+    sudo mongod --config "$MONGODB_CONFIG" --logpath /tmp/mongod-test.log --fork --pidfilepath /tmp/mongod-test.pid 2>&1 || {
+        echo -e "${RED}Lỗi cấu hình MongoDB:${NC}"
+        cat /tmp/mongod-test.log 2>/dev/null || echo "Không thể đọc test log"
+    }
+    
     exit 1
 fi
 
@@ -202,23 +240,51 @@ echo -e "${GREEN}MongoDB Arbiter đã khởi động thành công!${NC}"
 # Kiểm tra kết nối local
 echo -e "${YELLOW}Kiểm tra kết nối local tới Arbiter...${NC}"
 sleep 5
-if ! mongosh --port "$ARBITER_PORT" --quiet --eval "db.runCommand({ping: 1}).ok" 2>/dev/null; then
-    echo -e "${RED}Không thể kết nối tới MongoDB Arbiter trên port $ARBITER_PORT${NC}"
-    exit 1
-fi
+
+# Thử kết nối nhiều lần nếu cần
+for i in {1..5}; do
+    echo -e "${YELLOW}Thử kết nối lần $i...${NC}"
+    if mongosh --port "$ARBITER_PORT" --quiet --eval "db.runCommand({ping: 1}).ok" 2>/dev/null; then
+        echo -e "${GREEN}Kết nối thành công tới MongoDB Arbiter trên port $ARBITER_PORT${NC}"
+        break
+    else
+        if [ $i -eq 5 ]; then
+            echo -e "${RED}Không thể kết nối tới MongoDB Arbiter trên port $ARBITER_PORT${NC}"
+            echo -e "${YELLOW}Kiểm tra port có đang được sử dụng:${NC}"
+            sudo netstat -tlnp | grep ":$ARBITER_PORT " || echo "Port $ARBITER_PORT không được sử dụng"
+            echo -e "${YELLOW}Kiểm tra process MongoDB:${NC}"
+            ps aux | grep mongod | grep -v grep || echo "Không tìm thấy process mongod"
+            exit 1
+        else
+            echo -e "${YELLOW}Kết nối thất bại, đợi 3 giây và thử lại...${NC}"
+            sleep 3
+        fi
+    fi
+done
 
 # Xóa các member trùng lặp trước khi thêm arbiter
 remove_duplicate_members "$PRIMARY_HOST" "$MONGODB_USER" "$MONGODB_PASS" "admin" "$ARBITER_HOST"
 
 # Thêm Arbiter vào Replica Set từ PRIMARY
 echo -e "${YELLOW}Đang thêm Arbiter vào Replica Set từ PRIMARY...${NC}"
+
+# Kiểm tra lại kết nối PRIMARY trước khi thêm
+echo -e "${YELLOW}Kiểm tra lại kết nối tới PRIMARY...${NC}"
+if ! check_mongodb_connection "$PRIMARY_HOST" "$MONGODB_USER" "$MONGODB_PASS" "admin"; then
+    echo -e "${RED}Mất kết nối tới PRIMARY node. Kiểm tra lại network.${NC}"
+    exit 1
+fi
+
 ADD_RESULT=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
 try {
+    print('Trying rs.addArb...');
     rs.addArb('$ARBITER_HOST');
     print('SUCCESS');
 } catch(e) {
     print('ERROR: ' + e.message);
-}" 2>/dev/null)
+}" 2>&1)
+
+echo -e "${BLUE}Kết quả thêm Arbiter: $ADD_RESULT${NC}"
 
 if [[ "$ADD_RESULT" == *"SUCCESS"* ]]; then
     echo -e "${GREEN}Đã thêm Arbiter vào Replica Set thành công!${NC}"
@@ -228,6 +294,7 @@ else
     # Phương pháp thay thế: sử dụng rs.add với cấu hình đặc biệt
     ALT_RESULT=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
     try {
+        print('Getting current config...');
         var cfg = rs.conf();
         var maxId = 0;
         for (var i = 0; i < cfg.members.length; i++) {
@@ -236,6 +303,7 @@ else
             }
         }
         
+        print('Adding arbiter with ID: ' + (maxId + 1));
         cfg.members.push({
             _id: maxId + 1,
             host: '$ARBITER_HOST',
@@ -245,17 +313,25 @@ else
         });
         
         cfg.version += 1;
+        print('Reconfiguring replica set...');
         rs.reconfig(cfg);
         print('SUCCESS');
     } catch(e) {
         print('ERROR: ' + e.message);
-    }" 2>/dev/null)
+    }" 2>&1)
+    
+    echo -e "${BLUE}Kết quả phương pháp thay thế: $ALT_RESULT${NC}"
     
     if [[ "$ALT_RESULT" == *"SUCCESS"* ]]; then
         echo -e "${GREEN}Đã thêm Arbiter bằng phương pháp thay thế!${NC}"
     else
         echo -e "${RED}Không thể thêm Arbiter vào Replica Set.${NC}"
-        echo -e "${RED}Lỗi: $ALT_RESULT${NC}"
+        echo -e "${RED}Lỗi chi tiết:${NC}"
+        echo -e "${RED}$ALT_RESULT${NC}"
+        
+        echo -e "${YELLOW}Kiểm tra cấu hình replica set hiện tại:${NC}"
+        mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "rs.conf()" 2>/dev/null || echo "Không thể lấy cấu hình"
+        
         exit 1
     fi
 fi
