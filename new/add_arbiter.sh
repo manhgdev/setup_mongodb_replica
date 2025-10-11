@@ -77,6 +77,31 @@ EOF
     sudo cp "/tmp/mongod-arbiter.conf" "$MONGODB_CONFIG"
     sudo chmod 644 "$MONGODB_CONFIG"
     
+    # Đảm bảo các thư mục tồn tại với quyền đúng
+    echo -e "${YELLOW}Kiểm tra và tạo thư mục cần thiết...${NC}"
+    
+    # Tạo các thư mục
+    sudo mkdir -p "$MONGODB_DATA_DIR"
+    sudo mkdir -p "$(dirname "$MONGODB_LOG_PATH")"
+    sudo mkdir -p /var/run/mongodb
+    
+    # Tạo user mongodb nếu chưa có
+    if ! getent passwd mongodb >/dev/null 2>&1; then
+        echo -e "${YELLOW}Tạo user mongodb...${NC}"
+        sudo useradd -r -d /var/lib/mongodb -s /bin/false mongodb 2>/dev/null || true
+    fi
+    
+    # Set ownership cho mongodb user
+    sudo chown -R mongodb:mongodb "$MONGODB_DATA_DIR" 2>/dev/null || true
+    sudo chown -R mongodb:mongodb "$(dirname "$MONGODB_LOG_PATH")" 2>/dev/null || true  
+    sudo chown -R mongodb:mongodb /var/run/mongodb 2>/dev/null || true
+    
+    # Set quyền cho keyfile
+    if [ -f "$MONGODB_KEYFILE" ]; then
+        sudo chown mongodb:mongodb "$MONGODB_KEYFILE" 2>/dev/null || true
+        sudo chmod 600 "$MONGODB_KEYFILE"
+    fi
+    
     echo -e "${GREEN}Đã tạo cấu hình MongoDB cho Arbiter${NC}"
 }
 
@@ -267,14 +292,13 @@ if sudo systemctl start mongod; then
     START_METHOD="systemctl"
 else
     echo -e "${YELLOW}Systemctl không thành công, thử khởi động trực tiếp...${NC}"
-    # Thử khởi động trực tiếp nếu systemctl không hoạt động
-    if sudo -u mongodb mongod --config "$MONGODB_CONFIG" --fork; then
-        echo -e "${GREEN}MongoDB đã được khởi động trực tiếp${NC}"
-        START_METHOD="direct"
-    else
-        echo -e "${RED}Không thể khởi động MongoDB bằng cả hai phương pháp${NC}"
-        exit 1
-    fi
+    # Thử khởi động trực tiếp không fork (foreground)
+    echo -e "${YELLOW}Khởi động MongoDB ở background mode...${NC}"
+    nohup sudo -u mongodb mongod --config "$MONGODB_CONFIG" > /tmp/mongod-startup.log 2>&1 &
+    MONGOD_PID=$!
+    echo "MongoDB PID: $MONGOD_PID"
+    echo -e "${GREEN}MongoDB đã được khởi động trực tiếp (background)${NC}"
+    START_METHOD="direct"
 fi
 
 echo -e "${YELLOW}Đợi MongoDB khởi động hoàn tất...${NC}"
