@@ -64,6 +64,41 @@ EOF
     echo -e "${GREEN}Đã tạo cấu hình MongoDB cho Arbiter${NC}"
 }
 
+# Hàm sửa lỗi "not reachable" cho arbiter
+fix_arbiter_reachable() {
+    local primary_host=$1
+    local arbiter_host=$2
+    
+    echo -e "${YELLOW}Sửa lỗi 'not reachable' cho arbiter...${NC}"
+    
+    # Lấy cấu hình hiện tại và cập nhật host arbiter
+    mongosh --host "$primary_host" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
+    try {
+        var cfg = rs.conf();
+        var updated = false;
+        
+        // Tìm và cập nhật arbiter host
+        for (var i = 0; i < cfg.members.length; i++) {
+            if (cfg.members[i].arbiterOnly === true) {
+                console.log('Cập nhật arbiter host từ: ' + cfg.members[i].host + ' thành: $arbiter_host');
+                cfg.members[i].host = '$arbiter_host';
+                updated = true;
+                break;
+            }
+        }
+        
+        if (updated) {
+            cfg.version += 1;
+            rs.reconfig(cfg);
+            console.log('Đã cập nhật cấu hình arbiter');
+        } else {
+            console.log('Không tìm thấy arbiter trong cấu hình');
+        }
+    } catch(e) {
+        console.log('Lỗi: ' + e.message);
+    }"
+}
+
 # ==================== MAIN SCRIPT ====================
 
 echo -e "${BLUE}========================================${NC}"
@@ -288,6 +323,26 @@ for (var i = 0; i < status.members.length; i++) {
 
 echo "$ARBITER_STATUS"
 
+# Nếu arbiter bị "not reachable", thử fix
+if [[ "$ARBITER_STATUS" == *"not reachable"* ]] || [[ "$ARBITER_STATUS" == *"(not reachable/healthy)"* ]]; then
+    echo -e "${YELLOW}Phát hiện arbiter 'not reachable', đang thử sửa...${NC}"
+    fix_arbiter_reachable "$PRIMARY_HOST" "$ARBITER_HOST"
+    sleep 3
+    
+    # Kiểm tra lại
+    ARBITER_STATUS_FIXED=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
+    var status = rs.status();
+    for (var i = 0; i < status.members.length; i++) {
+        if (status.members[i].name === '$ARBITER_HOST') {
+            print('Arbiter State: ' + status.members[i].stateStr);
+            break;
+        }
+    }
+    " 2>/dev/null)
+    
+    echo "Trạng thái arbiter sau khi fix: $ARBITER_STATUS_FIXED"
+fi
+
 # Hoàn thành
 echo -e "${GREEN}================================================================${NC}"
 echo -e "${GREEN}        MongoDB Arbiter Node đã được thiết lập thành công!      ${NC}"
@@ -302,4 +357,44 @@ echo ""
 echo -e "${GREEN}Bạn có thể kiểm tra trạng thái replica set với lệnh:${NC}"
 echo -e "${GREEN}mongosh $PRIMARY_HOST -u $MONGODB_USER -p $MONGODB_PASS --authenticationDatabase admin --eval 'rs.status()'${NC}"
 echo ""
+
+# Kiểm tra và khắc phục lỗi "not reachable"
+echo -e "${YELLOW}Kiểm tra kết nối và khắc phục lỗi 'not reachable'...${NC}"
+
+# 1. Kiểm tra MongoDB đang chạy trên arbiter
+echo "1. Kiểm tra MongoDB trên arbiter:"
+if pgrep -f mongod >/dev/null; then
+    echo "✓ MongoDB đang chạy"
+else
+    echo "✗ MongoDB không chạy - khởi động lại"
+    sudo systemctl restart mongod || sudo mongod --config "$MONGODB_CONFIG" --fork
+fi
+
+# 2. Kiểm tra port 27017 đang listen
+echo "2. Kiểm tra port 27017:"
+if netstat -tlnp 2>/dev/null | grep ":27017 " >/dev/null; then
+    echo "✓ Port 27017 đang listen"
+else
+    echo "✗ Port 27017 không listen"
+fi
+
+# 3. Test kết nối local
+echo "3. Test kết nối local:"
+if timeout 5 mongosh --port 27017 --eval "db.runCommand({ping: 1})" >/dev/null 2>&1; then
+    echo "✓ Kết nối local thành công"
+else
+    echo "✗ Không thể kết nối local"
+fi
+
+# 4. Hiển thị IP hiện tại
+echo "4. IP của arbiter node: $ARBITER_IP"
+
+# 5. Gợi ý fix
+echo ""
+echo -e "${YELLOW}Nếu vẫn 'not reachable', hãy kiểm tra:${NC}"
+echo "- Firewall: sudo ufw allow 27017"
+echo "- Network: ping giữa các node"
+echo "- Hostname resolution"
+echo "- Có thể cần reconfigure replica set với IP chính xác"
+
 echo -e "${YELLOW}Lưu ý: Arbiter không lưu trữ dữ liệu, chỉ tham gia bầu chọn để đảm bảo tính khả dụng cao của Replica Set.${NC}"
