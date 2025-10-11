@@ -372,6 +372,93 @@ if [ -z "$EXISTING_ARBITERS" ] || [ "$EXISTING_ARBITERS" == "" ] || [[ "$replace
             exit 1
         fi
     fi
+    
+    # Ngay sau khi thêm thành công, kiểm tra và fix lỗi "not reachable"
+    echo -e "${YELLOW}Kiểm tra và sửa lỗi kết nối arbiter ngay sau khi thêm...${NC}"
+    sleep 3
+    
+    # Kiểm tra trạng thái arbiter ngay lập tức
+    IMMEDIATE_STATUS=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
+    var status = rs.status();
+    for (var i = 0; i < status.members.length; i++) {
+        if (status.members[i].name === '$ARBITER_HOST') {
+            print(status.members[i].stateStr);
+            break;
+        }
+    }
+    " 2>/dev/null)
+    
+    echo "Trạng thái arbiter ngay sau khi thêm: $IMMEDIATE_STATUS"
+    
+    if [[ "$IMMEDIATE_STATUS" == *"not reachable"* ]] || [[ "$IMMEDIATE_STATUS" == *"(not reachable/healthy)"* ]]; then
+        echo -e "${YELLOW}Arbiter bị 'not reachable' ngay sau khi thêm. Đang sửa...${NC}"
+        
+        # 1. Đảm bảo MongoDB đang chạy và bind đúng
+        echo -e "${YELLOW}1. Kiểm tra MongoDB local...${NC}"
+        if ! pgrep -f mongod >/dev/null; then
+            echo "MongoDB không chạy, khởi động lại..."
+            sudo systemctl restart mongod
+            sleep 5
+        fi
+        
+        # 2. Kiểm tra port binding
+        if ! netstat -tlnp 2>/dev/null | grep ":27017.*0.0.0.0:" >/dev/null; then
+            echo "MongoDB không bind 0.0.0.0:27017, restart để fix..."
+            sudo systemctl restart mongod
+            sleep 5
+        fi
+        
+        # 3. Mở firewall
+        echo -e "${YELLOW}2. Mở firewall ports...${NC}"
+        sudo ufw allow 27017/tcp 2>/dev/null || echo "UFW không khả dụng"
+        sudo firewall-cmd --permanent --add-port=27017/tcp 2>/dev/null && sudo firewall-cmd --reload 2>/dev/null || echo "firewall-cmd không khả dụng"
+        
+        # 4. Lấy IP chính xác và cập nhật config
+        echo -e "${YELLOW}3. Cập nhật IP chính xác trong replica set...${NC}"
+        CORRECT_IP=$(get_current_ip)
+        CORRECT_ARBITER_HOST="${CORRECT_IP}:27017"
+        
+        if [ "$CORRECT_ARBITER_HOST" != "$ARBITER_HOST" ]; then
+            echo "IP thực tế: $CORRECT_IP, IP trong config: $ARBITER_IP"
+            echo "Cập nhật từ $ARBITER_HOST thành $CORRECT_ARBITER_HOST"
+            
+            UPDATE_RESULT=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
+            try {
+                var cfg = rs.conf();
+                for (var i = 0; i < cfg.members.length; i++) {
+                    if (cfg.members[i].arbiterOnly === true && cfg.members[i].host === '$ARBITER_HOST') {
+                        print('Updating arbiter IP from ' + cfg.members[i].host + ' to $CORRECT_ARBITER_HOST');
+                        cfg.members[i].host = '$CORRECT_ARBITER_HOST';
+                        break;
+                    }
+                }
+                cfg.version += 1;
+                rs.reconfig(cfg, {force: false});
+                print('SUCCESS: Updated arbiter IP');
+            } catch(e) {
+                print('ERROR: ' + e.message);
+            }" 2>&1)
+            
+            echo "Kết quả cập nhật IP: $UPDATE_RESULT"
+            ARBITER_HOST="$CORRECT_ARBITER_HOST"
+        fi
+        
+        # 5. Đợi và kiểm tra lại
+        echo -e "${YELLOW}4. Đợi replica set cập nhật...${NC}"
+        sleep 10
+        
+        FIXED_STATUS=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
+        var status = rs.status();
+        for (var i = 0; i < status.members.length; i++) {
+            if (status.members[i].name === '$ARBITER_HOST' || status.members[i].name === '$CORRECT_ARBITER_HOST') {
+                print('State: ' + status.members[i].stateStr + ', Health: ' + status.members[i].health);
+                break;
+            }
+        }
+        " 2>/dev/null)
+        
+        echo "Trạng thái sau khi fix: $FIXED_STATUS"
+    fi
 else
     echo -e "${GREEN}Arbiter đã được cấu hình trong replica set.${NC}"
 fi
