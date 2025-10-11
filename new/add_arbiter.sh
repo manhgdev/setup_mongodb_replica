@@ -37,23 +37,35 @@ create_arbiter_config() {
     
     # Tạo cấu hình đặc biệt cho Arbiter
     cat > "/tmp/mongod-arbiter.conf" << EOF
+# mongod.conf
+
+# Where and how to store data.
 storage:
-  dbPath: $MONGODB_DATA_DIR
+  dbPath: /var/lib/mongodb
+  wiredTiger:
+    engineConfig:
+      # Đặt giới hạn Cache rõ ràng (ví dụ: 2 GB)
+      cacheSizeGB: 4
+
+# where to write logging data.
 systemLog:
   destination: file
   logAppend: true
-  path: $MONGODB_LOG_PATH
+  path: /var/log/mongodb/mongod.log
+
+# network interfaces
 net:
-  port: $ARBITER_PORT
+  port: 27017
   bindIp: 0.0.0.0
+
+# security
 security:
   authorization: enabled
   keyFile: $MONGODB_KEYFILE
+
+# replication
 replication:
-  replSetName: $REPLICA_SET_NAME
-processManagement:
-  fork: true
-  pidFilePath: /var/run/mongodb/mongod.pid
+  replSetName: "${REPLICA_SET_NAME}"
 EOF
     
     # Copy cấu hình và set quyền
