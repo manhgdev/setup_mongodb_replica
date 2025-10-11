@@ -242,61 +242,138 @@ if ! check_mongodb_connection "$PRIMARY_HOST" "$MONGODB_USER" "$MONGODB_PASS" "a
     echo -e "${RED}Mất kết nối tới PRIMARY node. Kiểm tra lại network.${NC}"
     exit 1
 fi
-ADD_RESULT=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
-try {
-    print('Trying rs.addArb...');
-    rs.addArb('$ARBITER_HOST');
-    print('SUCCESS');
-} catch(e) {
-    print('ERROR: ' + e.message);
-}" 2>&1)
 
-echo -e "${BLUE}Kết quả thêm Arbiter: $ADD_RESULT${NC}"
+# Kiểm tra xem đã có arbiter nào chưa
+echo -e "${YELLOW}Kiểm tra arbiter hiện có trong replica set...${NC}"
+EXISTING_ARBITERS=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
+var cfg = rs.conf();
+var arbiters = [];
+for (var i = 0; i < cfg.members.length; i++) {
+    if (cfg.members[i].arbiterOnly === true) {
+        arbiters.push(cfg.members[i].host);
+    }
+}
+print(arbiters.join(','));
+" 2>/dev/null)
 
-if [[ "$ADD_RESULT" == *"SUCCESS"* ]]; then
-    echo -e "${GREEN}Đã thêm Arbiter vào Replica Set thành công!${NC}"
-else
-    echo -e "${YELLOW}Thử phương pháp thay thế để thêm Arbiter...${NC}"
+echo "Arbiters hiện có: $EXISTING_ARBITERS"
+
+if [ ! -z "$EXISTING_ARBITERS" ] && [ "$EXISTING_ARBITERS" != "" ]; then
+    echo -e "${YELLOW}Đã có arbiter trong replica set: $EXISTING_ARBITERS${NC}"
     
-    # Phương pháp thay thế: sử dụng rs.add với cấu hình đặc biệt
-    ALT_RESULT=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
+    # Kiểm tra xem arbiter hiện tại có phải là node này không
+    if [[ "$EXISTING_ARBITERS" == *"$ARBITER_HOST"* ]]; then
+        echo -e "${GREEN}Node này đã là arbiter trong replica set rồi!${NC}"
+        echo -e "${GREEN}Không cần thêm lại.${NC}"
+    else
+        echo -e "${YELLOW}Có arbiter khác trong replica set.${NC}"
+        echo -e "${YELLOW}MongoDB chỉ cho phép 1 arbiter per replica set.${NC}"
+        echo -e "${YELLOW}Bạn có muốn thay thế arbiter hiện tại không? (y/n)${NC}"
+        read -p "Thay thế arbiter hiện tại? " replace_choice
+        
+        if [[ "$replace_choice" =~ ^[Yy]$ ]]; then
+            echo -e "${YELLOW}Đang xóa arbiter cũ và thêm arbiter mới...${NC}"
+            
+            # Xóa arbiter cũ
+            REMOVE_RESULT=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
+            try {
+                var cfg = rs.conf();
+                var newMembers = [];
+                
+                for (var i = 0; i < cfg.members.length; i++) {
+                    if (cfg.members[i].arbiterOnly !== true) {
+                        newMembers.push(cfg.members[i]);
+                    } else {
+                        print('Removing arbiter: ' + cfg.members[i].host);
+                    }
+                }
+                
+                cfg.members = newMembers;
+                cfg.version += 1;
+                rs.reconfig(cfg);
+                print('SUCCESS: Removed old arbiter');
+            } catch(e) {
+                print('ERROR: ' + e.message);
+            }" 2>&1)
+            
+            echo "Kết quả xóa arbiter cũ: $REMOVE_RESULT"
+            
+            if [[ "$REMOVE_RESULT" == *"SUCCESS"* ]]; then
+                echo -e "${GREEN}Đã xóa arbiter cũ thành công${NC}"
+                sleep 3
+            else
+                echo -e "${RED}Không thể xóa arbiter cũ: $REMOVE_RESULT${NC}"
+                exit 1
+            fi
+        else
+            echo -e "${YELLOW}Không thay thế arbiter. Thoát script.${NC}"
+            exit 0
+        fi
+    fi
+fi
+
+# Chỉ thêm arbiter nếu chưa có hoặc đã xóa arbiter cũ
+if [ -z "$EXISTING_ARBITERS" ] || [ "$EXISTING_ARBITERS" == "" ] || [[ "$replace_choice" =~ ^[Yy]$ ]]; then
+    echo -e "${YELLOW}Đang thêm arbiter mới vào replica set...${NC}"
+    
+    ADD_RESULT=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
     try {
-        print('Getting current config...');
-        var cfg = rs.conf();
-        var maxId = 0;
-        for (var i = 0; i < cfg.members.length; i++) {
-            if (cfg.members[i]._id > maxId) {
-                maxId = cfg.members[i]._id;
-            }
-        }
-        
-        print('Adding arbiter with ID: ' + (maxId + 1));
-        cfg.members.push({
-            _id: maxId + 1,
-            host: '$ARBITER_HOST',
-            arbiterOnly: true,
-            priority: 0,
-            votes: 1
-        });
-        
-        cfg.version += 1;
-        print('Reconfiguring replica set...');
-        rs.reconfig(cfg);
+        print('Trying rs.addArb...');
+        rs.addArb('$ARBITER_HOST');
         print('SUCCESS');
     } catch(e) {
         print('ERROR: ' + e.message);
     }" 2>&1)
-    
-    echo -e "${BLUE}Kết quả phương pháp thay thế: $ALT_RESULT${NC}"
-    
-    if [[ "$ALT_RESULT" == *"SUCCESS"* ]]; then
-        echo -e "${GREEN}Đã thêm Arbiter bằng phương pháp thay thế!${NC}"
+
+    echo -e "${BLUE}Kết quả thêm Arbiter: $ADD_RESULT${NC}"
+
+    if [[ "$ADD_RESULT" == *"SUCCESS"* ]]; then
+        echo -e "${GREEN}Đã thêm Arbiter vào Replica Set thành công!${NC}"
     else
-        echo -e "${RED}Không thể thêm Arbiter vào Replica Set.${NC}"
-        echo -e "${RED}Lỗi chi tiết:${NC}"
-        echo -e "${RED}$ALT_RESULT${NC}"
-        exit 1
+        echo -e "${YELLOW}Thử phương pháp thay thế để thêm Arbiter...${NC}"
+        
+        # Phương pháp thay thế: sử dụng rs.add với cấu hình đặc biệt
+        ALT_RESULT=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
+        try {
+            print('Getting current config...');
+            var cfg = rs.conf();
+            var maxId = 0;
+            for (var i = 0; i < cfg.members.length; i++) {
+                if (cfg.members[i]._id > maxId) {
+                    maxId = cfg.members[i]._id;
+                }
+            }
+            
+            print('Adding arbiter with ID: ' + (maxId + 1));
+            cfg.members.push({
+                _id: maxId + 1,
+                host: '$ARBITER_HOST',
+                arbiterOnly: true,
+                priority: 0,
+                votes: 1
+            });
+            
+            cfg.version += 1;
+            print('Reconfiguring replica set...');
+            rs.reconfig(cfg);
+            print('SUCCESS');
+        } catch(e) {
+            print('ERROR: ' + e.message);
+        }" 2>&1)
+        
+        echo -e "${BLUE}Kết quả phương pháp thay thế: $ALT_RESULT${NC}"
+        
+        if [[ "$ALT_RESULT" == *"SUCCESS"* ]]; then
+            echo -e "${GREEN}Đã thêm Arbiter bằng phương pháp thay thế!${NC}"
+        else
+            echo -e "${RED}Không thể thêm Arbiter vào Replica Set.${NC}"
+            echo -e "${RED}Lỗi chi tiết:${NC}"
+            echo -e "${RED}$ALT_RESULT${NC}"
+            exit 1
+        fi
     fi
+else
+    echo -e "${GREEN}Arbiter đã được cấu hình trong replica set.${NC}"
 fi
 
 # Đợi một chút để Replica Set cập nhật
