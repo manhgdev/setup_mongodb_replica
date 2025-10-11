@@ -51,6 +51,9 @@ security:
   keyFile: $MONGODB_KEYFILE
 replication:
   replSetName: $REPLICA_SET_NAME
+processManagement:
+  fork: true
+  pidFilePath: /var/run/mongodb/mongod.pid
 EOF
     
     # Copy cấu hình và set quyền
@@ -133,118 +136,24 @@ fi
 
 # Tạo thư mục dữ liệu MongoDB cho Arbiter (nhỏ và không quan trọng)
 echo -e "${YELLOW}Tạo thư mục dữ liệu MongoDB cho Arbiter...${NC}"
-if [ ! -d "$MONGODB_DATA_DIR" ]; then
-    sudo mkdir -p "$MONGODB_DATA_DIR"
-    if getent passwd mongodb >/dev/null 2>&1; then
-        sudo chown -R mongodb:mongodb "$MONGODB_DATA_DIR"
-    fi
-    echo -e "${GREEN}Đã tạo thư mục dữ liệu: $MONGODB_DATA_DIR${NC}"
-else
-    echo -e "${GREEN}Thư mục dữ liệu MongoDB đã tồn tại.${NC}"
-fi
-
-# Tạo thư mục log nếu chưa tồn tại
-sudo mkdir -p "$(dirname "$MONGODB_LOG_PATH")"
-if getent passwd mongodb >/dev/null 2>&1; then
-    sudo chown -R mongodb:mongodb "$(dirname "$MONGODB_LOG_PATH")"
-fi
+sudo mkdir -p "$MONGODB_DATA_DIR" "$(dirname "$MONGODB_LOG_PATH")"
+sudo chown -R mongodb:mongodb "$MONGODB_DATA_DIR" "$(dirname "$MONGODB_LOG_PATH")" 2>/dev/null || true
 
 # Tạo cấu hình MongoDB cho Arbiter
 create_arbiter_config "$ARBITER_IP"
 
-# Dừng MongoDB hiện tại nếu đang chạy
-echo -e "${YELLOW}Dừng MongoDB hiện tại (nếu có)...${NC}"
-sudo systemctl stop mongod 2>/dev/null || true
-sleep 2
+# Khởi động MongoDB Arbiter trên port 27017
+echo -e "${YELLOW}Khởi động MongoDB Arbiter trên port 27017...${NC}"
 
-# Kiểm tra và dừng process mongod còn lại một cách an toàn
-echo -e "${YELLOW}Kiểm tra process mongod còn lại...${NC}"
-
-# Lấy danh sách process mongod (trừ script này)
-MONGOD_PIDS=$(pgrep -f "mongod" 2>/dev/null | grep -v $$ | head -10 || true)
-
-if [ ! -z "$MONGOD_PIDS" ]; then
-    echo -e "${YELLOW}Tìm thấy process mongod đang chạy, đang dừng từng process...${NC}"
-    
-    # Dừng từng process một cách cẩn thận
-    for pid in $MONGOD_PIDS; do
-        if [ ! -z "$pid" ] && [ "$pid" != "$$" ]; then
-            # Kiểm tra process có tồn tại không
-            if kill -0 "$pid" 2>/dev/null; then
-                echo "Đang dừng process mongod với PID: $pid"
-                # Sử dụng SIGTERM trước
-                sudo kill -TERM "$pid" 2>/dev/null || true
-                sleep 1
-                
-                # Kiểm tra process đã dừng chưa
-                if kill -0 "$pid" 2>/dev/null; then
-                    echo "Process $pid vẫn chạy, đợi thêm..."
-                    sleep 2
-                    
-                    # Nếu vẫn chạy thì force kill
-                    if kill -0 "$pid" 2>/dev/null; then
-                        echo "Force kill process $pid"
-                        sudo kill -9 "$pid" 2>/dev/null || true
-                    fi
-                fi
-            fi
-        fi
-    done
-    
-    # Đợi một chút để các process dừng hoàn toàn
-    sleep 3
-    
-    # Kiểm tra lại có process nào còn lại không
-    REMAINING_PIDS=$(pgrep -f "mongod" 2>/dev/null | grep -v $$ || true)
-    if [ ! -z "$REMAINING_PIDS" ]; then
-        echo -e "${YELLOW}Vẫn còn một số process mongod, thử dừng bằng pkill...${NC}"
-        # Chỉ sử dụng pkill cho những process cụ thể
-        sudo pkill -f "mongod --config" 2>/dev/null || true
-        sudo pkill -f "mongod.conf" 2>/dev/null || true
-        sleep 2
-    fi
+# Chỉ cần khởi động đơn giản
+if sudo systemctl restart mongod; then
+    echo -e "${GREEN}MongoDB đã khởi động trên port 27017${NC}"
 else
-    echo -e "${GREEN}Không có process mongod nào đang chạy${NC}"
+    sudo mongod --config "$MONGODB_CONFIG" --fork
+    echo -e "${GREEN}MongoDB đã khởi động trực tiếp trên port 27017${NC}"
 fi
 
-# Xóa lock file nếu có
-if [ -f "/var/lib/mongodb/mongod.lock" ]; then
-    echo -e "${YELLOW}Xóa lock file...${NC}"
-    sudo rm -f /var/lib/mongodb/mongod.lock
-fi
-
-# Xóa các lock file khác nếu có
-if [ -f "$MONGODB_DATA_DIR/mongod.lock" ]; then
-    echo -e "${YELLOW}Xóa lock file trong data directory...${NC}"
-    sudo rm -f "$MONGODB_DATA_DIR/mongod.lock"
-fi
-
-# Kiểm tra và tạo thư mục pid nếu cần
-echo -e "${YELLOW}Tạo thư mục pid...${NC}"
-sudo mkdir -p /var/run/mongodb
-if getent passwd mongodb >/dev/null 2>&1; then
-    sudo chown mongodb:mongodb /var/run/mongodb
-fi
-
-echo -e "${GREEN}Hoàn thành việc dọn dẹp và chuẩn bị. Tiếp tục khởi động MongoDB...${NC}"
-
-# Khởi động MongoDB với cấu hình Arbiter
-echo -e "${YELLOW}Khởi động MongoDB Arbiter...${NC}"
-
-# Dừng MongoDB hiện tại
-sudo systemctl stop mongod 2>/dev/null || true
-sudo pkill -f mongod 2>/dev/null || true
-sleep 2
-
-# Khởi động MongoDB
-if sudo systemctl start mongod; then
-    echo -e "${GREEN}MongoDB đã khởi động${NC}"
-else
-    nohup sudo -u mongodb mongod --config "$MONGODB_CONFIG" > /tmp/mongod.log 2>&1 &
-    echo -e "${GREEN}MongoDB đã khởi động (direct)${NC}"
-fi
-
-sleep 5
+sleep 3
 
 # Kiểm tra MongoDB đã khởi động thành công
 if ! pgrep -f mongod >/dev/null; then
