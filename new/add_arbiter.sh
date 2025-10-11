@@ -21,7 +21,7 @@ source "$LIB_DIR/create_keyfile.sh"
 
 # Định nghĩa các biến môi trường
 REPLICA_SET_NAME="rs0"
-MONGODB_DATA_DIR="/data/arbiter"
+MONGODB_DATA_DIR="/var/lib/mongodb"
 MONGODB_LOG_PATH="/var/log/mongodb/mongod.log"
 MONGODB_CONFIG="/etc/mongod.conf"
 MONGODB_KEYFILE="/etc/mongodb-keyfile"
