@@ -182,86 +182,144 @@ done
 
 # Xóa các member trùng lặp trước khi thêm arbiter
 remove_duplicate_members "$PRIMARY_HOST" "$MONGODB_USER" "$MONGODB_PASS" "admin" "$ARBITER_HOST"
-cat > "/tmp/mongod-arbiter.service" << EOF
-[Unit]
-Description=MongoDB Database Server (ARBITER)
-After=network.target
 
-[Service]
-User=mongodb
-Group=mongodb
-ExecStart=/usr/bin/mongod --config $MONGODB_CONFIG
-PIDFile=/var/run/mongodb/mongod-arbiter.pid
-LimitFSIZE=infinity
-LimitCPU=infinity
-LimitAS=infinity
-LimitNOFILE=64000
-LimitNPROC=64000
+# Thiết lập write concern trước khi thêm arbiter (bắt buộc)
+echo -e "${YELLOW}Thiết lập write concern cho replica set...${NC}"
+WRITE_CONCERN_RESULT=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
+try {
+    // Kiểm tra write concern hiện tại
+    var currentConcern = db.adminCommand({getDefaultRWConcern: 1});
+    print('Current write concern: ' + JSON.stringify(currentConcern));
+    
+    // Thiết lập write concern mới nếu chưa có
+    if (!currentConcern.defaultWriteConcern || !currentConcern.defaultWriteConcern.w) {
+        print('Setting default write concern...');
+        var result = db.adminCommand({
+            setDefaultRWConcern: 1,
+            defaultWriteConcern: {
+                w: 'majority',
+                wtimeout: 10000
+            }
+        });
+        print('Write concern set successfully: ' + JSON.stringify(result));
+    } else {
+        print('Write concern already configured');
+    }
+    print('SUCCESS');
+} catch(e) {
+    print('ERROR: ' + e.message);
+}" 2>&1)
 
-[Install]
-WantedBy=multi-user.target
-EOF
+echo -e "${BLUE}Kết quả thiết lập write concern: $WRITE_CONCERN_RESULT${NC}"
 
-# Copy service file
-sudo cp "/tmp/mongod-arbiter.service" "/etc/systemd/system/mongod-arbiter.service"
-sudo systemctl daemon-reload
-
-# Khởi động MongoDB ARBITER
-echo -e "${YELLOW}Khởi động MongoDB ARBITER...${NC}"
-sudo systemctl start mongod-arbiter
-sleep 5
-
-# Kiểm tra MongoDB đã chạy
-if ! systemctl is-active --quiet mongod-arbiter; then
-    echo -e "${RED}MongoDB ARBITER không khởi động được. Kiểm tra logs tại $MONGODB_LOG_PATH${NC}"
-    exit 1
+if [[ "$WRITE_CONCERN_RESULT" != *"SUCCESS"* ]]; then
+    echo -e "${RED}Không thể thiết lập write concern. Tiếp tục nhưng có thể gặp vấn đề.${NC}"
 fi
 
-# Đợi PRIMARY node sẵn sàng
-echo -e "${YELLOW}Đang đợi PRIMARY node sẵn sàng...${NC}"
-MAX_RETRIES=30
-RETRY_COUNT=0
-PRIMARY_READY=false
+# Thêm Arbiter vào Replica Set từ PRIMARY
+echo -e "${YELLOW}Đang thêm Arbiter vào Replica Set từ PRIMARY...${NC}"
 
-while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-    PRIMARY_STATE=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "try { rs.status().members.find(m => m.stateStr === 'PRIMARY').stateStr } catch(e) { '' }" 2>/dev/null)
+# Kiểm tra lại kết nối PRIMARY trước khi thêm
+echo -e "${YELLOW}Kiểm tra lại kết nối tới PRIMARY...${NC}"
+if ! check_mongodb_connection "$PRIMARY_HOST" "$MONGODB_USER" "$MONGODB_PASS" "admin"; then
+    echo -e "${RED}Mất kết nối tới PRIMARY node. Kiểm tra lại network.${NC}"
+    exit 1
+fi
+ADD_RESULT=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
+try {
+    print('Trying rs.addArb...');
+    rs.addArb('$ARBITER_HOST');
+    print('SUCCESS');
+} catch(e) {
+    print('ERROR: ' + e.message);
+}" 2>&1)
+
+echo -e "${BLUE}Kết quả thêm Arbiter: $ADD_RESULT${NC}"
+
+if [[ "$ADD_RESULT" == *"SUCCESS"* ]]; then
+    echo -e "${GREEN}Đã thêm Arbiter vào Replica Set thành công!${NC}"
+else
+    echo -e "${YELLOW}Thử phương pháp thay thế để thêm Arbiter...${NC}"
     
-    if [ "$PRIMARY_STATE" == "PRIMARY" ]; then
-        PRIMARY_READY=true
-        break
+    # Phương pháp thay thế: sử dụng rs.add với cấu hình đặc biệt
+    ALT_RESULT=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
+    try {
+        print('Getting current config...');
+        var cfg = rs.conf();
+        var maxId = 0;
+        for (var i = 0; i < cfg.members.length; i++) {
+            if (cfg.members[i]._id > maxId) {
+                maxId = cfg.members[i]._id;
+            }
+        }
+        
+        print('Adding arbiter with ID: ' + (maxId + 1));
+        cfg.members.push({
+            _id: maxId + 1,
+            host: '$ARBITER_HOST',
+            arbiterOnly: true,
+            priority: 0,
+            votes: 1
+        });
+        
+        cfg.version += 1;
+        print('Reconfiguring replica set...');
+        rs.reconfig(cfg);
+        print('SUCCESS');
+    } catch(e) {
+        print('ERROR: ' + e.message);
+    }" 2>&1)
+    
+    echo -e "${BLUE}Kết quả phương pháp thay thế: $ALT_RESULT${NC}"
+    
+    if [[ "$ALT_RESULT" == *"SUCCESS"* ]]; then
+        echo -e "${GREEN}Đã thêm Arbiter bằng phương pháp thay thế!${NC}"
+    else
+        echo -e "${RED}Không thể thêm Arbiter vào Replica Set.${NC}"
+        echo -e "${RED}Lỗi chi tiết:${NC}"
+        echo -e "${RED}$ALT_RESULT${NC}"
+        exit 1
     fi
-    
-    echo -e "${YELLOW}PRIMARY node chưa sẵn sàng, đợi 5 giây...${NC}"
-    sleep 5
-    RETRY_COUNT=$((RETRY_COUNT + 1))
-done
-
-if [ "$PRIMARY_READY" = false ]; then
-    echo -e "${RED}Không thể kết nối với PRIMARY node sau $MAX_RETRIES lần thử. Vui lòng kiểm tra lại.${NC}"
-    exit 1
 fi
-
-# Thiết lập write concern trước khi thêm ARBITER
-echo -e "${YELLOW}Thiết lập write concern...${NC}"
-mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "db.adminCommand({setDefaultRWConcern: 1, defaultWriteConcern: {w: 'majority'}})"
-
-# Join vào Replica Set từ PRIMARY
-echo -e "${YELLOW}Đang join vào Replica Set từ PRIMARY...${NC}"
-mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "rs.addArb(\"$ARBITER_HOST\")" || {
-    echo -e "${YELLOW}Thử cách khác để thêm ARBITER...${NC}"
-    mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "rs.reconfig(rs.conf())"
-    sleep 5
-    mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "rs.addArb(\"$ARBITER_HOST\")"
-}
 
 # Đợi một chút để Replica Set cập nhật
 sleep 5
 
 # Kiểm tra trạng thái Replica Set
 echo -e "${YELLOW}Kiểm tra trạng thái Replica Set...${NC}"
-mongosh --port $MONGODB_PORT -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "rs.status()"
+mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "
+printjson(rs.status());
+print('\\n=== REPLICA SET CONFIGURATION ===');
+printjson(rs.conf());
+"
+
+# Kiểm tra đặc biệt xem arbiter có hoạt động không
+echo -e "${YELLOW}Kiểm tra trạng thái Arbiter...${NC}"
+ARBITER_STATUS=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
+var status = rs.status();
+for (var i = 0; i < status.members.length; i++) {
+    if (status.members[i].name === '$ARBITER_HOST') {
+        print('Arbiter State: ' + status.members[i].stateStr);
+        print('Arbiter Health: ' + status.members[i].health);
+        break;
+    }
+}
+" 2>/dev/null)
+
+echo "$ARBITER_STATUS"
 
 # Hoàn thành
-echo -e "${GREEN}MongoDB ARBITER Node đã được thiết lập thành công!${NC}"
-echo -e "${GREEN}Bạn có thể đăng nhập với lệnh sau:${NC}"
-echo -e "${GREEN}mongosh --port $MONGODB_PORT -u $MONGODB_USER -p $MONGODB_PASS --authenticationDatabase admin${NC}"
+echo -e "${GREEN}================================================================${NC}"
+echo -e "${GREEN}        MongoDB Arbiter Node đã được thiết lập thành công!      ${NC}"
+echo -e "${GREEN}================================================================${NC}"
+echo ""
+echo -e "${BLUE}Thông tin Arbiter:${NC}"
+echo -e "${BLUE}  - Host: $ARBITER_HOST${NC}"
+echo -e "${BLUE}  - Role: Arbiter (chỉ tham gia voting, không lưu trữ data)${NC}"
+echo -e "${BLUE}  - Priority: 0 (không thể trở thành Primary)${NC}"
+echo -e "${BLUE}  - Votes: 1 (tham gia bầu chọn Primary)${NC}"
+echo ""
+echo -e "${GREEN}Bạn có thể kiểm tra trạng thái replica set với lệnh:${NC}"
+echo -e "${GREEN}mongosh $PRIMARY_HOST -u $MONGODB_USER -p $MONGODB_PASS --authenticationDatabase admin --eval 'rs.status()'${NC}"
+echo ""
+echo -e "${YELLOW}Lưu ý: Arbiter không lưu trữ dữ liệu, chỉ tham gia bầu chọn để đảm bảo tính khả dụng cao của Replica Set.${NC}"
