@@ -17,12 +17,11 @@ show_menu() {
     echo -e "${BLUE}║${NC}       ${YELLOW}MONGODB REPLICA SET MANAGER${NC}          ${BLUE}║${NC}"
     echo -e "${BLUE}╠════════════════════════════════════════════╣${NC}"
     echo -e "${BLUE}║${NC} ${GREEN}1.${NC} Cài đặt Primary Node                    ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC} ${GREEN}2.${NC} Cài đặt Secondary Node                  ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC} ${GREEN}3.${NC} Thêm Secondary Node                     ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC} ${GREEN}4.${NC} Thêm Arbiter Node                       ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC} ${GREEN}5.${NC} Xoá node reachable/healthy              ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC} ${GREEN}6.${NC} Fix lỗi node không reachable            ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC} ${GREEN}7.${NC} Kiểm tra trạng thái                     ${BLUE}║${NC}"
+    echo -e "${BLUE}║${NC} ${GREEN}2.${NC} Thêm Secondary Node                     ${BLUE}║${NC}"
+    echo -e "${BLUE}║${NC} ${GREEN}3.${NC} Thêm Arbiter Node                       ${BLUE}║${NC}"
+    echo -e "${BLUE}║${NC} ${GREEN}4.${NC} Xoá node reachable/healthy              ${BLUE}║${NC}"
+    echo -e "${BLUE}║${NC} ${GREEN}5.${NC} Fix lỗi node không reachable            ${BLUE}║${NC}"
+    echo -e "${BLUE}║${NC} ${GREEN}6.${NC} Kiểm tra trạng thái                     ${BLUE}║${NC}"
     echo -e "${BLUE}║${NC} ${RED}0.${NC} Thoát                                   ${BLUE}║${NC}"
     echo -e "${BLUE}╚════════════════════════════════════════════╝${NC}"
     echo
@@ -47,21 +46,18 @@ while true; do
             run_script "./new/setup_primary.sh"
             ;;
         2)
-            run_script "./new/setup_secondary.sh"
-            ;;
-        3)
             run_script "./new/add_secondary.sh"
             ;;
-        4)
+        3)
             run_script "./new/add_arbiter.sh"
             ;;
-        5)
+        4)
             run_script "./new/remove_reachable.sh"
             ;;
-        6)
+        5)
             run_script "./new/fix_reachable.sh"
             ;;
-        7)
+        6)
             run_script "./new/check_status.sh"
             ;;
         0)

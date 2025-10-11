@@ -1,121 +1,52 @@
 #!/bin/bash
-# setup_arbiter.sh
-# Script cài đặt MongoDB ARBITER Node
+# add_arbiter.sh
+# Script thêm MongoDB Arbiter Node vào Replica Set
+
+# Lấy đường dẫn thư mục chứa script
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="$SCRIPT_DIR/lib"
+
+# Load các hàm utility từ lib
+source "$LIB_DIR/colors.sh"
+source "$LIB_DIR/get_current_ip.sh"
+source "$LIB_DIR/check_mongodb_connection.sh"
+source "$LIB_DIR/check_replica_set_status.sh"
+source "$LIB_DIR/remove_duplicate_members.sh"
+source "$LIB_DIR/create_keyfile.sh"
 
 # Định nghĩa các biến môi trường
 REPLICA_SET_NAME="rs0"
-MONGODB_DATA_DIR="/data/rs0-arbiter"
-MONGODB_LOG_PATH="/var/log/mongodb/mongod-arbiter.log"
-MONGODB_CONFIG="/etc/mongod-arbiter.conf"
+MONGODB_DATA_DIR="/data/arbiter"
+MONGODB_LOG_PATH="/var/log/mongodb/mongod.log"
+MONGODB_CONFIG="/etc/mongod.conf"
 MONGODB_KEYFILE="/etc/mongodb-keyfile"
 MONGODB_USER="manhg"
 MONGODB_PASS="manhnk"
-MONGODB_PORT="27017"
+ARBITER_PORT="27018"  # Port khác để tránh xung đột
 
-# Định nghĩa màu sắc cho terminal
-YELLOW='\033[1;33m'
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-RED='\033[0;31m'
-NC='\033[0m' # No Color
-
-# Hàm lấy IP của node hiện tại
-get_current_ip() {
-    local ip=$(ip -4 addr show 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' 2>/dev/null | grep -v '^127\.' | head -n 1 2>/dev/null)
-    if [ -z "$ip" ]; then
-        ip=$(hostname -I 2>/dev/null | awk '{print $1}' 2>/dev/null)
-    fi
-    if [ -z "$ip" ] && command -v ifconfig >/dev/null 2>&1; then
-        ip=$(ifconfig 2>/dev/null | grep -Eo 'inet (addr:)?([0-9]*\.){3}[0-9]*' 2>/dev/null | grep -Eo '([0-9]*\.){3}[0-9]*' 2>/dev/null | grep -v '127.0.0.1' 2>/dev/null | head -n 1 2>/dev/null)
-    fi
-    echo "$ip"
-}
-
-# Yêu cầu người dùng nhập IP của các node
-echo -e "${YELLOW}Vui lòng nhập IP của các node:${NC}"
-read -p "PRIMARY node IP: " PRIMARY_IP
-read -p "ARBITER node IP: " ARBITER_IP
-
-# Nếu không nhập PRIMARY IP, tự động lấy IP hiện tại
-if [ -z "$PRIMARY_IP" ]; then
-  PRIMARY_IP=$(get_current_ip)
-fi
-
-# Nếu không nhập ARBITER IP, tự động lấy IP hiện tại
-if [ -z "$ARBITER_IP" ]; then
-    ARBITER_IP=$(get_current_ip)
-    echo -e "${BLUE}Tự động lấy ARBITER IP: $ARBITER_IP${NC}"
-fi
-
-# Kiểm tra IP ARBITER hợp lệ
-if [ -z "$ARBITER_IP" ] || [[ ! $ARBITER_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    echo -e "${RED}IP ARBITER không hợp lệ hoặc không thể tự động lấy được.${NC}"
-    echo -e "${YELLOW}Vui lòng nhập IP của ARBITER node (node hiện tại):${NC}"
-    read -p "ARBITER node IP: " ARBITER_IP
+# Hàm tạo cấu hình MongoDB cho Arbiter
+create_arbiter_config() {
+    local arbiter_ip=$1
     
-    # Kiểm tra lại IP ARBITER sau khi nhập
-    if [[ ! $ARBITER_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        echo -e "${RED}IP ARBITER không hợp lệ. Vui lòng nhập lại.${NC}"
-        exit 1
+    echo -e "${YELLOW}Tạo cấu hình MongoDB cho Arbiter...${NC}"
+    
+    # Tạo backup cấu hình hiện tại nếu tồn tại
+    if [ -f "$MONGODB_CONFIG" ]; then
+        sudo cp "$MONGODB_CONFIG" "${MONGODB_CONFIG}.bak.$(date +%Y%m%d%H%M%S)"
     fi
-fi
+    
+    # Tạo cấu hình đặc biệt cho Arbiter
+    cat > "/tmp/mongod-arbiter.conf" << EOF
+# mongod.conf for Arbiter Node
 
-PRIMARY_HOST="${PRIMARY_IP}:${MONGODB_PORT}"
-ARBITER_HOST="${ARBITER_IP}:${MONGODB_PORT}"
-
-echo -e "${YELLOW}Bắt đầu thiết lập MongoDB ARBITER Node...${NC}"
-echo -e "${YELLOW}PRIMARY node: $PRIMARY_HOST${NC}"
-echo -e "${YELLOW}ARBITER node: $ARBITER_HOST${NC}"
-
-# 1. Kiểm tra keyfile từ PRIMARY
-if [ ! -f "$MONGODB_KEYFILE" ]; then
-    echo -e "${RED}Keyfile không tồn tại tại $MONGODB_KEYFILE${NC}"
-    echo -e "${YELLOW}Vui lòng copy keyfile từ PRIMARY node về trước khi chạy script này.${NC}"
-    exit 1
-fi
-
-# Kiểm tra quyền keyfile
-KEYFILE_PERMS=$(stat -c "%a" "$MONGODB_KEYFILE" 2>/dev/null)
-if [ "$KEYFILE_PERMS" != "400" ]; then
-    echo -e "${YELLOW}Đang cập nhật quyền keyfile...${NC}"
-    sudo chmod 400 "$MONGODB_KEYFILE"
-    sudo chown mongodb:mongodb "$MONGODB_KEYFILE"
-fi
-
-# 2. Tạo thư mục dữ liệu MongoDB nếu chưa tồn tại
-if [ ! -d "$MONGODB_DATA_DIR" ]; then
-    echo -e "${YELLOW}Tạo thư mục dữ liệu MongoDB...${NC}"
-    sudo mkdir -p "$MONGODB_DATA_DIR"
-    sudo chown -R mongodb:mongodb "$MONGODB_DATA_DIR"
-else
-    echo -e "${GREEN}Thư mục dữ liệu MongoDB đã tồn tại.${NC}"
-fi
-
-# Tạo backup cấu hình hiện tại
-echo -e "${YELLOW}Tạo backup cấu hình hiện tại...${NC}"
-sudo cp "$MONGODB_CONFIG" "${MONGODB_CONFIG}.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
-
-# Dừng MongoDB để làm sạch
-echo -e "${YELLOW}Dừng MongoDB...${NC}"
-sudo systemctl stop mongod-arbiter 2>/dev/null || true
-sleep 5
-
-# Xoá lock file nếu có
-if [ -f "/var/lib/mongodb/mongod-arbiter.lock" ]; then
-    echo -e "${YELLOW}Xoá lock file...${NC}"
-    sudo rm -f /var/lib/mongodb/mongod-arbiter.lock
-fi
-
-# Cập nhật cấu hình MongoDB mới
-echo -e "${YELLOW}Cập nhật cấu hình MongoDB...${NC}"
-
-# Tạo cấu hình hoàn chỉnh
-cat > "/tmp/mongod-arbiter.conf" << EOF
-# mongod-arbiter.conf
-
-# Where and how to store data.
+# Where and how to store data - Arbiter không cần lưu trữ data
 storage:
   dbPath: $MONGODB_DATA_DIR
+  journal:
+    enabled: false  # Arbiter không cần journal
+  wiredTiger:
+    engineConfig:
+      cacheSizeGB: 0.25  # Cache nhỏ cho arbiter
 
 # where to write logging data.
 systemLog:
@@ -125,7 +56,7 @@ systemLog:
 
 # network interfaces
 net:
-  port: $MONGODB_PORT
+  port: $ARBITER_PORT
   bindIp: 0.0.0.0
 
 # security
@@ -135,94 +66,238 @@ security:
 
 # replication
 replication:
-  replSetName: "${REPLICA_SET_NAME}"
+  replSetName: "$REPLICA_SET_NAME"
+
+# processManagement
+processManagement:
+  fork: true
+  pidFilePath: /var/run/mongodb/mongod-arbiter.pid
 EOF
-
-# Copy cấu hình hoàn chỉnh
-sudo cp "/tmp/mongod-arbiter.conf" "$MONGODB_CONFIG"
-sudo chmod 644 "$MONGODB_CONFIG"
-
-# Tạo systemd service cho ARBITER
-cat > "/tmp/mongod-arbiter.service" << EOF
-[Unit]
-Description=MongoDB Database Server (ARBITER)
-After=network.target
-
-[Service]
-User=mongodb
-Group=mongodb
-ExecStart=/usr/bin/mongod --config $MONGODB_CONFIG
-PIDFile=/var/run/mongodb/mongod-arbiter.pid
-LimitFSIZE=infinity
-LimitCPU=infinity
-LimitAS=infinity
-LimitNOFILE=64000
-LimitNPROC=64000
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# Copy service file
-sudo cp "/tmp/mongod-arbiter.service" "/etc/systemd/system/mongod-arbiter.service"
-sudo systemctl daemon-reload
-
-# Khởi động MongoDB ARBITER
-echo -e "${YELLOW}Khởi động MongoDB ARBITER...${NC}"
-sudo systemctl start mongod-arbiter
-sleep 5
-
-# Kiểm tra MongoDB đã chạy
-if ! systemctl is-active --quiet mongod-arbiter; then
-    echo -e "${RED}MongoDB ARBITER không khởi động được. Kiểm tra logs tại $MONGODB_LOG_PATH${NC}"
-    exit 1
-fi
-
-# Đợi PRIMARY node sẵn sàng
-echo -e "${YELLOW}Đang đợi PRIMARY node sẵn sàng...${NC}"
-MAX_RETRIES=30
-RETRY_COUNT=0
-PRIMARY_READY=false
-
-while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-    PRIMARY_STATE=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "try { rs.status().members.find(m => m.stateStr === 'PRIMARY').stateStr } catch(e) { '' }" 2>/dev/null)
     
-    if [ "$PRIMARY_STATE" == "PRIMARY" ]; then
-        PRIMARY_READY=true
-        break
-    fi
+    # Copy cấu hình
+    sudo cp "/tmp/mongod-arbiter.conf" "$MONGODB_CONFIG"
+    sudo chmod 644 "$MONGODB_CONFIG"
     
-    echo -e "${YELLOW}PRIMARY node chưa sẵn sàng, đợi 5 giây...${NC}"
-    sleep 5
-    RETRY_COUNT=$((RETRY_COUNT + 1))
-done
-
-if [ "$PRIMARY_READY" = false ]; then
-    echo -e "${RED}Không thể kết nối với PRIMARY node sau $MAX_RETRIES lần thử. Vui lòng kiểm tra lại.${NC}"
-    exit 1
-fi
-
-# Thiết lập write concern trước khi thêm ARBITER
-echo -e "${YELLOW}Thiết lập write concern...${NC}"
-mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "db.adminCommand({setDefaultRWConcern: 1, defaultWriteConcern: {w: 'majority'}})"
-
-# Join vào Replica Set từ PRIMARY
-echo -e "${YELLOW}Đang join vào Replica Set từ PRIMARY...${NC}"
-mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "rs.addArb(\"$ARBITER_HOST\")" || {
-    echo -e "${YELLOW}Thử cách khác để thêm ARBITER...${NC}"
-    mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "rs.reconfig(rs.conf())"
-    sleep 5
-    mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "rs.addArb(\"$ARBITER_HOST\")"
+    echo -e "${GREEN}Đã tạo cấu hình MongoDB cho Arbiter${NC}"
 }
+
+# ==================== MAIN SCRIPT ====================
+
+echo -e "${BLUE}========================================${NC}"
+echo -e "${BLUE}     THIẾT LẬP MONGODB ARBITER NODE     ${NC}"
+echo -e "${BLUE}========================================${NC}"
+
+# Yêu cầu người dùng nhập IP của PRIMARY node
+echo -e "${YELLOW}Vui lòng nhập IP của PRIMARY node:${NC}"
+read -p "PRIMARY node IP: " PRIMARY_IP
+
+# Kiểm tra IP PRIMARY hợp lệ
+if [[ ! $PRIMARY_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo -e "${RED}IP PRIMARY không hợp lệ. Vui lòng nhập lại.${NC}"
+    exit 1
+fi
+
+# Tự động lấy IP của ARBITER node (node hiện tại)
+ARBITER_IP=$(get_current_ip)
+echo "ARBITER IP: $ARBITER_IP"
+
+# Nếu không lấy được IP tự động, yêu cầu nhập
+if [ -z "$ARBITER_IP" ] || [[ ! $ARBITER_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo -e "${YELLOW}Không thể tự động lấy IP của node hiện tại.${NC}"
+    echo -e "${YELLOW}Vui lòng nhập IP của ARBITER node (node hiện tại):${NC}"
+    read -p "ARBITER node IP: " ARBITER_IP
+    
+    # Kiểm tra IP ARBITER hợp lệ
+    if [[ ! $ARBITER_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo -e "${RED}IP ARBITER không hợp lệ. Vui lòng nhập lại.${NC}"
+        exit 1
+    fi
+fi
+
+PRIMARY_HOST="${PRIMARY_IP}:27017"
+ARBITER_HOST="${ARBITER_IP}:${ARBITER_PORT}"
+
+echo -e "${YELLOW}Bắt đầu thiết lập MongoDB Arbiter Node...${NC}"
+echo -e "${YELLOW}PRIMARY node: $PRIMARY_HOST${NC}"
+echo -e "${YELLOW}ARBITER node: $ARBITER_HOST${NC}"
+
+# Kiểm tra kết nối tới PRIMARY node
+echo -e "${YELLOW}Kiểm tra kết nối tới PRIMARY node...${NC}"
+if ! check_mongodb_connection "$PRIMARY_HOST" "$MONGODB_USER" "$MONGODB_PASS" "admin"; then
+    echo -e "${RED}Không thể kết nối tới PRIMARY node. Vui lòng kiểm tra lại.${NC}"
+    echo -e "${YELLOW}Đảm bảo rằng:${NC}"
+    echo -e "${YELLOW}1. PRIMARY node đang chạy${NC}"
+    echo -e "${YELLOW}2. Thông tin xác thực ($MONGODB_USER/$MONGODB_PASS) chính xác${NC}"
+    echo -e "${YELLOW}3. Firewall cho phép kết nối MongoDB${NC}"
+    exit 1
+fi
+
+# Kiểm tra trạng thái replica set trên PRIMARY
+echo -e "${YELLOW}Kiểm tra trạng thái replica set trên PRIMARY...${NC}"
+RS_STATUS=$(check_replica_set_status "$PRIMARY_HOST" "$MONGODB_USER" "$MONGODB_PASS" "admin")
+if [ "$RS_STATUS" != "1" ]; then
+    echo -e "${RED}Replica Set chưa được cấu hình đúng trên PRIMARY node.${NC}"
+    echo -e "${YELLOW}Vui lòng chạy setup_primary.sh trước khi thêm arbiter.${NC}"
+    exit 1
+fi
+
+# Tạo keyfile từ PRIMARY node
+create_keyfile "$PRIMARY_IP" "$MONGODB_KEYFILE"
+
+# Kiểm tra keyfile
+if [ ! -f "$MONGODB_KEYFILE" ]; then
+    echo -e "${RED}Keyfile không tồn tại tại $MONGODB_KEYFILE${NC}"
+    echo -e "${YELLOW}Vui lòng đảm bảo keyfile đã được tạo thành công.${NC}"
+    exit 1
+fi
+
+# Tạo thư mục dữ liệu MongoDB cho Arbiter (nhỏ và không quan trọng)
+echo -e "${YELLOW}Tạo thư mục dữ liệu MongoDB cho Arbiter...${NC}"
+if [ ! -d "$MONGODB_DATA_DIR" ]; then
+    sudo mkdir -p "$MONGODB_DATA_DIR"
+    if getent passwd mongodb >/dev/null 2>&1; then
+        sudo chown -R mongodb:mongodb "$MONGODB_DATA_DIR"
+    fi
+    echo -e "${GREEN}Đã tạo thư mục dữ liệu: $MONGODB_DATA_DIR${NC}"
+else
+    echo -e "${GREEN}Thư mục dữ liệu MongoDB đã tồn tại.${NC}"
+fi
+
+# Tạo thư mục log nếu chưa tồn tại
+sudo mkdir -p "$(dirname "$MONGODB_LOG_PATH")"
+if getent passwd mongodb >/dev/null 2>&1; then
+    sudo chown -R mongodb:mongodb "$(dirname "$MONGODB_LOG_PATH")"
+fi
+
+# Tạo cấu hình MongoDB cho Arbiter
+create_arbiter_config "$ARBITER_IP"
+
+# Dừng MongoDB hiện tại nếu đang chạy
+echo -e "${YELLOW}Dừng MongoDB hiện tại (nếu có)...${NC}"
+sudo systemctl stop mongod 2>/dev/null || true
+sudo pkill -f mongod 2>/dev/null || true
+sleep 3
+
+# Xóa lock file nếu có
+if [ -f "/var/lib/mongodb/mongod.lock" ]; then
+    echo -e "${YELLOW}Xóa lock file...${NC}"
+    sudo rm -f /var/lib/mongodb/mongod.lock
+fi
+
+# Khởi động MongoDB với cấu hình Arbiter
+echo -e "${YELLOW}Khởi động MongoDB Arbiter...${NC}"
+sudo systemctl start mongod
+sleep 10
+
+# Kiểm tra MongoDB đã khởi động thành công
+if ! systemctl is-active --quiet mongod; then
+    echo -e "${RED}MongoDB Arbiter không khởi động được.${NC}"
+    echo -e "${YELLOW}Kiểm tra logs tại: $MONGODB_LOG_PATH${NC}"
+    sudo tail -20 "$MONGODB_LOG_PATH"
+    exit 1
+fi
+
+echo -e "${GREEN}MongoDB Arbiter đã khởi động thành công!${NC}"
+
+# Kiểm tra kết nối local
+echo -e "${YELLOW}Kiểm tra kết nối local tới Arbiter...${NC}"
+sleep 5
+if ! mongosh --port "$ARBITER_PORT" --quiet --eval "db.runCommand({ping: 1}).ok" 2>/dev/null; then
+    echo -e "${RED}Không thể kết nối tới MongoDB Arbiter trên port $ARBITER_PORT${NC}"
+    exit 1
+fi
+
+# Xóa các member trùng lặp trước khi thêm arbiter
+remove_duplicate_members "$PRIMARY_HOST" "$MONGODB_USER" "$MONGODB_PASS" "admin" "$ARBITER_HOST"
+
+# Thêm Arbiter vào Replica Set từ PRIMARY
+echo -e "${YELLOW}Đang thêm Arbiter vào Replica Set từ PRIMARY...${NC}"
+ADD_RESULT=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
+try {
+    rs.addArb('$ARBITER_HOST');
+    print('SUCCESS');
+} catch(e) {
+    print('ERROR: ' + e.message);
+}" 2>/dev/null)
+
+if [[ "$ADD_RESULT" == *"SUCCESS"* ]]; then
+    echo -e "${GREEN}Đã thêm Arbiter vào Replica Set thành công!${NC}"
+else
+    echo -e "${YELLOW}Thử phương pháp thay thế để thêm Arbiter...${NC}"
+    
+    # Phương pháp thay thế: sử dụng rs.add với cấu hình đặc biệt
+    ALT_RESULT=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
+    try {
+        var cfg = rs.conf();
+        var maxId = 0;
+        for (var i = 0; i < cfg.members.length; i++) {
+            if (cfg.members[i]._id > maxId) {
+                maxId = cfg.members[i]._id;
+            }
+        }
+        
+        cfg.members.push({
+            _id: maxId + 1,
+            host: '$ARBITER_HOST',
+            arbiterOnly: true,
+            priority: 0,
+            votes: 1
+        });
+        
+        cfg.version += 1;
+        rs.reconfig(cfg);
+        print('SUCCESS');
+    } catch(e) {
+        print('ERROR: ' + e.message);
+    }" 2>/dev/null)
+    
+    if [[ "$ALT_RESULT" == *"SUCCESS"* ]]; then
+        echo -e "${GREEN}Đã thêm Arbiter bằng phương pháp thay thế!${NC}"
+    else
+        echo -e "${RED}Không thể thêm Arbiter vào Replica Set.${NC}"
+        echo -e "${RED}Lỗi: $ALT_RESULT${NC}"
+        exit 1
+    fi
+fi
 
 # Đợi một chút để Replica Set cập nhật
 sleep 5
 
 # Kiểm tra trạng thái Replica Set
 echo -e "${YELLOW}Kiểm tra trạng thái Replica Set...${NC}"
-mongosh --port $MONGODB_PORT -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "rs.status()"
+mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "
+printjson(rs.status());
+print('\\n=== REPLICA SET CONFIGURATION ===');
+printjson(rs.conf());
+"
+
+# Kiểm tra đặc biệt xem arbiter có hoạt động không
+echo -e "${YELLOW}Kiểm tra trạng thái Arbiter...${NC}"
+ARBITER_STATUS=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
+var status = rs.status();
+for (var i = 0; i < status.members.length; i++) {
+    if (status.members[i].name === '$ARBITER_HOST') {
+        print('Arbiter State: ' + status.members[i].stateStr);
+        print('Arbiter Health: ' + status.members[i].health);
+        break;
+    }
+}
+" 2>/dev/null)
+
+echo "$ARBITER_STATUS"
 
 # Hoàn thành
-echo -e "${GREEN}MongoDB ARBITER Node đã được thiết lập thành công!${NC}"
-echo -e "${GREEN}Bạn có thể đăng nhập với lệnh sau:${NC}"
-echo -e "${GREEN}mongosh --port $MONGODB_PORT -u $MONGODB_USER -p $MONGODB_PASS --authenticationDatabase admin${NC}"
+echo -e "${GREEN}================================================================${NC}"
+echo -e "${GREEN}        MongoDB Arbiter Node đã được thiết lập thành công!      ${NC}"
+echo -e "${GREEN}================================================================${NC}"
+echo ""
+echo -e "${BLUE}Thông tin Arbiter:${NC}"
+echo -e "${BLUE}  - Host: $ARBITER_HOST${NC}"
+echo -e "${BLUE}  - Role: Arbiter (chỉ tham gia voting, không lưu trữ data)${NC}"
+echo -e "${BLUE}  - Priority: 0 (không thể trở thành Primary)${NC}"
+echo -e "${BLUE}  - Votes: 1 (tham gia bầu chọn Primary)${NC}"
+echo ""
+echo -e "${GREEN}Bạn có thể kiểm tra trạng thái replica set với lệnh:${NC}"
+echo -e "${GREEN}mongosh $PRIMARY_HOST -u $MONGODB_USER -p $MONGODB_PASS --authenticationDatabase admin --eval 'rs.status()'${NC}"
+echo ""
+echo -e "${YELLOW}Lưu ý: Arbiter không lưu trữ dữ liệu, chỉ tham gia bầu chọn để đảm bảo tính khả dụng cao của Replica Set.${NC}"

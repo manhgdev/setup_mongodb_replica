@@ -2,6 +2,14 @@
 # setup_primary.sh
 # Script cài đặt MongoDB Primary Node
 
+# Lấy đường dẫn thư mục chứa script
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="$SCRIPT_DIR/lib"
+
+# Load các hàm utility từ lib
+source "$LIB_DIR/colors.sh"
+source "$LIB_DIR/get_current_ip.sh"
+
 # Định nghĩa các biến môi trường
 REPLICA_SET_NAME="rs0"
 MONGODB_DATA_DIR="/data/rs0"
@@ -10,25 +18,6 @@ MONGODB_CONFIG="/etc/mongod.conf"
 MONGODB_KEYFILE="/etc/mongodb-keyfile"
 MONGODB_USER="manhg"
 MONGODB_PASS="manhnk"
-
-# Định nghĩa màu sắc cho terminal
-YELLOW='\033[1;33m'
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-RED='\033[0;31m'
-NC='\033[0m' # No Color
-
-# Hàm lấy IP của node hiện tại
-get_current_ip() {
-    local ip=$(ip -4 addr show 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' 2>/dev/null | grep -v '^127\.' | head -n 1 2>/dev/null)
-    if [ -z "$ip" ]; then
-        ip=$(hostname -I 2>/dev/null | awk '{print $1}' 2>/dev/null)
-    fi
-    if [ -z "$ip" ] && command -v ifconfig >/dev/null 2>&1; then
-        ip=$(ifconfig 2>/dev/null | grep -Eo 'inet (addr:)?([0-9]*\.){3}[0-9]*' 2>/dev/null | grep -Eo '([0-9]*\.){3}[0-9]*' 2>/dev/null | grep -v '127.0.0.1' 2>/dev/null | head -n 1 2>/dev/null)
-    fi
-    echo "$ip"
-}
 
 PRIMARY_IP=$(get_current_ip)
 echo "PRIMARY IP: $PRIMARY_IP"

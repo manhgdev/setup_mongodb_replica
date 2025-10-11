@@ -1,14 +1,15 @@
 #!/bin/bash
 
-# Màu sắc
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+# Lấy đường dẫn thư mục chứa script
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="$SCRIPT_DIR/lib"
 
-# Hàm kiểm tra kết nối MongoDB
-check_mongodb_connection() {
+# Load các hàm utility từ lib
+source "$LIB_DIR/colors.sh"
+source "$LIB_DIR/check_mongodb_connection.sh"
+
+# Hàm kiểm tra kết nối MongoDB với format riêng cho check_status
+check_mongodb_connection_status() {
     local host=$1
     local port=$2
     local username=$3
@@ -80,7 +81,7 @@ read -p "Nhập authentication database (mặc định: admin): " auth_db
 auth_db=${auth_db:-admin}
 
 # Kiểm tra kết nối
-if check_mongodb_connection $host $port $username $password $auth_db; then
+if check_mongodb_connection_status $host $port $username $password $auth_db; then
     # Lấy thông tin replica set
     get_replica_set_info $host $port $username $password $auth_db
     
