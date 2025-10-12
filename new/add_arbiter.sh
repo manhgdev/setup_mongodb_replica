@@ -312,6 +312,42 @@ if [ ! -z "$EXISTING_ARBITERS" ] && [ "$EXISTING_ARBITERS" != "" ]; then
     fi
 fi
 
+# Preflight: kiểm tra kết nối mạng 2 chiều trước khi thêm arbiter
+echo -e "${YELLOW}Preflight: Kiểm tra kết nối mạng giữa PRIMARY và ARBITER (TCP 27017)...${NC}"
+
+# 1) Từ ARBITER (máy đang chạy script) tới PRIMARY
+PRIMARY_IP_ONLY=$(echo "$PRIMARY_HOST" | cut -d: -f1)
+if nc -z -w 3 "$PRIMARY_IP_ONLY" 27017 2>/dev/null; then
+    echo -e "${GREEN}✓${NC} ARBITER -> PRIMARY: TCP 27017 OK"
+else
+    echo -e "${RED}✗${NC} ARBITER -> PRIMARY: TCP 27017 FAIL"
+    echo -e "${YELLOW}Hãy đảm bảo trên PRIMARY:${NC}"
+    echo -e "  - Mở cổng 27017 (ufw/firewalld/security group/NACL)"
+    echo -e "  - mongod bind 0.0.0.0 (mongod.conf: net.bindIp: 0.0.0.0) và đã restart"
+    echo -e "  - Đường mạng giữa hai server thông suốt (ICMP có thể bị chặn, nhưng TCP 27017 phải thông)"
+    echo -e "${YELLOW}Dừng lại để tránh thêm member unreachable. Thử lại sau khi mở kết nối.${NC}"
+    exit 1
+fi
+
+# 2) Listener trên ARBITER (đảm bảo mongod đang nghe trên 0.0.0.0:27017)
+if command -v ss >/dev/null 2>&1; then
+    if ss -tln | grep -E "LISTEN\s+.*:27017\s" >/dev/null 2>&1; then
+        echo -e "${GREEN}✓${NC} ARBITER listener: 27017 đang LISTEN"
+    else
+        echo -e "${RED}✗${NC} ARBITER listener: không thấy LISTEN 27017"
+        echo -e "${YELLOW}Kiểm tra mongod và cấu hình bindIp, sau đó restart mongod.${NC}"
+        exit 1
+    fi
+else
+    if netstat -tln 2>/dev/null | grep ":27017" >/dev/null 2>&1; then
+        echo -e "${GREEN}✓${NC} ARBITER listener: 27017 đang LISTEN"
+    else
+        echo -e "${RED}✗${NC} ARBITER listener: không thấy LISTEN 27017"
+        echo -e "${YELLOW}Kiểm tra mongod và cấu hình bindIp, sau đó restart mongod.${NC}"
+        exit 1
+    fi
+fi
+
 # Chỉ thêm arbiter nếu chưa có hoặc đã xóa arbiter cũ
 if [ -z "$EXISTING_ARBITERS" ] || [ "$EXISTING_ARBITERS" == "" ] || [[ "$replace_choice" =~ ^[Yy]$ ]]; then
     echo -e "${YELLOW}Đang thêm arbiter mới vào replica set...${NC}"
