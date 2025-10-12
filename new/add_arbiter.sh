@@ -111,6 +111,13 @@ fi
 PRIMARY_HOST="${PRIMARY_IP}:27017"
 ARBITER_HOST="${ARBITER_IP}:${ARBITER_PORT}"
 
+# Sanity check: không được dùng cùng một IP cho PRIMARY và ARBITER
+if [ "$PRIMARY_IP" = "$ARBITER_IP" ]; then
+    echo -e "${RED}PRIMARY_IP và ARBITER_IP đang trùng nhau (${PRIMARY_IP}). Điều này sẽ gây xung đột mạng/ARP và lỗi kết nối.${NC}"
+    echo -e "${YELLOW}Hãy đảm bảo bạn đang chạy arbiter trên máy khác hoặc dùng IP khác, sau đó chạy lại script.${NC}"
+    exit 1
+fi
+
 echo -e "${YELLOW}Bắt đầu thiết lập MongoDB Arbiter Node...${NC}"
 echo -e "${YELLOW}PRIMARY node: $PRIMARY_HOST${NC}"
 echo -e "${YELLOW}ARBITER node: $ARBITER_HOST${NC}"
