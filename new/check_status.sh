@@ -33,8 +33,46 @@ get_replica_set_info() {
     local password=$4
     local auth_db=$5
     
-    echo -e "\n${BLUE}Thông tin Replica Set:${NC}"
-    mongosh --host $host --port $port --username $username --password $password --authenticationDatabase $auth_db --eval "rs.status()" | grep -E "name|stateStr|health|uptime|lastHeartbeat"
+    echo -e "\n${CYAN}═══════════════════════════════════════${NC}"
+    echo -e "${CYAN}📊 Thông tin Replica Set${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════${NC}"
+    
+    RS_INFO=$(mongosh --host $host --port $port --username $username --password $password --authenticationDatabase $auth_db --quiet --eval "
+    const status = rs.status();
+    print('SET:' + status.set);
+    print('DATE:' + status.date);
+    print('STATE:' + status.myState);
+    status.members.forEach(m => {
+        print('MEMBER:' + m.name + '|' + m.stateStr + '|' + m.health + '|' + (m.uptime || 0) + '|' + (m.lastHeartbeat || 'N/A') + '|' + (m.optimeDate || 'N/A'));
+    });
+    ")
+    
+    echo "$RS_INFO" | while IFS=: read -r key value; do
+        case $key in
+            SET) echo -e "${YELLOW}Replica Set:${NC} ${GREEN}$value${NC}" ;;
+            DATE) echo -e "${YELLOW}Date:${NC} $value" ;;
+            STATE) echo -e "${YELLOW}My State:${NC} ${CYAN}$value${NC}" ;;
+            MEMBER)
+                IFS='|' read -r name state health uptime heartbeat optime <<< "$value"
+                echo -e "\n${YELLOW}  ▶ Node:${NC} ${CYAN}$name${NC}"
+                if [ "$state" = "PRIMARY" ]; then
+                    echo -e "    ${YELLOW}State:${NC} ${GREEN}$state${NC}"
+                elif [ "$state" = "SECONDARY" ]; then
+                    echo -e "    ${YELLOW}State:${NC} ${BLUE}$state${NC}"
+                else
+                    echo -e "    ${YELLOW}State:${NC} ${RED}$state${NC}"
+                fi
+                if [ "$health" = "1" ]; then
+                    echo -e "    ${YELLOW}Health:${NC} ${GREEN}✓ $health${NC}"
+                else
+                    echo -e "    ${YELLOW}Health:${NC} ${RED}✗ $health${NC}"
+                fi
+                echo -e "    ${YELLOW}Uptime:${NC} ${CYAN}${uptime}s${NC}"
+                [ "$heartbeat" != "N/A" ] && echo -e "    ${YELLOW}Last Heartbeat:${NC} $heartbeat"
+                [ "$optime" != "N/A" ] && echo -e "    ${YELLOW}Optime:${NC} $optime"
+                ;;
+        esac
+    done
 }
 
 # Hàm kiểm tra replication lag
@@ -45,8 +83,10 @@ check_replication_lag() {
     local password=$4
     local auth_db=$5
     
-    echo -e "\n${BLUE}Kiểm tra Replication Lag:${NC}"
-    mongosh --host $host --port $port --username $username --password $password --authenticationDatabase $auth_db --eval "db.printSlaveReplicationInfo()"
+    echo -e "\n${YELLOW}═══════════════════════════════════════${NC}"
+    echo -e "${YELLOW}⏱️  Replication Lag${NC}"
+    echo -e "${YELLOW}═══════════════════════════════════════${NC}"
+    mongosh --host $host --port $port --username $username --password $password --authenticationDatabase $auth_db --quiet --eval "db.printSlaveReplicationInfo()"
 }
 
 # Hàm kiểm tra trạng thái các node
@@ -57,8 +97,30 @@ check_nodes_status() {
     local password=$4
     local auth_db=$5
     
-    echo -e "\n${BLUE}Trạng thái các Node:${NC}"
-    mongosh --host $host --port $port --username $username --password $password --authenticationDatabase $auth_db --eval "rs.status().members.forEach(function(member) { print(member.name + ': ' + member.stateStr + ' (Health: ' + member.health + ')') })"
+    echo -e "\n${MAGENTA}═══════════════════════════════════════${NC}"
+    echo -e "${MAGENTA}🖥️  Trạng thái các Node${NC}"
+    echo -e "${MAGENTA}═══════════════════════════════════════${NC}"
+    
+    NODES_INFO=$(mongosh --host $host --port $port --username $username --password $password --authenticationDatabase $auth_db --quiet --eval "
+    rs.status().members.forEach(function(member) { 
+        print(member.name + '|' + member.stateStr + '|' + member.health);
+    })")
+    
+    echo "$NODES_INFO" | while IFS='|' read -r name state health; do
+        if [ "$health" = "1" ]; then
+            HEALTH_ICON="${GREEN}✓${NC}"
+        else
+            HEALTH_ICON="${RED}✗${NC}"
+        fi
+        
+        if [ "$state" = "PRIMARY" ]; then
+            echo -e "$HEALTH_ICON ${GREEN}[PRIMARY]${NC} ${CYAN}$name${NC} ${GREEN}→ $state${NC}"
+        elif [ "$state" = "SECONDARY" ]; then
+            echo -e "$HEALTH_ICON ${BLUE}[SECONDARY]${NC} ${CYAN}$name${NC} ${BLUE}→ $state${NC}"
+        else
+            echo -e "$HEALTH_ICON ${YELLOW}[OTHER]${NC} ${CYAN}$name${NC} ${RED}→ $state${NC}"
+        fi
+    done
 }
 
 # Main
