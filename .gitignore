@@ -1,2 +1,8 @@
 backup/.*
 backup_express_api_new/.*
+.venv/
+.web-data/
+__pycache__/
+.pytest_cache/
+*.pyc
+dist/

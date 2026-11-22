@@ -1,0 +1,430 @@
+import json
+import os
+import time
+from unittest.mock import patch
+
+import pytest
+from fastapi.testclient import TestClient
+from pydantic import ValidationError
+
+from web.app import create_app
+from web.host_worker import package_versions
+from web.models import Machine, Profile, endpoint
+from web.operations import check_quorum, validate_params
+from web.store import Store
+
+
+@pytest.fixture
+def api(tmp_path):
+    app = create_app(tmp_path / "state")
+    with TestClient(app, base_url="http://127.0.0.1", headers={"X-MongoDB-Manager": "1"}) as client:
+        yield client
+
+
+def profile(api):
+    return api.post("/api/profiles", json={"name": "Test", "seeds": ["127.0.0.1:27017"], "username": "admin", "password": 'test-secret-"$123'}).json()
+
+
+def machine(api):
+    return api.post("/api/machines", json={"name": "Test VPS", "mode": "local"}).json()
+
+
+def test_secrets_encrypted_and_redacted(api):
+    p = profile(api)
+    assert p["has_password"]
+    assert "password" not in p
+    assert "test-secret" not in api.get("/api/state").text
+    directory = api.app.state.store.directory
+    assert b"test-secret" not in (directory / "manager.sqlite3").read_bytes()
+    assert os.stat(directory / "secret.key").st_mode & 0o777 == 0o600
+    update = {k: v for k, v in p.items() if k not in ("id", "has_password")}
+    update["password"] = None
+    api.put("/api/profiles/" + p["id"], json=update).raise_for_status()
+    assert api.app.state.store.get("profiles", p["id"])["password"] == 'test-secret-"$123'
+
+
+def test_origin_and_host_checks(api):
+    assert api.get("/api/state", headers={"Origin": "https://evil.invalid"}).status_code == 403
+    assert api.get("/api/state", headers={"Host": "evil.invalid"}).status_code == 403
+    assert api.get("/api/state", headers={"X-MongoDB-Manager": ""}).status_code == 403
+    assert api.get("/api/state", headers={"Origin": "http://127.0.0.1"}).status_code == 200
+    assert "frame-ancestors 'none'" in api.get("/").headers["content-security-policy"]
+
+
+@pytest.mark.parametrize("value", ["x; touch /tmp/foo:27017", "-oProxyCommand=x:27017", "localhost:70000", "localhost", "a:1:2"])
+def test_invalid_endpoints(value):
+    with pytest.raises(ValueError):
+        endpoint(value)
+
+
+def test_ipv6_and_ssh_validation():
+    assert endpoint("[::1]:27017") == "[::1]:27017"
+    with pytest.raises(ValidationError):
+        Machine(name="x", service="mongod;reboot")
+    with pytest.raises(ValidationError):
+        Machine(name="x", user="root -o ProxyCommand=bad")
+
+
+def test_sensitive_validation_and_service_scope(api):
+    response = api.post('/api/profiles', json={"name": "", "seeds": [], "password": "private-secret"})
+    assert response.status_code == 422
+    assert "private-secret" not in response.text
+    with pytest.raises(ValidationError):
+        Machine(name="x", service="sshd")
+    with pytest.raises(ValueError):
+        validate_params("backup", {"collection": "users"})
+    with pytest.raises(ValueError):
+        validate_params("setup", {"instance": []})
+
+
+def test_ssh_password_storage_and_updates(api):
+    secret = 'ssh-private-$"secret123'
+    body = {"name": "VPS", "host": "127.0.0.1", "ssh_auth": "password", "ssh_password": secret}
+    response = api.post('/api/machines', json=body)
+    assert response.status_code == 200
+    saved = response.json()
+    assert saved['has_ssh_password'] and 'ssh_password' not in saved
+    assert secret not in api.get('/api/state').text
+    assert secret.encode() not in (api.app.state.store.directory / 'manager.sqlite3').read_bytes()
+    body['ssh_password'] = None
+    assert api.put('/api/machines/' + saved['id'], json=body).status_code == 200
+    assert api.app.state.store.get('machines', saved['id'])['ssh_password'] == secret
+    body['ssh_auth'] = 'key'
+    assert not api.put('/api/machines/' + saved['id'], json=body).json()['has_ssh_password']
+    assert not api.app.state.store.get('machines', saved['id'])['ssh_password']
+    body['ssh_auth'] = 'password'
+    assert api.post('/api/machines', json=body).status_code == 400
+
+
+def test_ssh_job_failure_redacts_password(api):
+    secret = 'private-ssh-secret'
+    m = api.post('/api/machines', json={"name": "VPS", "ssh_auth": "password", "ssh_password": secret}).json()
+    plan = api.post('/api/plans', json={"action": "preflight", "machine_id": m['id']}).json()
+    assert secret not in json.dumps(plan)
+    with patch('web.app.execute', side_effect=RuntimeError('failed ' + secret)):
+        job = api.post('/api/jobs', json={"plan_id": plan['id']}).json()
+        for _ in range(100):
+            result = api.get('/api/jobs/' + job['id']).json()
+            if result['status'] == 'failed':
+                break
+            time.sleep(.01)
+    assert result['status'] == 'failed'
+    assert secret not in json.dumps(result)
+
+
+def test_restore_compatibility():
+    from web.host_worker import check_restore_compatibility
+    check_restore_compatibility({"version": "9.0.4", "fcv": "9.0"}, {"version": "9.0.7", "fcv": "9.0"})
+    for source in [None, {"version": "8.0.9", "fcv": "8.0"}, {"version": "9.0.4", "fcv": "8.0"}]:
+        with pytest.raises(RuntimeError):
+            check_restore_compatibility(source, {"version": "9.0.7", "fcv": "9.0"})
+
+
+def test_plan_secrets_confirmation_and_replay(api):
+    p = profile(api)
+    payload = {"action": "create_user", "profile_id": p["id"], "params": {"username": "app", "database": "app", "role": "readWrite", "password": "long-secret-1234"}}
+    plan = api.post("/api/plans", json=payload).json()
+    assert "long-secret" not in json.dumps(plan)
+    assert api.post("/api/jobs", json={"plan_id": plan["id"], "confirmation": "wrong"}).status_code == 400
+    with patch("web.app.execute", return_value={"ok": 1}):
+        response = api.post("/api/jobs", json={"plan_id": plan["id"], "confirmation": "Test"})
+        assert response.status_code == 202
+        task_id = response.json()["id"]
+        job = wait_job(api, task_id)
+        assert job["status"] == "succeeded"
+    assert api.post("/api/jobs", json={"plan_id": plan["id"], "confirmation": "Test"}).status_code == 409
+
+
+def wait_job(api, task_id):
+    for _ in range(100):
+        job = api.get("/api/jobs/" + task_id).json()
+        if job["status"] not in ("queued", "running"):
+            return job
+        time.sleep(0.01)
+    pytest.fail("job timed out")
+
+
+def test_failure_is_persisted_without_password(api):
+    p = profile(api)
+    plan = api.post("/api/plans", json={"action": "upgrade_check", "profile_id": p["id"]}).json()
+    with patch("web.app.execute", side_effect=RuntimeError('test-secret-"$123')):
+        task = api.post("/api/jobs", json={"plan_id": plan["id"], "confirmation": ""}).json()
+        job = wait_job(api, task["id"])
+    assert job["status"] == "failed"
+    assert "test-secret" not in json.dumps(job)
+
+
+def test_single_job_and_local_preflight(api):
+    m = machine(api)
+    plan = api.post("/api/plans", json={"action": "preflight", "machine_id": m["id"]}).json()
+    task = api.post("/api/jobs", json={"plan_id": plan["id"]}).json()
+    job = wait_job(api, task["id"])
+    assert job["status"] == "succeeded", job
+    assert "architecture" in job["result"]
+    api.app.state.lock.acquire()
+    try:
+        plan = api.post("/api/plans", json={"action": "preflight", "machine_id": m["id"]}).json()
+        assert api.post("/api/jobs", json={"plan_id": plan["id"]}).status_code == 409
+        assert api.delete("/api/machines/" + m["id"]).status_code == 409
+    finally:
+        api.app.state.lock.release()
+
+
+def test_interrupted_jobs_are_not_replayed(tmp_path):
+    store = Store(tmp_path)
+    job = store.save("jobs", {"status": "running", "events": []})
+    with TestClient(create_app(tmp_path), base_url="http://127.0.0.1", headers={"X-MongoDB-Manager": "1"}) as api:
+        assert api.get("/api/jobs/" + job["id"]).json()["status"] == "interrupted"
+
+
+@pytest.mark.parametrize("action,params", [
+    ("drop_database", {"database": "admin"}), ("restore", {"backup_id": "../../"}),
+    ("service", {"operation": "reboot"}), ("install", {"series": "9.0;curl"}),
+    ("preflight", {"command": "whoami"}), ("member_options", {"host": "a:27017", "votes": 0, "priority": 1, "hidden": False}),
+    ("create_user", {"username": "a", "password": "long-password", "database": "app", "role": "root"}),
+])
+def test_invalid_dangerous_parameters(action, params):
+    with pytest.raises(ValueError):
+        validate_params(action, params)
+
+
+def test_quorum_and_primary_protection():
+    cfg = {"members": [{"_id": 0, "votes": 1, "priority": 1}, {"_id": 1, "votes": 1, "priority": 1}, {"_id": 2, "votes": 1, "priority": 0, "arbiterOnly": True}]}
+    check_quorum(cfg, {0: {"state": 1, "health": 1}, 1: {"state": 2, "health": 1}})
+    with pytest.raises(ValueError):
+        check_quorum(cfg, {0: {"state": 1, "health": 1}})
+    with pytest.raises(ValueError):
+        check_quorum(cfg, {2: {"state": 7, "health": 1}})
+
+
+def test_real_debian_package_field_order():
+    packages = "Package: mongodb-org\nArchitecture: amd64\nVersion: 9.0.7\nDescription: text\n\nPackage: mongodb-mongosh\nVersion: 2.14.2\n"
+    assert package_versions(packages, "mongodb-org") == ["9.0.7"]
+
+
+def test_invalid_body_and_missing_target(api):
+    assert api.post("/api/plans", json={"action": "unknown"}).status_code == 400
+    assert api.post("/api/plans", json={"action": "preflight"}).status_code == 400
+    assert api.post("/api/profiles", json={"name": "x", "seeds": ["bad:wrong"]}).status_code == 422
+    assert api.get("/api/jobs/missing").status_code == 404
+
+
+def test_adopt_and_probe_only_save_after_verification(api):
+    body = {'name': 'Existing', 'seeds': ['127.0.0.1:27018'], 'replica_set': '', 'password': 'private-secret'}
+    detected = dict(body, replica_set='existing-rs', seeds=['127.0.0.1:27017', '127.0.0.1:27018'])
+    status = {'checked_at': '2026-11-12T00:00:00Z', 'members': [{'state': 'PRIMARY'}, {'state': 'SECONDARY'}]}
+    with patch('web.app.discover', return_value=(detected, status)):
+        probe = api.post('/api/profiles/probe', json=body)
+        assert probe.status_code == 200
+        assert not api.get('/api/state').json()['profiles']
+        response = api.post('/api/profiles/adopt', json=body)
+        assert response.status_code == 200
+        assert 'private-secret' not in response.text
+        assert response.json()['profile']['replica_set'] == 'existing-rs'
+        assert len(response.json()['profile']['seeds']) == 2
+    with patch('web.app.discover', side_effect=ValueError('Not connected')):
+        assert api.post('/api/profiles/adopt', json=body).status_code == 400
+    assert len(api.get('/api/state').json()['profiles']) == 1
+
+
+def test_join_fresh_requires_distinct_source_and_explicit_confirmation(api):
+    p = profile(api)
+    source = api.post('/api/machines', json={'name': 'Primary VPS', 'host': '192.0.2.10'}).json()
+    target = api.post('/api/machines', json={'name': 'Fresh VPS', 'host': '192.0.2.11'}).json()
+    params = {'instance': 'secondary', 'port': 27017, 'advertise': '192.0.2.11:27017', 'bind_ip': '0.0.0.0',
+              'source_machine_id': source['id'], 'source_endpoint': '192.0.2.10:27017'}
+    body = {'action': 'join_fresh', 'profile_id': p['id'], 'machine_id': target['id'], 'params': params}
+    plan = api.post('/api/plans', json=body)
+    assert plan.status_code == 200
+    assert plan.json()['confirmation'] == 'Fresh VPS → Test'
+    assert api.post('/api/jobs', json={'plan_id': plan.json()['id']}).status_code == 400
+    body['machine_id'] = source['id']
+    assert api.post('/api/plans', json=body).status_code == 400
+    with pytest.raises(ValueError):
+        validate_params('join_fresh', dict(params, advertise='192.0.2.11:27018'))
+
+
+def test_new_vps_refuses_existing_instance_before_install(tmp_path):
+    from web.host_worker import provision
+    existing = tmp_path / 'etc/mongodb-manager/production'
+    existing.mkdir(parents=True)
+    with patch('web.host_worker.Path', side_effect=lambda value: tmp_path / str(value).lstrip('/')):
+        with patch('web.host_worker.install') as installer:
+            with pytest.raises(RuntimeError, match='đã tồn tại'):
+                provision({'instance': 'production', 'port': 27017, 'series': '9.0'})
+            installer.assert_not_called()
+
+
+def test_topology_seed_refresh_preserves_concurrent_profile_edits(api):
+    p = profile(api)
+    original = api.app.state.store.get('profiles', p['id'])
+    detected = {'replica_set': 'rs0', 'seeds': ['127.0.0.1:27017', '127.0.0.1:27018'], 'members': []}
+    with patch('web.app.snapshot', return_value=detected):
+        assert api.get('/api/profiles/' + p['id'] + '/status').status_code == 200
+    updated = api.app.state.store.get('profiles', p['id'])
+    assert updated['seeds'] == detected['seeds']
+    assert updated['password'] == original['password']
+    # A late observation cannot overwrite a seed list edited while reading status.
+    result = api.app.state.store.update_fields('profiles', p['id'], {'seeds': ['stale:27017']}, expected={'seeds': original['seeds']})
+    assert result is None
+    assert api.app.state.store.get('profiles', p['id'])['seeds'] == detected['seeds']
+
+
+def test_seed_without_port_and_invalid_seed_messages(api):
+    assert Profile(name='IP', seeds=['160.191.87.38', 'db.example.com', '[::1]', '::1']).seeds == ['160.191.87.38:27017', 'db.example.com:27017', '[::1]:27017']
+    response = api.post('/api/profiles/probe', json={'name': 'IP', 'seeds': ['bad:port'], 'password': 'secret-validation-value'})
+    assert response.status_code == 422
+    assert 'Seed MongoDB' in response.text
+    assert 'secret-validation-value' not in response.text
+    assert 'bad:port' not in response.text
+
+
+def test_adopt_with_ssh_credentials_commits_and_preserves_password(api):
+    status = {'checked_at': '2026-11-12T00:00:00Z', 'members': [{'host': '192.0.2.10:27017'}]}
+    body = {'name': 'Existing', 'seeds': ['192.0.2.10'], 'replica_set': '', 'password': 'mongo-secret'}
+    machine_body = {'name': 'Member VPS', 'host': '192.0.2.10', 'mongo_endpoint': '192.0.2.10', 'ssh_auth': 'password', 'ssh_password': 'ssh-private-secret'}
+    detected = dict(body, seeds=['192.0.2.10:27017'], replica_set='rsExisting')
+    with patch('web.app.discover', return_value=(detected, status)):
+        response = api.post('/api/profiles/adopt', json=dict(body, machines=[{'machine': machine_body}]))
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert 'ssh-private-secret' not in response.text and 'mongo-secret' not in response.text
+    saved_machine = data['machines'][0]
+    assert saved_machine['profile_id'] == data['profile']['id']
+    assert saved_machine['mongo_endpoint'] == '192.0.2.10:27017'
+    assert saved_machine['has_ssh_password']
+    assert api.app.state.store.get('machines', saved_machine['id'])['ssh_password'] == 'ssh-private-secret'
+    update = dict(body, record_id=data['profile']['id'], machines=[{'record_id': saved_machine['id'], 'machine': dict(machine_body, ssh_password=None)}])
+    with patch('web.app.discover', return_value=(detected, status)):
+        assert api.post('/api/profiles/adopt', json=update).status_code == 200
+    assert len(api.get('/api/state').json()['machines']) == 1
+    assert api.app.state.store.get('machines', saved_machine['id'])['ssh_password'] == 'ssh-private-secret'
+
+
+def test_invalid_attached_ssh_does_not_partially_adopt(api):
+    status = {'checked_at': '2026-11-12T00:00:00Z', 'members': []}
+    body = {'name': 'Existing', 'seeds': ['192.0.2.10:27017'], 'replica_set': 'rs0'}
+    for machine_body in [
+        {'name': 'Wrong member', 'host': '192.0.2.11', 'mongo_endpoint': '192.0.2.11:27017'},
+        {'name': 'Missing SSH password', 'host': '192.0.2.10', 'mongo_endpoint': '192.0.2.10:27017', 'ssh_auth': 'password'},
+    ]:
+        with patch('web.app.discover', return_value=(body, status)):
+            response = api.post('/api/profiles/adopt', json=dict(body, machines=[{'machine': machine_body}]))
+        assert response.status_code == 400, response.text
+        state = api.get('/api/state').json()
+        assert not state['profiles'] and not state['machines']
+
+
+def test_ssh_can_be_saved_before_mongodb_is_reachable(api):
+    body = [{'machine': {'name': 'Repair VPS', 'host': '192.0.2.10', 'ssh_auth': 'password', 'ssh_password': 'private-ssh', 'mongo_endpoint': '192.0.2.10'}}]
+    with patch('web.app.discover', side_effect=AssertionError('MongoDB must not be contacted')):
+        response = api.post('/api/machines/batch', json=body)
+    assert response.status_code == 200
+    assert 'private-ssh' not in response.text
+    assert response.json()['machines'][0]['has_ssh_password']
+    assert not api.get('/api/state').json()['profiles']
+    assert len(api.get('/api/state').json()['machines']) == 1
+
+
+def test_bulk_ssh_across_clusters_preserves_individual_passwords(api):
+    first = profile(api)
+    second = api.post('/api/profiles', json={'name': 'Other cluster', 'seeds': ['192.0.2.20'], 'replica_set': 'rsOther'}).json()
+    records = [{'machine': {'name': p['name'], 'host': host, 'profile_id': p['id'], 'mongo_endpoint': host + ':27017',
+                           'ssh_auth': 'password', 'ssh_password': 'bulk-private-secret'}} for p, host in [(first, '192.0.2.10'), (second, '192.0.2.20')]]
+    response = api.post('/api/machines/batch', json=records)
+    assert response.status_code == 200
+    assert 'bulk-private-secret' not in response.text
+    saved = response.json()['machines']
+    assert {m['profile_id'] for m in saved} == {first['id'], second['id']}
+    updated = []
+    for m in saved:
+        value = {k: v for k, v in m.items() if k not in ('id', 'has_ssh_password')}
+        value.update(user='ubuntu', ssh_password=None)
+        updated.append({'record_id': m['id'], 'machine': value})
+    assert api.post('/api/machines/batch', json=updated).status_code == 200
+    for m in saved:
+        stored = api.app.state.store.get('machines', m['id'])
+        assert stored['ssh_password'] == 'bulk-private-secret' and stored['user'] == 'ubuntu'
+
+
+def test_arbiter_diagnostics_uses_unauthenticated_hello_and_trusted_status():
+    from unittest.mock import MagicMock
+    from web.operations import query
+    profile_data = {'seeds': ['arbiter:27017'], 'username': 'admin', 'password': 'secret'}
+    cluster, arbiter = MagicMock(), MagicMock()
+    cluster.admin.command.side_effect = [
+        {'config': {'_id': 'rs0', 'members': [{'_id': 1, 'host': 'arbiter:27017', 'arbiterOnly': True}]}},
+        {'members': [{'name': 'arbiter:27017', 'health': 1, 'state': 7}]},
+    ]
+    arbiter.admin.command.return_value = {'setName': 'rs0', 'arbiterOnly': True}
+    first, second = MagicMock(), MagicMock()
+    first.__enter__.return_value = cluster
+    second.__enter__.return_value = arbiter
+    with patch('web.operations.client', side_effect=[first, second]) as connect:
+        result = query(profile_data, 'diagnostics')
+    assert result[0]['ok'] and result[0]['role'] == 'ARBITER'
+    assert connect.call_args_list[1].args[0]['username'] == ''
+    assert connect.call_args_list[1].args[0]['password'] == ''
+
+
+def test_member_workflow_prepared_and_arbiter_validation():
+    values = {'instance': 'member', 'port': 27017, 'advertise': '192.0.2.11:27017', 'bind_ip': '0.0.0.0',
+              'source_machine_id': 'source', 'source_endpoint': '192.0.2.10:27017', 'arbiter': True}
+    parsed = validate_params('join_fresh', values)
+    assert parsed['arbiter'] and parsed['mode'] == 'prepare'
+    with pytest.raises(ValueError, match='keyfile'):
+        validate_params('join_fresh', dict(values, mode='prepared'))
+    assert validate_params('join_fresh', dict(values, mode='prepared', target_keyfile='/etc/mongodb-keyfile'))['mode'] == 'prepared'
+    with pytest.raises(ValueError):
+        validate_params('join_fresh', dict(values, arbiter='true'))
+
+
+def test_managed_member_resume_preserves_existing_files(tmp_path):
+    from web.host_worker import prepare_member
+    from pathlib import Path
+    import base64
+    root = tmp_path / 'etc/mongodb-manager/member'
+    data = tmp_path / 'var/lib/mongodb-manager/member'
+    root.mkdir(parents=True)
+    data.mkdir(parents=True)
+    key = root / 'keyfile'
+    key.write_text('shared-key')
+    config = {'replication': {'replSetName': 'rs0'}, 'net': {'port': 27017, 'bindIp': '0.0.0.0'},
+              'storage': {'dbPath': str(data)}, 'security': {'keyFile': str(key), 'authorization': 'enabled'}}
+    (root / 'mongod.conf').write_text(json.dumps(config))
+    marker = data / 'preserve'
+    marker.write_text('real-data')
+    params = {'instance': 'member', 'port': 27017, 'bind_ip': '0.0.0.0', 'replica_set': 'rs0', 'series': '9.0',
+              'keyfile_b64': base64.b64encode(b'shared-key').decode()}
+    def fake_run(args, **kwargs):
+        return 'db version v9.0.8' if args[0] == 'mongod' else 'active'
+    with patch('web.host_worker.Path', side_effect=lambda value: tmp_path / str(value).lstrip('/')):
+        with patch('web.host_worker.shutil.which', return_value='/usr/bin/mongod'), patch('web.host_worker.run', side_effect=fake_run), patch('web.host_worker.setup') as setup:
+            result = prepare_member(params)
+            assert result['reused'] and result['service'] == 'mongod-manager-member'
+            setup.assert_not_called()
+            params['replica_set'] = 'wrong-set'
+            with pytest.raises(RuntimeError, match='Không ghi đè'):
+                prepare_member(params)
+    assert marker.read_text() == 'real-data'
+
+
+def test_member_network_checks_self_before_membership():
+    from web.host_worker import member_network
+    from unittest.mock import MagicMock
+    with patch('web.host_worker.socket.create_connection', return_value=MagicMock()) as connect:
+        assert member_network({'endpoints': ['192.0.2.11:27018', '192.0.2.10:27017']})['checked'] == 2
+        assert connect.call_args_list[0].args[0] == ('192.0.2.11', 27018)
+    with patch('web.host_worker.socket.create_connection', side_effect=OSError('blocked')):
+        with pytest.raises(RuntimeError, match='Chưa thêm membership'):
+            member_network({'endpoints': ['192.0.2.11:27018']})
+
+
+def test_port_conflict_reports_actionable_error(tmp_path):
+    from web.host_worker import check_instance_target
+    from unittest.mock import MagicMock
+    sock = MagicMock()
+    sock.__enter__.return_value.bind.side_effect = OSError(98, 'Address already in use')
+    with patch('web.host_worker.Path', side_effect=lambda value: tmp_path / str(value).lstrip('/')), patch('web.host_worker.socket.socket', return_value=sock):
+        with pytest.raises(RuntimeError, match='chọn port khác'):
+            check_instance_target({'instance': 'fresh', 'port': 27017})
