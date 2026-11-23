@@ -84,6 +84,11 @@ def test_transfer_fresh_and_archived_data(tmp_path, monkeypatch):
         subset = run("backup", {"databases": ["orders"], "collections": ["items", "notes"]}, src)
         assert [part["collection"] for part in subset["archives"]] == ["items", "notes"]
         run("restore", {"backup_id": subset["id"], "drop": True}, dst)
+        run("restore", {"backup_id": subset["id"], "drop": False}, dst)
+        target.orders.notes.update_one({"_id": 1}, {"$set": {"local": True}})
+        with pytest.raises(RuntimeError, match="khác bản backup"):
+            run("restore", {"backup_id": subset["id"], "drop": False}, dst)
+        assert target.orders.notes.find_one({"_id": 1})["local"] is True
         assert target.orders.notes.count_documents({}) == 1
         assert "omitted" not in target.orders.list_collection_names()
         applications = run("backup", {"application_only": True}, src)

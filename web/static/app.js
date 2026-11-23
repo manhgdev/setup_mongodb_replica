@@ -288,6 +288,7 @@ function selectedArchiveHost(){
   const recent=jobs().find(j=>['backup','backups'].includes(j.action)&&hosts.some(m=>m.id===j.machine_id||m.name===j.target));
   return hosts.find(m=>m.id===saved)||hosts.find(m=>m.id===recent?.machine_id||m.name===recent?.target)||hosts[0];
 }
+const deletedDemoBackups=new Set();
 let catalogLoading=false,catalogError='';
 async function loadArchiveCatalog(id){
   const host=selectedArchiveHost(),pid=profile()?.id;
@@ -298,7 +299,7 @@ async function loadArchiveCatalog(id){
     const items=demo?[{id:'a'.repeat(32),time:new Date().toISOString(),machine_id:host.id,source:profile().name,source_id:pid,database:'application',size:2048}]:
       await api('/profiles/'+pid+'/machines/'+host.id+'/backups');
     if(id!==renderId||currentRoute!=='backup')return;
-    backupItems=items;
+    backupItems=demo?items.filter(b=>!deletedDemoBackups.has(host.id+'/'+b.id)):items;
   }catch(e){
     if(id!==renderId||currentRoute!=='backup')return;
     catalogError=host.name+' · '+e.message;
@@ -314,7 +315,7 @@ function backupCatalog(){
     const target=`data-backup="${esc(b.id)}" data-id="${esc(b.machine_id||backupListedHost?.id||'')}"`;
     const actions=button(dataLabel('Xem dữ liệu','View data'),'backup-preview','db','small',target)
       +(b.source_id===profile()?.id?button(dataLabel('Backup lại','Back up again'),'backup-repeat','refresh','small',target):'')
-      +button('Restore','restore','','small',target);
+      +button('Restore','restore','','small',target)+button(dataLabel('Xóa','Delete'),'backup-delete','','small danger',target);
     const counts=Object.entries(b.restore_counts||{});
     const restored=counts.length?counts.map(([name,n])=>badge(dataLabel(`Đã restore ${n} lần vào ${name}`,`Restored ${n} time(s) to ${name}`),'success')).join('<br>'):badge(dataLabel('Chưa restore','Not restored'),'warn');
     const scope=b.collections?.length?b.collections.join(', '):b.collection;
@@ -857,6 +858,27 @@ document.addEventListener('click',async event=>{
       if(demo)demoSchedules.get(id).enabled=false;
       else {await api('/profiles/'+id+'/backup-schedule/pause',{method:'POST'});await refreshState();}
       $('#modal').close();await render();return;
+    }
+    if(act==='backup-delete'){
+      const id=target.dataset.backup, machineId=target.dataset.id, pid=profile().id;
+      const host=machines().find(m=>m.id===machineId && m.profile_id===pid);
+      if(!host)return;
+      jobId=null;
+      modal(dataLabel('Xóa bản backup?','Delete backup?'),`<div class="modal-body"><p>${dataLabel('Xóa vĩnh viễn bản backup sau khỏi','Permanently delete this backup from')} <strong>${esc(host.name)}</strong>?</p><code>${esc(id)}</code><div id="form-error"></div></div>`,
+        button(uiText('Hủy'),'modal-close')+'<button type="button" class="button danger" data-delete-archive>'+dataLabel('Xóa backup','Delete backup')+'</button>');
+      const submit=$('[data-delete-archive]');
+      submit.onclick=async()=>{
+        submit.disabled=true;
+        try{
+          if(demo)deletedDemoBackups.add(machineId+'/'+id);
+          else await api('/profiles/'+pid+'/machines/'+machineId+'/backups/'+id,{method:'DELETE'});
+          backupItems=backupItems.filter(b=>!(b.id===id && (b.machine_id||machineId)===machineId));
+          if(submit.isConnected)$('#modal').close();
+          if(currentRoute==='backup')await render();
+          toast(dataLabel('Đã xóa bản backup.','Backup deleted.'));
+        }catch(e){if(submit.isConnected){formError(e);submit.disabled=false;}else toast(e.message,true);}
+      };
+      return;
     }
     if(act==='backup-preview'){await openBackupPreview(target.dataset.id,target.dataset.backup);return;}
     if(act==='backup-repeat'){

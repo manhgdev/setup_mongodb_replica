@@ -238,6 +238,28 @@ print(JSON.stringify({ready:true,primary:input.advertise}));
 
 
 def prepare_member(p):
+    # A removed node can still own the port under its original service name.
+    service = p.get('service', '')
+    match = re.fullmatch(r'mongod-manager-([a-z][a-z0-9-]{0,30})', service)
+    if match and run(['systemctl', 'is-active', service], check=False) == 'active':
+        live_root = Path('/etc/mongodb-manager') / match.group(1)
+        live_path = live_root / 'mongod.conf'
+        pid = run(['systemctl', 'show', service, '-p', 'MainPID', '--value'])
+        argv = (Path('/proc') / str(int(pid)) / 'cmdline').read_bytes().rstrip(b'\0').split(b'\0')
+        if argv == [b'/usr/bin/mongod', b'--config', os.fsencode(live_path)]:
+            live = json.loads(live_path.read_text())
+            if live.get('net', {}).get('port') == p['port']:
+                security = live.get('security', {})
+                keyfile = live_root / 'keyfile'
+                if (live.get('replication', {}).get('replSetName') != p['replica_set']
+                        or security.get('authorization') != 'enabled' or security.get('keyFile') != str(keyfile)
+                        or ''.join(keyfile.read_text().split()) != ''.join(base64.b64decode(p['keyfile_b64']).decode().split())):
+                    raise RuntimeError(f"Service {service} đang dùng cổng {p['port']} nhưng cấu hình replica set hoặc keyfile khác cụm nguồn.")
+                version = run([f'/proc/{pid}/exe', '--version'])
+                if not re.search(r"\bv" + re.escape(p["series"]) + r"\.", version):
+                    raise RuntimeError("Phiên bản service đang chạy khác nhánh nguồn.")
+                event(f"Tái sử dụng service {service} đang chạy trên cổng {p['port']}.")
+                return dict(prepared=True, reused=True, service=service, config=str(live_path), data=live['storage']['dbPath'])
     root = Path('/etc/mongodb-manager') / p['instance']
     data = Path('/var/lib/mongodb-manager') / p['instance']
     configpath = root / 'mongod.conf'
@@ -370,6 +392,19 @@ def backup(p):
     except Exception:
         shutil.rmtree(directory)
         raise
+
+
+def delete_backup(p):
+    key = p["backup_id"]
+    if not re.fullmatch(r"[0-9a-f]{32}", key):
+        raise ValueError("ID backup không hợp lệ.")
+    folder = backups_root(create=False) / key
+    manifest = folder / "manifest.json"
+    if (folder.is_symlink() or manifest.is_symlink() or not manifest.is_file()
+            or json.loads(manifest.read_text()).get("id") != key):
+        raise ValueError("Không tìm thấy đúng bản backup trên máy đã chọn.")
+    shutil.rmtree(folder)
+    return {"deleted": key}
 
 
 def list_backups(p):
@@ -507,6 +542,43 @@ def check_restore_compatibility(source, target):
         raise RuntimeError("Restore yêu cầu cùng nhánh MongoDB và FCV với nguồn. Backup cũ thiếu metadata cần kiểm tra và restore thủ công.")
 
 
+def collection_signature(archive, namespace):
+    """Compare a single collection across dump order and archive block boundaries."""
+    count = total = 0
+    with gzip.open(archive, "rb") as stream:
+        if stream.read(4) != bytes.fromhex("6de29981"):
+            raise ValueError("Archive không hợp lệ.")
+        frames = bson_frames(stream, archive=True)
+        next(frames)
+        header = next(frames)
+        if not header or archive_namespace(header) != namespace or next(frames) is not None:
+            return None
+        # The archive collection header starts with db, collection, metadata (BSON strings).
+        pos = 4
+        for key in (b"db", b"collection", b"metadata"):
+            tag = b"\x02" + key + b"\x00"
+            if not header.startswith(tag, pos):
+                return None
+            pos += len(tag)
+            size = int.from_bytes(header[pos:pos+4], "little")
+            value = header[pos+4:pos+3+size]
+            pos += 4 + size
+        meta = json.loads(value)
+        meta.pop("uuid", None)  # Ordinary restores allocate a new collection UUID.
+        if "indexes" in meta:
+            meta["indexes"].sort(key=lambda idx: idx["name"])
+        for block in frames:
+            if block is None or archive_namespace(block) != namespace:
+                return None
+            for frame in frames:
+                if frame is None:
+                    break
+                count += 1
+                total = (total + int.from_bytes(hashlib.sha256(frame).digest(), "big")) % (1 << 256)
+    # Preserve key order in compound index definitions.
+    return count, total, json.dumps(meta, ensure_ascii=False)
+
+
 def restore(p):
     directory = backups_root(create=False) / p["backup_id"]
     if directory.is_symlink():
@@ -558,7 +630,20 @@ def restore(p):
             if p.get("drop"):
                 command.append("--drop")
             event("Đang restore: " + (part.get("database") or meta["database"]))
-            run(command, timeout=7200)
+            try:
+                run(command, timeout=7200)
+            except RuntimeError as exc:
+                namespace = (part.get("database"), part.get("collection"))
+                if p.get("drop") or meta.get("oplog") or not all(namespace) or "Document trùng khóa" not in str(exc):
+                    raise
+                event("Đang đối chiếu document, cấu hình và index tại đích: " + ".".join(namespace))
+                check = Path(tmp) / "check.archive.gz"
+                run(["mongodump", "--config=" + str(cfg), "--gzip", "--archive=" + str(check),
+                     "--db=" + namespace[0], "--collection=" + namespace[1]], timeout=7200)
+                expected = collection_signature(archive, namespace)
+                if expected is None or expected != collection_signature(check, namespace):
+                    raise RuntimeError("Collection đích khác bản backup và có khóa trùng. Chỉ chọn thay thế collection nếu muốn ghi đè dữ liệu đích.") from exc
+                event(f"Đã đối chiếu khớp {expected[0]} document và metadata. Collection đã có đủ dữ liệu.")
     return {"restored": True, "backup_id": p["backup_id"], "message": "mongorestore hoàn tất. Kiểm tra dữ liệu ứng dụng trên cụm đích."}
 
 
@@ -577,7 +662,7 @@ def main(request):
         run(["systemctl", p["operation"], p["service"]], timeout=180)
         return {"state": run(["systemctl", "is-active", p["service"]], check=False), "operation": p["operation"]}
     handlers = {"install": install, "setup": setup, "provision": provision, "prepare_member": prepare_member,
-                "read_keyfile": read_keyfile, "member_network": member_network, "backup": backup, "backups": list_backups, "preview_backup": preview_backup, "restore": restore}
+                "read_keyfile": read_keyfile, "member_network": member_network, "backup": backup, "backups": list_backups, "delete_backup": delete_backup, "preview_backup": preview_backup, "restore": restore}
     if action not in handlers:
         raise RuntimeError("Tác vụ không được hỗ trợ.")
     return handlers[action](p)

@@ -357,6 +357,20 @@ def create_app(data_dir=None):
             raise HTTPException(502, redact(str(exc), machine.get("ssh_password") or "")) from exc
         return with_restore_history(items, machine_id)
 
+    @app.delete("/api/profiles/{record_id}/machines/{machine_id}/backups/{backup_id}")
+    def delete_archive(record_id: str, machine_id: str, backup_id: str):
+        machine = app.state.store.get("machines", machine_id)
+        if machine.get("profile_id") != record_id:
+            raise HTTPException(404, "Máy lưu backup không thuộc cụm đang mở.")
+        if not app.state.lock.acquire(blocking=False):
+            raise HTTPException(409, "Chờ tác vụ đang chạy hoàn tất rồi xóa backup.")
+        try:
+            return host_run(machine, "delete_backup", {"backup_id": backup_id}, lambda _: None)
+        except (RuntimeError, OSError) as exc:
+            raise HTTPException(502, redact(str(exc), machine.get("ssh_password") or "")) from exc
+        finally:
+            app.state.lock.release()
+
     @app.get("/api/profiles/{record_id}/machines/{machine_id}/backups/{backup_id}/preview")
     def view_archive(record_id: str, machine_id: str, backup_id: str, database: str = "", collection: str = "", offset: int = Query(0, ge=0)):
         machine = app.state.store.get("machines", machine_id)

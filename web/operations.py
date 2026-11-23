@@ -256,7 +256,7 @@ def query(profile, section, database="", collection=""):
 
 def host_run(machine, action, params, emit):
     worker = Path(__file__).with_name("host_worker.py").read_text()
-    elevated = action in {"install", "setup", "provision", "prepare_member", "read_keyfile", "service", "backup", "backups", "restore", "preview_backup", "logs"}
+    elevated = action in {"install", "setup", "provision", "prepare_member", "read_keyfile", "service", "backup", "backups", "restore", "preview_backup", "delete_backup", "logs"}
     params = dict(params, service=machine["service"])
     if machine["mode"] == "ssh" and machine.get("ssh_auth") == "password":
         from .ssh_transport import run_password
@@ -505,7 +505,12 @@ def execute(action, p, profile, machine, emit):
             if p["source_endpoint"] not in {m["host"] for m in cfg["members"]}:
                 raise ValueError("Endpoint nguồn không thuộc cụm đang chọn.")
             if p["advertise"] in {m["host"] for m in cfg["members"]}:
-                raise ValueError("Node đích đã thuộc cụm. Không khởi tạo lại.")
+                member = next(m for m in cfg["members"] if m["host"] == p["advertise"])
+                state = states.get(member["_id"], {})
+                if bool(member.get("arbiterOnly")) != bool(p.get("arbiter")) or state.get("state") not in (1, 2, 7) or state.get("health") != 1:
+                    raise ValueError("Member đã có trong cấu hình. Kiểm tra vai trò và trạng thái trước khi xử lý.")
+                emit("Member đã hoạt động trong cụm: " + state["stateStr"] + ". Giữ cấu hình đang dùng.")
+                return dict(reused=True, service=machine["service"], profile_id=profile["id"], mongo_endpoint=p["advertise"])
             check_new_vote(cfg, p)
             if p.get('arbiter') and any(m.get('arbiterOnly') for m in cfg['members']):
                 raise ValueError('Cụm đã có arbiter. Không cài thêm arbiter trước khi xử lý cấu hình hiện có.')
@@ -539,7 +544,7 @@ def execute(action, p, profile, machine, emit):
             emit('Đã đối chiếu keyfile nguồn/đích. Giữ nguyên cấu hình và dữ liệu node đã chuẩn bị.')
         else:
             prepared = host_run(machine, "prepare_member", params, emit)
-        emit("Service node mới đã tạo: " + prepared["service"] + ". Kiểm tra endpoint từ máy quản trị…")
+        emit("Service node đích: " + prepared["service"] + ". Kiểm tra endpoint từ máy quản trị…")
         for attempt in range(30):
             try:
                 with client(dict(profile, username="", password=""), direct=p["advertise"]) as node:

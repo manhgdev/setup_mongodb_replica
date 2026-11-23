@@ -539,3 +539,24 @@ def test_restore_machine_keeps_archive_on_original_host(api):
     assert plan["machine"]["id"] == archive["id"]
     assert plan["destination"]["seeds"] == [endpoint]
     assert "directConnection=true" in uri(plan["destination"])
+
+
+def test_delete_backup_only_on_selected_host(api, tmp_path, monkeypatch):
+    from web import host_worker
+    cluster = profile(api)
+    host = api.post("/api/machines", json={"name":"Archive", "mode":"local", "profile_id":cluster["id"]}).json()
+    keys = ["a"*32, "b"*32]
+    for key in keys:
+        directory = tmp_path / key
+        directory.mkdir()
+        (directory / "manifest.json").write_text(json.dumps({"id":key}))
+    monkeypatch.setattr(host_worker, "backups_root", lambda create=False: tmp_path)
+    monkeypatch.setattr("web.app.host_run", lambda machine, action, params, emit: host_worker.delete_backup(params))
+    path = f'/api/profiles/{cluster["id"]}/machines/{host["id"]}/backups/'
+    with api.app.state.lock:
+        assert api.delete(path+keys[0]).status_code == 409
+    assert api.delete(path+"invalid").status_code == 400
+    assert api.delete(path.replace(cluster["id"], "other")+keys[0]).status_code == 404
+    assert api.delete(path+keys[0]).json() == {"deleted":keys[0]}
+    assert not (tmp_path / keys[0]).exists()
+    assert (tmp_path / keys[1] / "manifest.json").exists()
