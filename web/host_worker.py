@@ -553,22 +553,39 @@ print(JSON.stringify({ready:true,primary:input.advertise}));
     return {**result, "service": service, "config": str(configpath), "data": str(data), "keyfile": str(keyfile)}
 
 
+def verify_other_loopback_listeners(service, listeners):
+    unit = service if service.endswith(".service") else service + ".service"
+    for row in listeners:
+        address = row.split()[3].rsplit(":", 1)[0].strip("[]")
+        pids = re.findall(r"pid=(\d+)", row)
+        if address not in {"127.0.0.1", "::1"} or not pids:
+            raise ValueError("Cổng MongoDB vẫn đang lắng nghe. Kiểm tra tiến trình trước khi xóa.")
+        for pid in pids:
+            groups = (Path("/proc") / pid / "cgroup").read_text().splitlines()
+            units = {part for group in groups for part in group.split("/") if part.endswith(".service")}
+            if unit in units or not units:
+                raise ValueError("Chưa xác minh được tiến trình lắng nghe thuộc dịch vụ khác.")
+
+
 def retire_member(p):
     service = p["service"]
     port = str(int(p["port"]))
     pid = run(["systemctl", "show", "-p", "MainPID", "--value", service])
     listeners = run(["ss", "-Hlnpt", f"sport = :{port}"]).splitlines()
     state = run(["systemctl", "is-active", service], check=False)
-    if pid == "0" and not listeners and state == "inactive":
+    if pid == "0" and state == "inactive":
+        verify_other_loopback_listeners(service, listeners)
         load = run(["systemctl", "show", "-p", "LoadState", "--value", service])
         if load == "not-found":
             return {"service": service, "state": "inactive", "autostart": "not-found"}
     else:
         if not pid.isdigit() or int(pid) < 1 or not p.get("process_id") or not listeners:
             raise ValueError("Chưa xác minh được tiến trình MongoDB thuộc service đã chọn.")
-        if any(f'"mongod",pid={pid},' not in row for row in listeners):
-            raise ValueError("Cổng MongoDB không thuộc đúng service.")
-        address = listeners[0].split()[3].rsplit(":", 1)[0].strip("[]")
+        own = [row for row in listeners if f'"mongod",pid={pid},' in row]
+        if not own:
+            raise ValueError(f"Cổng MongoDB {port} không có tiến trình thuộc {service}. Kiểm tra tên service trong hồ sơ.")
+        verify_other_loopback_listeners(service, [row for row in listeners if row not in own])
+        address = own[0].split()[3].rsplit(":", 1)[0].strip("[]")
         if address in {"0.0.0.0", "*", "::"}:
             address = "::1" if address == "::" else "127.0.0.1"
         local = shell_js("""
@@ -582,9 +599,9 @@ print(JSON.stringify({primary: h.isWritablePrimary, process_id: h.topologyVersio
             raise ValueError("Node đã rời cụm nhưng cổng MongoDB còn kết nối vào.")
     run(["systemctl", "disable", "--now", service], timeout=150)
     if (run(["systemctl", "is-active", service], check=False) != "inactive"
-            or run(["systemctl", "is-enabled", service], check=False) != "disabled"
-            or run(["ss", "-Hlnpt", f"sport = :{port}"])):
+            or run(["systemctl", "is-enabled", service], check=False) != "disabled"):
         raise RuntimeError("Chưa xác minh được service đã dừng và tắt tự khởi động.")
+    verify_other_loopback_listeners(service, run(["ss", "-Hlnpt", f"sport = :{port}"]).splitlines())
     return {"service": service, "state": "inactive", "autostart": "disabled"}
 
 
@@ -594,17 +611,7 @@ def check_service_stopped(p):
         raise ValueError("Dịch vụ MongoDB chưa dừng.")
     if p.get("port"):
         listeners = run(["ss", "-Hlnpt", f"sport = :{int(p['port'])}"]).splitlines()
-        unit = service if service.endswith(".service") else service + ".service"
-        for row in listeners:
-            address = row.split()[3].rsplit(":", 1)[0].strip("[]")
-            pids = re.findall(r"pid=(\d+)", row)
-            if address not in {"127.0.0.1", "::1"} or not pids:
-                raise ValueError("Cổng MongoDB vẫn đang lắng nghe. Kiểm tra tiến trình trước khi xóa.")
-            for pid in pids:
-                groups = (Path("/proc") / pid / "cgroup").read_text().splitlines()
-                units = {part for group in groups for part in group.split("/") if part.endswith(".service")}
-                if unit in units or not units:
-                    raise ValueError("Chưa xác minh được tiến trình lắng nghe thuộc dịch vụ khác.")
+        verify_other_loopback_listeners(service, listeners)
     if p.get("precheck"):
         return {"state": "inactive"}
     autostart = run(["systemctl", "is-enabled", service], check=False)

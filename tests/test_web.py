@@ -753,3 +753,33 @@ def test_delete_stopped_service_allows_other_local_service(monkeypatch, tmp_path
     assert host_worker.check_service_stopped(p)["state"] == "inactive"
     with pytest.raises(ValueError, match="dịch vụ khác"):
         host_worker.check_service_stopped(dict(p, service="mongod"))
+
+
+def test_remove_member_allows_distinct_loopback_listener(monkeypatch, tmp_path):
+    from web import host_worker
+
+    group = tmp_path / "99" / "cgroup"
+    group.parent.mkdir()
+    group.write_text("0::/system.slice/mongod.service\n")
+    monkeypatch.setattr(host_worker, "Path", lambda _: tmp_path)
+    stopped = []
+
+    def run(args, **kwargs):
+        if args[0] == "ss":
+            loopback = 'LISTEN 0 4096 127.0.0.1:27017 0.0.0.0:* users:(("mongod",pid=99,fd=9))'
+            member = 'LISTEN 0 4096 10.0.0.221:27017 0.0.0.0:* users:(("mongod",pid=42,fd=9))'
+            return loopback if stopped else loopback + "\n" + member
+        if args[1] == "disable":
+            stopped.append(args[-1])
+        return {"show": "42", "is-active": "inactive" if stopped else "active", "is-enabled": "disabled"}.get(args[1], "")
+
+    monkeypatch.setattr(host_worker, "run", run)
+
+    def hello(script, params, timeout):
+        assert params["host"] == "10.0.0.221"
+        return {"primary": False, "process_id": "member-id"}
+
+    monkeypatch.setattr(host_worker, "shell_js", hello)
+    params = {"service": "mongod-manager-old", "port": 27017, "process_id": "member-id", "member_present": True}
+    assert host_worker.retire_member(params)["state"] == "inactive"
+    assert stopped == [params["service"]]
