@@ -4,7 +4,7 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#f6f8f7"><title>MongoDB Manager</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='12' fill='%23166045'/%3E%3Cpath d='M20 7C8 18 13 29 20 32C28 27 31 18 20 7Z' fill='%23c9f97e'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/static/styles.css"><script src="/static/app.js" defer></script>
+  <link rel="stylesheet" href="/static/styles.css"><script src="/static/ui-updates.js" defer></script><script src="/static/language.js" defer></script><script src="/static/data-explorer.js" defer></script><script src="/static/backup-explorer.js" defer></script><script src="/static/app.js" defer></script>
 </head>
 <body class="auth-pending">
   <section id="login-root" class="login-screen"><p>Đang kiểm tra phiên đăng nhập…</p></section>
@@ -14,9 +14,10 @@
     <div class="cluster-picker"><span class="cluster-dot"></span><select id="profile-select" aria-label="Chọn cụm"></select><button class="icon-button" data-act="profile-new" title="Thêm cụm" aria-label="Thêm cụm">+</button></div>
     <nav id="navigation" aria-label="Điều hướng"></nav>
     <div class="sidebar-bottom"><div class="local-indicator"><span class="dot green"></span> Máy quản trị cục bộ</div><p>MongoDB Community<br>Ubuntu 22.04 · 24.04 · 26.04</p><button class="text-button" data-act="help">Hướng dẫn kết nối <span>↗</span></button></div>
+    <button type="button" class="icon-button panel-bottom-toggle" data-act="sidebar" aria-controls="sidebar" aria-label="Thu gọn menu">«</button>
   </aside>
   <div class="shell">
-    <header class="topbar"><div class="breadcrumb"><button class="icon-button mobile-menu" data-act="sidebar" aria-label="Mở menu">☰</button><span>Workspace</span><span class="slash">/</span><strong id="breadcrumb">Tổng quan</strong></div><div class="top-actions"><button id="demo-toggle" class="demo-toggle" data-act="demo"></button><span class="top-divider"></span><button id="logout-button" class="text-button" data-act="logout" hidden>Đăng xuất</button><span class="avatar" id="admin-avatar">AD</span></div></header>
+    <header class="topbar"><div class="breadcrumb"><button class="icon-button sidebar-toggle" aria-controls="sidebar" data-act="sidebar" aria-label="Mở menu">☰</button><span>Workspace</span><span class="slash">/</span><strong id="breadcrumb">Tổng quan</strong></div><div class="top-actions"><button id="demo-toggle" class="demo-toggle" data-act="demo"></button><span class="top-divider"></span><button id="logout-button" class="text-button" data-act="logout" hidden>Đăng xuất</button><span class="avatar" id="admin-avatar">AD</span></div></header>
     <div id="demo-banner" class="demo-banner" hidden>Dữ liệu minh họa · Các thao tác trong chế độ xem thử không kết nối hoặc thay đổi máy chủ.<button class="text-button" data-act="demo">Chuyển sang dữ liệu thật →</button></div>
     <main id="content" tabindex="-1"></main>
     <footer>MongoDB Manager <span>Quản lý cụm của bạn, từ một nơi.</span><span id="footer-time"></span></footer>

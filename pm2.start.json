@@ -1,0 +1,15 @@
+{
+  "apps": [
+    {
+      "name": "mongodb-manager",
+      "script": "./start-web.sh",
+      "interpreter": "bash",
+      "exec_mode": "fork",
+      "instances": 1,
+      "autorestart": true,
+      "stop_exit_codes": [0],
+      "restart_delay": 3000,
+      "kill_timeout": 180000
+    }
+  ]
+}

@@ -428,3 +428,114 @@ def test_port_conflict_reports_actionable_error(tmp_path):
     with patch('web.host_worker.Path', side_effect=lambda value: tmp_path / str(value).lstrip('/')), patch('web.host_worker.socket.socket', return_value=sock):
         with pytest.raises(RuntimeError, match='chọn port khác'):
             check_instance_target({'instance': 'fresh', 'port': 27017})
+
+
+def test_installer_uses_latest_complete_stable_package_set():
+    from web.host_worker import install_version
+
+    versions = {"mongodb-org": ["9.0.10", "9.0.11", "9.0.12-rc0", "9.0.4"],
+                "mongodb-org-server": ["9.0.10", "9.0.12-rc0", "9.0.4"]}
+    packages = "\n\n".join(f"Package: {name}\nVersion: {version}"
+                           for name, entries in versions.items() for version in entries)
+    assert install_version(packages, versions, "9.0", "resolute") == "9.0.10"
+
+
+def test_join_resolves_optional_member_address(monkeypatch):
+    from web import operations
+    params = dict(instance="secondary", port=27018, bind_ip="0.0.0.0",
+                  source_machine_id="source", source_endpoint="source.example:27017")
+    machine = {"host": "10.0.0.2", "mongo_endpoint": "mongo.example:27017"}
+    assert operations.validate_params("join_fresh", params, machine)["advertise"] == "mongo.example:27018"
+    machine.pop("mongo_endpoint")
+    monkeypatch.setattr(operations, "host_run", lambda *args: {"ip": "8.8.8.8"})
+    assert operations.validate_params("join_fresh", dict(params, advertise=""), machine)["advertise"] == "8.8.8.8:27018"
+
+
+@pytest.mark.parametrize('action', ['add_member', 'join_fresh'])
+def test_new_member_election_settings(action):
+    params = dict(host='node:27018') if action == 'add_member' else dict(
+        instance='secondary', port=27018, advertise='node:27018', bind_ip='0.0.0.0',
+        source_machine_id='source', source_endpoint='source:27017')
+    for options, expected in [({}, (0, 0)), ({'votes': 1, 'priority': 2.5}, (1, 2.5)), ({'arbiter': True}, (1, 0))]:
+        result = validate_params(action, dict(params, **options))
+        assert (result['votes'], result['priority']) == expected
+    for options in [{'votes': 2}, {'votes': 0, 'priority': 1}, {'arbiter': True, 'priority': 1}]:
+        with pytest.raises(ValueError):
+            validate_params(action, dict(params, **options))
+
+
+def test_transfer_plan_binds_archive_host_and_destination(api):
+    src = profile(api)
+    dst = api.post("/api/profiles", json={"name": "Recovery", "seeds": ["backup.test:27017"]}).json()
+    host = api.post("/api/machines", json={"name": "Archive host", "mode": "local", "profile_id": src["id"]}).json()
+    body = {"action": "sync_backup", "profile_id": src["id"], "machine_id": host["id"],
+            "params": {"destination_id": dst["id"], "databases": ["one", "two"], "drop": True}}
+    plan = api.post("/api/plans", json=body)
+    assert plan.status_code == 200 and "Recovery" in plan.json()["target"]
+    body["params"]["destination_id"] = src["id"]
+    assert api.post("/api/plans", json=body).status_code == 400
+    body["action"] = "restore"
+    body["params"] = {"destination_id": dst["id"], "backup_id": "a"*32}
+    plan = api.post("/api/plans", json=body).json()
+    with patch("web.app.execute", return_value={"restored": True}) as execute:
+        job = api.post("/api/jobs", json={"plan_id": plan["id"], "confirmation": plan["confirmation"]}).json()
+        for _ in range(100):
+            if api.get("/api/jobs/"+job["id"]).json()["status"] == "succeeded":
+                break
+            time.sleep(.01)
+        assert execute.call_args.args[2]["id"] == dst["id"]
+        assert execute.call_args.args[3]["id"] == host["id"]
+
+
+def test_backup_schedule_lifecycle(api):
+    from datetime import datetime, timedelta, timezone
+
+    profile_id = profile(api)["id"]
+    host = api.post("/api/machines", json={"name": "Local", "mode": "local", "profile_id": profile_id}).json()
+    path = f"/api/profiles/{profile_id}/backup-schedule"
+    params = {"databases": ["orders"], "collections": ["invoices"]}
+    body = {"cron": "0 2 * * *", "params": params, "machine_id": host["id"]}
+    assert api.put(path, json=dict(body, cron="bad")).status_code == 400
+    assert api.put(path, json=dict(body, machine_id=machine(api)["id"])).status_code == 400
+    saved = api.put(path, json=body).json()
+    due = datetime.fromisoformat(saved["next_run"])
+    assert due.hour == 19 and due.minute == 0  # 02:00 Vietnam is 19:00 UTC.
+    scheduler = api.app.state.scheduler
+    current = due + timedelta(days=2)
+    with patch("web.app.execute", return_value={"id": "test-archive"}) as execute:
+        with api.app.state.lock:
+            scheduler.tick(current)
+        assert not api.app.state.store.all("jobs")
+        scheduler.tick(current)
+        for _ in range(100):
+            jobs = api.app.state.store.all("jobs")
+            if jobs and jobs[0]["status"] == "succeeded":
+                break
+            time.sleep(0.01)
+        assert len(jobs) == 1 and jobs[0]["scheduled"] and jobs[0]["status"] == "succeeded"
+        assert execute.call_args.args[:2] == ("backup", params)
+        scheduler.tick(current)
+        assert execute.call_count == 1
+        fresh = api.get("/api/state").json()["backup_schedules"][0]
+        assert datetime.fromisoformat(fresh["next_run"]) > current
+        assert api.post(path+"/pause").json()["next_run"] is None
+        scheduler.tick(datetime.now(timezone.utc)+timedelta(days=90))
+        assert execute.call_count == 1
+    assert api.put(path, json=body).json()["enabled"]
+
+
+def test_restore_machine_keeps_archive_on_original_host(api):
+    from web.operations import uri
+
+    cluster = profile(api)
+    archive = machine(api)
+    endpoint = "127.0.0.1:37027"
+    receiver = api.post("/api/machines", json={"name": "Receiver", "mode": "local",
+                        "profile_id": cluster["id"], "mongo_endpoint": endpoint}).json()
+    response = api.post("/api/plans", json={"action": "restore", "profile_id": cluster["id"],
+                        "machine_id": archive["id"], "params": {"backup_id": "a"*32, "destination_machine_id": receiver["id"]}})
+    response.raise_for_status()
+    plan = api.app.state.plans[response.json()["id"]]
+    assert plan["machine"]["id"] == archive["id"]
+    assert plan["destination"]["seeds"] == [endpoint]
+    assert "directConnection=true" in uri(plan["destination"])

@@ -5,3 +5,4 @@ cryptography>=44,<48
 paramiko>=3.5,<5
 pytest>=8,<10
 httpx>=0.28,<1
+croniter>=6,<7

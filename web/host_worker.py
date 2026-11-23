@@ -4,6 +4,7 @@ Never execute the legacy interactive scripts from a web request.
 """
 import base64
 import datetime
+import gzip
 import hashlib
 import json
 import os
@@ -28,6 +29,17 @@ def run(args, timeout=60, check=True):
     result = subprocess.run(args, capture_output=True, text=True, timeout=timeout,
                             env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"})
     if check and result.returncode:
+        if args[0] in {"mongodump", "mongorestore"}:
+            message = result.stderr.lower()
+            for marker, explanation in [
+                ("duplicate key", "Document trùng khóa ở đích. Chọn đích trống hoặc xác nhận thay thế collection."),
+                ("authentication failed", "Xác thực thất bại. Kiểm tra tài khoản, mật khẩu và auth database."),
+                ("unauthorized", "Tài khoản thiếu quyền hoặc phiên xác thực đã thay đổi. Kiểm tra quyền backup/restore và replay oplog."),
+                ("no space left", "Máy thực thi hoặc cụm đích hết dung lượng."),
+                ("server selection", "Máy thực thi không kết nối được cụm. Kiểm tra seed, DNS, TLS và firewall."),
+            ]:
+                if marker in message:
+                    raise RuntimeError(f"{args[0]}: {explanation}")
         # Commands may contain secrets. Never print argv or tool stderr blindly.
         raise RuntimeError(f"{Path(args[0]).name} thất bại (exit {result.returncode}). Kiểm tra journal/log trên máy đích.")
     return result.stdout.strip()
@@ -84,20 +96,11 @@ def install(p):
     event("Kiểm tra package chính thức và phiên bản tương thích…")
     with urllib.request.urlopen(base, timeout=30) as response:
         packages = gzip.decompress(response.read()).decode()
-    candidates = package_versions(packages, "mongodb-org")
-    if not candidates:
-        raise RuntimeError("Repository không có package mongodb-org cho tổ hợp đã chọn.")
-    def ver(v):
-        return tuple(int(n) for n in re.findall(r"\d+", v))
-    version = max(candidates, key=ver)
     names = ["mongodb-org", "mongodb-org-database", "mongodb-org-server", "mongodb-org-shell", "mongodb-org-mongos", "mongodb-org-tools", "mongodb-org-database-tools-extra"]
-    if any(version not in package_versions(packages, name) for name in names):
-        raise RuntimeError("Repository thiếu package đồng bộ cho phiên bản đã chọn.")
-    if codename == "resolute" and ver(version) < (9, 0, 4):
-        raise RuntimeError("Ubuntu 26.04 yêu cầu MongoDB >= 9.0.4.")
+    version = install_version(packages, names, series, codename)
     event(f"Cài MongoDB {version} cho Ubuntu {codename} / {arch}.")
     run(["apt-get", "update"], timeout=600)
-    run(["apt-get", "install", "-y", "gnupg", "ca-certificates"], timeout=600)
+    run(["apt-get", "-o", "DPkg::Lock::Timeout=120", "install", "-y", "gnupg", "ca-certificates"], timeout=600)
     key_version = "9" if series == "9.0" else "8.0"
     with urllib.request.urlopen(f"https://pgp.mongodb.com/server-{key_version}.asc", timeout=30) as response:
         key_data = response.read()
@@ -106,11 +109,22 @@ def install(p):
         asc.write_bytes(key_data)
         keypath = f"/usr/share/keyrings/mongodb-server-{series}.gpg"
         run(["gpg", "--batch", "--yes", "--dearmor", "--output", keypath, str(asc)])
+    Path(keypath).chmod(0o644)
     repo = Path(f"/etc/apt/sources.list.d/mongodb-org-{series}.list")
     repo.write_text(f"deb [arch={arch} signed-by={keypath}] https://repo.mongodb.org/apt/ubuntu {codename}/mongodb-org/{series} multiverse\n")
     run(["apt-get", "update"], timeout=600)
-    run(["apt-get", "install", "-y", *[f"{n}={version}" for n in names], "mongodb-mongosh", "mongodb-database-tools"], timeout=1200)
+    run(["apt-get", "-o", "DPkg::Lock::Timeout=120", "install", "-y", *[f"{n}={version}" for n in names], "mongodb-mongosh", "mongodb-database-tools"], timeout=1200)
     return {"version": version, "message": "Đã cài package. Tiếp tục wizard tạo replica set."}
+
+
+def install_version(packages, names, series, codename):
+    common = set.intersection(*(set(package_versions(packages, name)) for name in names))
+    stable = [v for v in common if re.fullmatch(re.escape(series) + r"\.\d+", v)]
+    if codename == "resolute":
+        stable = [v for v in stable if int(v.split(".")[-1]) >= 4]
+    if not stable:
+        raise RuntimeError(f"Repository chưa có đủ bộ package MongoDB {series} tương thích với Ubuntu {codename}.")
+    return max(stable, key=lambda v: int(v.split(".")[-1]))
 
 
 def package_versions(packages, name):
@@ -168,13 +182,19 @@ def setup(p, bootstrap=True):
     check_instance_target(p)
     import pwd
     account = pwd.getpwnam("mongodb")
-    root.mkdir(parents=True, mode=0o750)
-    data.mkdir(parents=True, mode=0o750)
     logdir = Path("/var/log/mongodb-manager") / instance
-    logdir.mkdir(parents=True, mode=0o750)
     for directory in (root, data, logdir):
+        try:
+            directory.parent.mkdir(mode=0o711)
+        except FileExistsError:
+            pass
+        else:
+            directory.parent.chmod(0o711)
+        directory.mkdir(mode=0o750)
+
         os.chown(directory, account.pw_uid, account.pw_gid)
     keyfile = root / "keyfile"
+    keyfile.touch(mode=0o600, exist_ok=False)
     keyfile.write_text(base64.b64decode(p["keyfile_b64"]).decode() if not bootstrap else base64.b64encode(secrets.token_bytes(512)).decode())
     keyfile.chmod(0o400)
     os.chown(keyfile, account.pw_uid, account.pw_gid)
@@ -185,6 +205,8 @@ def setup(p, bootstrap=True):
     config["setParameter"] = {"disableSplitHorizonIPCheck": True}
     configpath = root / "mongod.conf"
     configpath.write_text(json.dumps(config, indent=2))
+    os.chown(configpath, account.pw_uid, account.pw_gid)
+    configpath.chmod(0o600)
     unit = Path(f"/etc/systemd/system/{service}.service")
     unit.write_text(f"[Unit]\nDescription=MongoDB Manager {instance}\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nUser=mongodb\nGroup=mongodb\nExecStart=/usr/bin/mongod --config {configpath}\nRestart=on-failure\nLimitNOFILE=64000\nTimeoutStopSec=120\n\n[Install]\nWantedBy=multi-user.target\n")
     event("Đã tạo cấu hình và service riêng. Khởi động với keyfile và auth…")
@@ -272,11 +294,12 @@ def member_network(p):
     return {'reachable': True, 'checked': len(p['endpoints'])}
 
 
-def backups_root():
+def backups_root(create=True):
     root = Path("/var/backups/mongodb-manager")
     if root.is_symlink():
         raise RuntimeError("Thư mục backup không được là symlink.")
-    root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    if create:
+        root.mkdir(parents=True, mode=0o700, exist_ok=True)
     return root
 
 
@@ -293,34 +316,190 @@ def backup(p):
     key = secrets.token_hex(16)
     directory = root / key
     directory.mkdir(mode=0o700)
-    filename = directory / "backup.archive.gz.partial"
-    opts = p["connection"]
-    command = ["mongodump", "--archive=" + str(filename), "--gzip"]
-    if p.get("database"):
-        command += ["--db", p["database"]]
-        if p.get("collection"):
-            command += ["--collection", p["collection"]]
-    else:
-        command.append("--oplog")
-    event("Đang dump dữ liệu. Giữ phiên bản/FCV và cấu trúc dữ liệu ổn định trong thời gian backup.")
-    with tempfile.TemporaryDirectory() as tmp:
-        cfg = Path(tmp) / "tools.json"
-        cfg.write_text(json.dumps(opts))
-        cfg.chmod(0o600)
-        run([*command, "--config=" + str(cfg)], timeout=7200)
-    target = filename.with_suffix("")
-    filename.rename(target)
-    digest = checksum(target)
-    meta = {"id": key, "time": datetime.datetime.now(datetime.timezone.utc).isoformat(), "database": p.get("database") or "Tất cả",
-            "collection": p.get("collection", ""), "oplog": not bool(p.get("database")), "sha256": digest,
-            "size": target.stat().st_size, "path": str(target), "source": p.get("source", ""), "verified_restore": False,
-            "compatibility": p["compatibility"], "tools_version": run(["mongodump", "--version"])}
-    (directory / "manifest.json").write_text(json.dumps(meta, indent=2))
-    return meta
+    databases = p.get("databases") or ([p["database"]] if p.get("database") else [])
+    oplog = not databases and p.get("replica", True)
+    archives = []
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "tools.json"
+            cfg.write_text(json.dumps(p["connection"]))
+            cfg.chmod(0o600)
+            collections = p.get("collections") or ([p["collection"]] if p.get("collection") else [None])
+            scopes = [(db, col) for db in databases or [None] for col in collections]
+            for index, (database, collection) in enumerate(scopes):
+                name = f"part-{index}.archive.gz"
+                archive = directory / name
+                output = "--out=" + str(directory / "dump") if oplog else "--archive=" + str(archive)
+                cmd = ["mongodump", output, "--gzip", "--config=" + str(cfg)]
+                if database:
+                    cmd += ["--db", database]
+                    if collection:
+                        cmd.append("--collection=" + collection)
+                elif oplog:
+                    cmd.append("--oplog")
+                event("Đang backup: " + (database or "toàn cụm") + ("." + collection if collection else ""))
+                run(cmd, timeout=7200)
+                if oplog:
+                    file = directory / "dump" / "oplog.bson"
+                    if not file.exists():
+                        file = file.with_suffix(".bson.gz")
+                    oplog_file = directory / "oplog.bson"
+                    with file.open("rb") as stream:
+                        compressed = stream.read(2) == b"\x1f\x8b"
+                    if compressed:
+                        with gzip.open(file, "rb") as src, oplog_file.open("wb") as dest:
+                            shutil.copyfileobj(src, dest)
+                        file.unlink()
+                    else:
+                        file.rename(oplog_file)
+                    continue
+                archives.append({"file": name, "database": database, "collection": collection, "sha256": checksum(archive), "size": archive.stat().st_size})
+        meta = {"id": key, "time": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "application_only": p.get("application_only", False), "databases": databases, "database": ", ".join(databases) or "Tất cả", "archives": archives,
+                "collections": p.get("collections", []), "collection": p.get("collection", ""), "oplog": oplog, "size": sum(a["size"] for a in archives),
+                "source": p["source"], "source_id": p.get("source_id"), "verified_restore": False, "compatibility": p["compatibility"],
+                "tools_version": run(["mongodump", "--version"])}
+        if oplog:
+            files = [f for f in (directory / "dump").rglob("*") if f.is_file()] + [oplog_file]
+            meta["files"] = {str(f.relative_to(directory)): checksum(f) for f in files}
+            meta["size"] = sum(f.stat().st_size for f in files)
+        pending = directory / "manifest.tmp"
+        pending.write_text(json.dumps(meta, indent=2))
+        pending.replace(directory / "manifest.json")
+        return meta
+    except Exception:
+        shutil.rmtree(directory)
+        raise
 
 
 def list_backups(p):
-    return sorted([json.loads(f.read_text()) for f in backups_root().glob("*/manifest.json") if not f.is_symlink()], key=lambda b: b["time"], reverse=True)
+    return sorted([json.loads(f.read_text()) for f in backups_root(create=False).glob("*/manifest.json") if not f.is_symlink()], key=lambda b: b["time"], reverse=True)
+
+
+def bson_frames(stream, archive=False):
+    while True:
+        prefix = stream.read(4)
+        if not prefix:
+            return
+        if archive and prefix == b"\xff" * 4:
+            yield None
+            continue
+        size = int.from_bytes(prefix, "little")
+        if len(prefix) != 4 or not 5 <= size <= 32 * 1024 * 1024:
+            raise ValueError("Kích thước BSON trong backup không hợp lệ.")
+        body = stream.read(size - 4)
+        if len(body) != size - 4 or body[-1:] != b"\x00":
+            raise ValueError("Dữ liệu BSON trong backup bị thiếu.")
+        yield prefix + body
+
+
+def archive_namespace(frame):
+    # Both MongoDB archive metadata and block headers begin with these BSON strings.
+    pos = 4
+    names = []
+    for field in (b"db", b"collection"):
+        tag = b"\x02" + field + b"\x00"
+        if not frame.startswith(tag, pos):
+            raise ValueError("Định dạng header archive chưa được hỗ trợ.")
+        pos += len(tag)
+        size = int.from_bytes(frame[pos:pos+4], "little")
+        pos += 4
+        if not size or pos + size > len(frame) or frame[pos+size-1] != 0:
+            raise ValueError("Tên namespace trong archive không hợp lệ.")
+        names.append(frame[pos:pos+size-1].decode())
+        pos += size
+    return tuple(names)
+
+
+def preview_backup(p):
+    key = p["backup_id"]
+    if not re.fullmatch(r"[a-f0-9]{32}", key):
+        raise ValueError("ID backup không hợp lệ.")
+    directory = backups_root(create=False) / key
+
+    def checked(name):
+        path = directory / name
+        if (Path(name).is_absolute() or ".." in Path(name).parts or directory.is_symlink()
+                or path.resolve() != directory.resolve() / name or not path.is_file()):
+            raise ValueError("File backup không hợp lệ.")
+        return path
+
+    meta = json.loads(checked("manifest.json").read_text())
+    selected = (p.get("database"), p.get("collection"))
+    listing = not any(selected)
+    namespaces = set()
+    records = []
+    skip = p.get("offset", 0)
+    total = 0
+
+    def visible(ns):
+        return ns[0] not in {"local", "config"} and not ns[1].startswith("system.") and all(ns)
+
+    def accept(frame):
+        nonlocal skip, total
+        if skip:
+            skip -= 1
+        elif len(records) >= 25 or (records and total + len(frame) > 2_000_000):
+            return False
+        else:
+            records.append(base64.b64encode(frame).decode())
+            total += len(frame)
+        return True
+
+    more = False
+    if "files" in meta:
+        for name in meta["files"]:
+            rel = Path(name)
+            if len(rel.parts) != 3 or rel.parts[0] != "dump" or not name.endswith(".bson.gz"):
+                continue
+            coll = rel.name[:-len(".bson.gz")]
+            metadata = str(rel.with_name(coll + ".metadata.json.gz"))
+            if metadata in meta["files"]:
+                with gzip.open(checked(metadata), "rt") as stream:
+                    coll = json.load(stream).get("collectionName", coll)
+            ns = (rel.parts[1], coll)
+            if not visible(ns):
+                continue
+            namespaces.add(ns)
+            if ns == selected:
+                with gzip.open(checked(name), "rb") as stream:
+                    more = not all(accept(frame) for frame in bson_frames(stream))
+                break
+    else:
+        for part in meta.get("archives") or [{"file":"backup.archive.gz"}]:
+            if not re.fullmatch(r"(backup|part-[0-9]+)\.archive\.gz", part["file"]):
+                raise ValueError("Tên archive không hợp lệ.")
+            with gzip.open(checked(part["file"]), "rb") as stream:
+                if stream.read(4) != bytes.fromhex("6de29981"):
+                    raise ValueError("File không phải MongoDB archive.")
+                frames = bson_frames(stream, archive=True)
+                next(frames)  # archive version header
+                members = set()
+                for frame in frames:
+                    if frame is None:
+                        break
+                    ns = archive_namespace(frame)
+                    if visible(ns):
+                        members.add(ns)
+                namespaces.update(members)
+                if listing or selected not in members:
+                    continue
+                for header in frames:
+                    if header is None:
+                        raise ValueError("Thiếu header của khối BSON.")
+                    ns = archive_namespace(header)
+                    for frame in frames:
+                        if frame is None:
+                            break
+                        if ns == selected and not accept(frame):
+                            more = True
+                            break
+                    if more:
+                        break
+                break
+    if not listing and selected not in namespaces:
+        raise ValueError("Collection không có trong bản backup.")
+    return {"namespaces": sorted(namespaces) if listing else [], "records": records, "more": more}
 
 
 def check_restore_compatibility(source, target):
@@ -329,34 +508,67 @@ def check_restore_compatibility(source, target):
 
 
 def restore(p):
-    directory = backups_root() / p["backup_id"]
+    directory = backups_root(create=False) / p["backup_id"]
     if directory.is_symlink():
         raise RuntimeError("Đường dẫn backup không hợp lệ.")
-    meta = json.loads((directory / "manifest.json").read_text())
+    manifest = directory / "manifest.json"
+    if not manifest.is_file():
+        raise ValueError("Không tìm thấy manifest của bản backup trên máy lưu đã chọn. Làm mới danh sách trên máy đã tạo backup rồi nhấn Restore ở đúng dòng.")
+    meta = json.loads(manifest.read_text())
     check_restore_compatibility(meta.get("compatibility"), p["compatibility"])
-    archive = directory / "backup.archive.gz"
-    if archive.is_symlink():
-        raise RuntimeError("Đường dẫn archive không hợp lệ.")
-    digest = checksum(archive)
-    if digest != meta["sha256"]:
-        raise RuntimeError("Checksum backup không khớp.")
-    command = ["mongorestore", "--archive=" + str(archive), "--gzip", "--stopOnError"]
-    if meta["oplog"]:
-        command.append("--oplogReplay")
-    if p.get("drop"):
-        command.append("--drop")
+    if "files" in meta:
+        dump = directory / "dump"
+        oplog = directory / "oplog.bson"
+        files = list(dump.rglob("*")) + [oplog]
+        if dump.is_symlink() or any(f.is_symlink() for f in files):
+            raise RuntimeError("Đường dẫn bản backup không hợp lệ.")
+        actual = {str(f.relative_to(directory)): checksum(f) for f in files if f.is_file()}
+        if not oplog.is_file() or actual != meta["files"]:
+            raise RuntimeError("Checksum backup không khớp.")
+        parts = []
+    else:
+        parts = meta.get("archives") or [{"file": "backup.archive.gz", "sha256": meta["sha256"]}]
+    archives = []
+    for part in parts:
+        name = part["file"]
+        if not re.fullmatch(r"(?:backup|part-[0-9]+)\.archive\.gz", name):
+            raise RuntimeError("Tên archive không hợp lệ.")
+        archive = directory / name
+        if archive.is_symlink() or checksum(archive) != part["sha256"]:
+            raise RuntimeError("Checksum backup không khớp.")
+        archives.append(archive)
     with tempfile.TemporaryDirectory() as tmp:
         cfg = Path(tmp) / "tools.json"
         cfg.write_text(json.dumps(p["connection"]))
         cfg.chmod(0o600)
-        event("Checksum hợp lệ. Đang restore vào cụm đích đã chọn…")
-        run([*command, "--config=" + str(cfg)], timeout=7200)
+        if "files" in meta:
+            base = ["mongorestore", "--gzip", "--stopOnError", "--config=" + str(cfg)]
+            event("Đang restore dữ liệu và tài khoản từ bản toàn cụm.")
+            run(base + (["--drop", "--preserveUUID"] if p.get("drop") else []) + [str(dump)], timeout=7200)
+            # Restoring admin can invalidate the authenticated session; replay with a new connection.
+            empty = Path(tmp) / "replay"
+            empty.mkdir()
+            event("Đang kết nối lại để replay oplog trên cụm đích.")
+            replay = ["mongorestore", "--stopOnError", "--config=" + str(cfg), "--oplogReplay", "--oplogFile=" + str(oplog)]
+            run(replay + [str(empty)], timeout=7200)
+        for part, archive in zip(parts, archives):
+            command = ["mongorestore", "--archive=" + str(archive), "--gzip", "--stopOnError", "--config=" + str(cfg)]
+            if meta["oplog"]:
+                command.append("--oplogReplay")
+            if p.get("drop"):
+                command.append("--drop")
+            event("Đang restore: " + (part.get("database") or meta["database"]))
+            run(command, timeout=7200)
     return {"restored": True, "backup_id": p["backup_id"], "message": "mongorestore hoàn tất. Kiểm tra dữ liệu ứng dụng trên cụm đích."}
 
 
 def main(request):
     p = request["params"]
     action = request["action"]
+    if action == "public_address":
+        direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with direct.open("https://api.ipify.org", timeout=8) as response:
+            return {"ip": response.read(64).decode("ascii").strip()}
     if action == "preflight":
         return preflight(p)
     if action == "logs":
@@ -365,7 +577,7 @@ def main(request):
         run(["systemctl", p["operation"], p["service"]], timeout=180)
         return {"state": run(["systemctl", "is-active", p["service"]], check=False), "operation": p["operation"]}
     handlers = {"install": install, "setup": setup, "provision": provision, "prepare_member": prepare_member,
-                "read_keyfile": read_keyfile, "member_network": member_network, "backup": backup, "backups": list_backups, "restore": restore}
+                "read_keyfile": read_keyfile, "member_network": member_network, "backup": backup, "backups": list_backups, "preview_backup": preview_backup, "restore": restore}
     if action not in handlers:
         raise RuntimeError("Tác vụ không được hỗ trợ.")
     return handlers[action](p)

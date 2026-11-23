@@ -1,3 +1,4 @@
+import base64
 import copy
 import hmac
 import json
@@ -13,17 +14,19 @@ from urllib.parse import urlparse
 from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
-from fastapi import FastAPI, HTTPException, Request
+from bson import BSON, json_util
+from fastapi import Query, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pymongo.errors import PyMongoError
 
-from .models import Action, Apply, Machine, Profile, ProfileProbe, ProfileAdopt, AttachedMachine
+from .models import Action, Apply, Machine, Profile, ProfileProbe, ProfileAdopt, AttachedMachine, DocumentPage, DocumentWrite
 from .operations import (HOST_ACTIONS, LABELS, PROFILE_ACTIONS, READ_ACTIONS, execute,
-                         discover, mongo_error, query, redact, snapshot, validate_params)
+                         client, discover, host_run, mongo_error, read_documents, write_document, query, redact, snapshot, validate_params)
 from .store import Store
 from .auth import Auth, SESSION_AGE
+from .backup_schedule import BackupScheduler, KIND as SCHEDULES, ScheduleInput
 
 ROOT = Path(__file__).resolve().parent
 
@@ -46,8 +49,15 @@ def create_app(data_dir=None):
             if job["status"] in {"queued", "running"}:
                 job.update(status="interrupted", finished_at=now(), error="Ứng dụng đã dừng giữa tác vụ. Kiểm tra máy đích trước khi chạy lại.")
                 app.state.store.save("jobs", job, job["id"])
-        yield
-        app.state.pool.shutdown(wait=True)
+        scheduler = BackupScheduler(app.state.store, app.state.lock, dispatch_scheduled)
+        app.state.scheduler = scheduler
+        scheduler.thread.start()
+        try:
+            yield
+        finally:
+            scheduler.stop.set()
+            scheduler.thread.join()
+            app.state.pool.shutdown(wait=True)
 
     app = FastAPI(title="MongoDB Manager", lifespan=lifespan, docs_url=None, redoc_url=None)
 
@@ -143,6 +153,44 @@ def create_app(data_dir=None):
     async def mongo_failed(request, exc):
         return JSONResponse({"detail": mongo_error(exc)}, status_code=502)
 
+    @app.post("/api/{kind}/{record_id}/reveal-password")
+    def reveal_password(kind: str, record_id: str, request: Request):
+        if not request.state.session:
+            raise HTTPException(403, "Cần đăng nhập quản trị để xem mật khẩu đã lưu.")
+        fields = {"profiles": "password", "machines": "ssh_password"}
+        if kind not in fields:
+            raise HTTPException(404)
+        record = app.state.store.get(kind, record_id)
+        return {"password": record.get(fields[kind]) or ""}
+
+    def user_key(database, username):
+        return json.dumps([database, username], ensure_ascii=False)
+
+    @app.post("/api/profiles/{record_id}/user-password")
+    def reveal_user_password(record_id: str, database: str, username: str, request: Request):
+        if not request.state.session:
+            raise HTTPException(403, "Cần đăng nhập quản trị để xem mật khẩu đã lưu.")
+        store = app.state.store
+        profile = store.get("profiles", record_id)
+        if (username, database) == (profile["username"], profile["auth_db"]) and profile.get("password"):
+            return {"password": profile["password"]}
+        return {"password": store.get("user-passwords:" + record_id, user_key(database, username))["password"]}
+
+    @app.put("/api/profiles/{record_id}/user-password")
+    def remember_user_password(record_id: str, database: str, username: str, body: Login, request: Request):
+        if not request.state.session:
+            raise HTTPException(403, "Cần đăng nhập quản trị để lưu mật khẩu.")
+        if not username or username != body.username or not body.password:
+            raise ValueError("Nhập đúng tài khoản và mật khẩu.")
+        store = app.state.store
+        profile = store.get("profiles", record_id)
+        with client(dict(profile, username=username, auth_db=database, password=body.password)) as connection:
+            connection.admin.command("ping")
+        store.save("user-passwords:" + record_id, {"password": body.password}, user_key(database, username))
+        if (username, database) == (profile["username"], profile["auth_db"]):
+            store.update_fields("profiles", record_id, {"password": body.password}, expected={"username": username, "auth_db": database})
+        return {"saved": True}
+
     def public_profile(value):
         value = dict(value)
         value["has_password"] = bool(value.pop("password", None))
@@ -158,7 +206,16 @@ def create_app(data_dir=None):
     def state():
         store = app.state.store
         return {"profiles": [public_profile(v) for v in store.all("profiles")], "machines": [public_machine(v) for v in store.all("machines")],
-                "jobs": list(reversed(store.all("jobs")))[0:100], "local_only": not bool(app.state.auth.origin)}
+                "jobs": list(reversed(store.all("jobs")))[0:100], "backup_schedules": store.all(SCHEDULES),
+                "local_only": not bool(app.state.auth.origin)}
+
+    @app.put("/api/profiles/{record_id}/backup-schedule")
+    def save_schedule(record_id: str, body: ScheduleInput):
+        return app.state.scheduler.save(record_id, body)
+
+    @app.post("/api/profiles/{record_id}/backup-schedule/pause")
+    def pause_schedule(record_id: str):
+        return app.state.scheduler.pause(record_id)
 
     def save_profile(body, record_id=None):
         value = body.model_dump()
@@ -277,15 +334,70 @@ def create_app(data_dir=None):
             app.state.store.update_fields('profiles', profile['id'], {'seeds': seeds},
                                           expected={'seeds': profile['seeds'], 'replica_set': profile['replica_set']})
 
+    def with_restore_history(items, machine_id):
+        history = {}
+        for job in app.state.store.all("jobs"):
+            if job.get("machine_id") != machine_id or job.get("action") not in {"restore", "sync_backup"} or job.get("status") != "succeeded":
+                continue
+            result = job.get("result") or {}
+            if result.get("restored") and result.get("backup_id"):
+                target = result.get("destination_name") or job["target"].rsplit(" → ", 1)[-1]
+                counts = history.setdefault(result["backup_id"], {})
+                counts[target] = counts.get(target, 0) + 1
+        return [dict(item, machine_id=machine_id, restore_counts=history.get(item["id"], {})) for item in items]
+
+    @app.get("/api/profiles/{record_id}/machines/{machine_id}/backups")
+    def backup_catalog(record_id: str, machine_id: str):
+        machine = app.state.store.get("machines", machine_id)
+        if machine.get("profile_id") != record_id:
+            raise HTTPException(404, "Máy lưu backup không thuộc cụm đang mở.")
+        try:
+            items = execute("backups", {}, None, machine, lambda _: None)
+        except (RuntimeError, OSError) as exc:
+            raise HTTPException(502, redact(str(exc), machine.get("ssh_password") or "")) from exc
+        return with_restore_history(items, machine_id)
+
+    @app.get("/api/profiles/{record_id}/machines/{machine_id}/backups/{backup_id}/preview")
+    def view_archive(record_id: str, machine_id: str, backup_id: str, database: str = "", collection: str = "", offset: int = Query(0, ge=0)):
+        machine = app.state.store.get("machines", machine_id)
+        if machine.get("profile_id") != record_id:
+            raise HTTPException(404, "Máy lưu backup không thuộc cụm đang mở.")
+        try:
+            result = host_run(machine, "preview_backup", dict(backup_id=backup_id, database=database, collection=collection, offset=offset), lambda _: None)
+        except (RuntimeError, OSError) as exc:
+            raise HTTPException(502, redact(str(exc), machine.get("ssh_password") or "")) from exc
+        result["records"] = [json.loads(json_util.dumps(BSON(base64.b64decode(raw)).decode(), json_options=json_util.CANONICAL_JSON_OPTIONS)) for raw in result["records"]]
+        return result
+
     @app.get("/api/profiles/{record_id}/query/{section}")
-    def read_section(record_id: str, section: str, database: str = ""):
+    def read_section(record_id: str, section: str, database: str = "", collection: str = ""):
+        if section == "users":
+            store = app.state.store
+            profile = store.get("profiles", record_id)
+            saved = {record["id"] for record in store.all("user-passwords:" + record_id)}
+            rows = query(profile, section)
+            for row in rows:
+                connected = (row["user"], row["db"]) == (profile["username"], profile["auth_db"])
+                row["has_password"] = user_key(row["db"], row["user"]) in saved or bool(connected and profile.get("password"))
+            return rows
+        if section == "indexes":
+            if not database or not collection:
+                raise ValueError("Chọn database và collection.")
+            return query(app.state.store.get("profiles", record_id), section, database, collection)
         return query(app.state.store.get("profiles", record_id), section, database)
+
+    @app.post("/api/profiles/{record_id}/documents")
+    def documents(record_id: str, body: DocumentPage):
+        return read_documents(app.state.store.get("profiles", record_id), body)
+
+    @app.post("/api/profiles/{record_id}/documents/write")
+    def change_document(record_id: str, body: DocumentWrite):
+        return write_document(app.state.store.get("profiles", record_id), body)
 
     @app.post("/api/plans")
     def preview(body: Action):
         if body.action not in LABELS:
             raise ValueError("Tác vụ chưa được hỗ trợ.")
-        params = validate_params(body.action, body.params)
         store = app.state.store
         profile = store.get("profiles", body.profile_id) if body.profile_id else None
         machine = store.get("machines", body.machine_id) if body.machine_id else None
@@ -293,12 +405,33 @@ def create_app(data_dir=None):
             raise ValueError("Hãy chọn hồ sơ MongoDB.")
         if body.action in HOST_ACTIONS and not machine:
             raise ValueError("Hãy chọn máy thực thi.")
+        if machine and profile and machine.get("profile_id") and machine["profile_id"] != profile["id"]:
+            raise ValueError("VPS đã chọn thuộc workspace khác.")
+        params = validate_params(body.action, body.params, machine)
         target = machine["name"] if body.action in HOST_ACTIONS else profile["name"]
         if body.action in {"backup", "restore", "join_fresh"}:
             target += " → " + profile["name"]
+        destination = None
+        if body.action in {"sync_backup", "restore"} and params.get("destination_id"):
+            destination = store.get("profiles", params["destination_id"])
+            if body.action == "sync_backup" and destination["id"] == profile["id"]:
+                raise ValueError("Chọn cụm đích khác cụm nguồn.")
+            target = f'{machine["name"]} · {profile["name"]} → {destination["name"]}'
+        if body.action == "restore" and params.get("destination_machine_id"):
+            if destination:
+                raise ValueError("Chọn một đích restore.")
+            receiver = store.get("machines", params["destination_machine_id"])
+            if not receiver.get("profile_id") or not receiver.get("mongo_endpoint"):
+                raise ValueError("Máy nhận cần có hồ sơ MongoDB và endpoint đã lưu.")
+            endpoint = receiver["mongo_endpoint"]
+            destination = dict(store.get("profiles", receiver["profile_id"]), seeds=[endpoint], replica_set="",
+                               _restore_direct=True, name=receiver["name"] + " · " + endpoint)
+            target = machine["name"] + " → " + destination["name"]
         source_machine = None
         if body.action == "join_fresh":
             source_machine = store.get("machines", params["source_machine_id"])
+            if source_machine.get("profile_id") and source_machine["profile_id"] != profile["id"]:
+                raise ValueError("VPS nguồn thuộc workspace khác.")
             if source_machine["id"] == machine["id"] or (source_machine["mode"], source_machine["host"], source_machine["port"]) == (machine["mode"], machine["host"], machine["port"]):
                 raise ValueError("VPS nguồn và VPS đích cần là hai máy khác nhau.")
         notices = []
@@ -307,15 +440,19 @@ def create_app(data_dir=None):
         if body.action in {"setup", "provision"}:
             notices.append("Tạo instance, service và keyfile mới. Không ghi đè instance đang có; không tự mở firewall.")
         if body.action == "join_fresh":
-            notices.append("Đọc keyfile từ máy nguồn " + source_machine["name"] + ", cài/cấu hình node mới rồi thêm vào cụm. Không khởi tạo replica set riêng. Secondary mới có votes=0, priority=0.")
+            notices.append("Đọc keyfile từ máy nguồn " + source_machine["name"] + ", cài/cấu hình node mới rồi thêm vào cụm. Không khởi tạo replica set riêng. Chọn Votes và Ưu tiên khi thêm secondary.")
         if body.action == "add_member":
-            notices.append("Node phải được cấu hình cùng replSetName/keyfile và truy cập được từ các member. Secondary mới vào cụm với votes=0, priority=0.")
+            notices.append("Node phải được cấu hình cùng replSetName/keyfile và truy cập được từ các member. Kiểm tra Votes và Ưu tiên đã chọn.")
         if body.action in {"remove_member", "member_options", "step_down"}:
             notices.append("Kiểm tra lại quorum và cấu hình ngay trước khi thực hiện; không force reconfig.")
+        if body.action == "step_down":
+            notices.append("Khi chỉ định node, các secondary đủ điều kiện khác tạm hoãn ứng cử tối đa 45 giây. Ghi có thể gián đoạn ngắn khi bàn giao.")
         if body.action == "service":
             notices.append("Chỉ tác động service đã chọn. Stop/restart có thể gián đoạn cụm một node; hãy kiểm tra quorum trước.")
-        if body.action == "restore":
+        if body.action in {"restore", "sync_backup"}:
             notices.append("Ghi dữ liệu vào cụm đích. Kiểm tra phiên bản nguồn/đích và backup trước; mặc định không drop collection.")
+            if params.get("drop"):
+                notices.append("Các collection có trong bản sao sẽ bị xóa và thay thế ở đích. Bản toàn cụm có thể thay thế tài khoản admin.")
         if body.action in {"drop_database", "drop_user"}:
             notices.append("Thao tác xóa không thể hoàn tác từ giao diện. Kiểm tra bản backup trước khi xác nhận.")
         plan_id = secrets.token_urlsafe(24)
@@ -326,12 +463,12 @@ def create_app(data_dir=None):
         app.state.plans = {k: v for k, v in app.state.plans.items() if v["expires"] > current}
         if len(app.state.plans) >= 100:
             raise HTTPException(429, "Có quá nhiều bản xem trước; hãy chờ hết hạn.")
-        app.state.plans[plan_id] = {"public": plan, "params": params, "profile": profile, "machine": machine, "source_machine": source_machine, "expires": current + 600}
+        app.state.plans[plan_id] = {"public": plan, "destination": destination, "params": params, "profile": profile, "machine": machine, "source_machine": source_machine, "expires": current + 600}
         return plan
 
     def run_job(plan, job):
         store = app.state.store
-        secret_values = [plan["params"].get("password", ""), (plan["profile"] or {}).get("password", ""), (plan["machine"] or {}).get("ssh_password", ""), (plan.get("source_machine") or {}).get("ssh_password", "")]
+        secret_values = [(plan.get("destination") or {}).get("password", ""), plan["params"].get("password", ""), (plan["profile"] or {}).get("password", ""), (plan["machine"] or {}).get("ssh_password", ""), (plan.get("source_machine") or {}).get("ssh_password", "")]
         def emit(message):
             job["events"].append({"time": now(), "message": redact(message, *secret_values)})
             store.save("jobs", job, job["id"])
@@ -341,7 +478,28 @@ def create_app(data_dir=None):
             params = dict(plan["params"])
             if plan.get("source_machine"):
                 params["_source_machine"] = plan["source_machine"]
-            result = execute(job["action"], params, plan["profile"], plan["machine"], emit)
+            profile = plan["profile"]
+            if job["action"] == "sync_backup":
+                params["_destination"] = plan["destination"]
+            if job["action"] == "restore" and plan.get("destination"):
+                profile = plan["destination"]
+            result = execute(job["action"], params, profile, plan["machine"], emit)
+            if job["action"] in {"create_user", "password", "drop_user"}:
+                kind = "user-passwords:" + profile["id"]
+                key = user_key(params["database"], params["username"])
+                if job["action"] == "drop_user":
+                    store.delete(kind, key)
+                else:
+                    store.save(kind, {"password": params["password"]}, key)
+                    if job["action"] == "password":
+                        store.update_fields("profiles", profile["id"], {"password": params["password"]},
+                                            expected={"username": params["username"], "auth_db": params["database"]})
+            if job["action"] == "backup":
+                result["machine_id"] = plan["machine"]["id"]
+            if job["action"] == "backups":
+                result = with_restore_history(result, plan["machine"]["id"])
+            if job["action"] in {"restore", "sync_backup"}:
+                result["destination_name"] = (plan.get("destination") or profile)["name"]
             if job["action"] in {"setup", "provision"}:
                 machine = plan["machine"]
                 machine["service"] = result["service"]
@@ -374,9 +532,31 @@ def create_app(data_dir=None):
             job.update(status="failed", error=redact(message, *secret_values))
             emit("Tác vụ dừng: " + job["error"])
         finally:
-            job["finished_at"] = now()
-            store.save("jobs", job, job["id"])
-            app.state.lock.release()
+            try:
+                job["finished_at"] = now()
+                store.save("jobs", job, job["id"])
+            finally:
+                app.state.lock.release()
+
+    def enqueue(plan, schedule=None):
+        public = plan["public"]
+        job = {"id": uuid4().hex, "machine_id": (plan["machine"] or {}).get("id", ""), "profile_id": (plan["profile"] or {}).get("id") or (plan["machine"] or {}).get("profile_id", ""), "action": public["action"], "label": public["label"], "target": public["target"],
+               "status": "queued", "created_at": now(), "events": [], "result": None, "error": None}
+        records = [("jobs", job, job["id"])]
+        if schedule:
+            job["scheduled"] = True
+            records.append((SCHEDULES, schedule, schedule["id"]))
+        app.state.store.save_many(records)
+        try:
+            app.state.pool.submit(run_job, plan, job)
+        except Exception:
+            app.state.store.update_fields("jobs", job["id"], {"status": "failed", "finished_at": now(), "error": "Không khởi chạy được tác vụ."})
+            raise
+        return job
+
+    def dispatch_scheduled(schedule, profile, machine):
+        public = {"action": "backup", "label": "Backup định kỳ", "target": machine["name"] + " → " + profile["name"]}
+        enqueue({"public": public, "params": schedule["params"], "profile": profile, "machine": machine}, schedule)
 
     @app.post("/api/jobs", status_code=202)
     def apply(body: Apply):
@@ -395,12 +575,7 @@ def create_app(data_dir=None):
             raise HTTPException(409, "Đang có tác vụ chạy. Chờ hoàn tất trước khi thực hiện thao tác khác.")
         app.state.plans.pop(body.plan_id)
         try:
-            public = plan["public"]
-            job = {"id": uuid4().hex, "action": public["action"], "label": public["label"], "target": public["target"],
-                   "status": "queued", "created_at": now(), "events": [], "result": None, "error": None}
-            app.state.store.save("jobs", job, job["id"])
-            app.state.pool.submit(run_job, plan, job)
-            return job
+            return enqueue(plan)
         except Exception:
             app.state.lock.release()
             raise

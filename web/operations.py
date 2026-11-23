@@ -1,4 +1,5 @@
 import copy
+import ipaddress
 import json
 import os
 import re
@@ -12,7 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-from bson import json_util
+from bson import BSON, json_util
+from bson.errors import BSONError
 from pymongo import MongoClient
 from pymongo.errors import AutoReconnect, OperationFailure, PyMongoError
 
@@ -48,6 +50,8 @@ def client(profile, direct=None):
         options["tls"] = True
         if profile.get("tls_ca"):
             options["tlsCAFile"] = profile["tls_ca"]
+    if profile.get("_restore_direct"):
+        direct = profile["seeds"][0]
     if direct:
         options["directConnection"] = True
         seeds = [direct]
@@ -60,15 +64,17 @@ def client(profile, direct=None):
 
 def uri(profile):
     # Never persist a password in the URI or command-line arguments.
-    options = "authSource=" + quote(profile["auth_db"], safe="")
+    options = ["authSource=" + quote(profile["auth_db"], safe="")] if profile.get("username") else []
+    if profile.get("_restore_direct"):
+        options.append("directConnection=true")
     if profile.get("replica_set"):
-        options += "&replicaSet=" + quote(profile["replica_set"], safe="")
+        options.append("replicaSet=" + quote(profile["replica_set"], safe=""))
     if profile.get("tls"):
-        options += "&tls=true"
+        options.append("tls=true")
         if profile.get("tls_ca"):
             raise ValueError("Backup qua máy đích hiện yêu cầu CA hệ thống. Chứng chỉ CA local không tự chuyển sang VPS.")
     user = quote(profile["username"], safe="") + "@" if profile.get("username") else ""
-    return "mongodb://" + user + ",".join(profile["seeds"]) + "/?" + options
+    return "mongodb://" + user + ",".join(profile["seeds"]) + "/?" + "&".join(options)
 
 
 def snapshot(profile):
@@ -132,7 +138,82 @@ def discover(profile):
     return normalized, state
 
 
-def query(profile, section, database=""):
+def read_documents(profile, page):
+    if "\x00" in page.database + page.collection:
+        raise ValueError("Tên database hoặc collection không hợp lệ.")
+    if page.collection in {"system.users", "system.keys", "system.keyvault"}:
+        raise ValueError("Collection chứa thông tin xác thực.")
+    criteria = {}
+    if page.field:
+        if any(not part or part.startswith("$") or "\x00" in part for part in page.field.split(".")):
+            raise ValueError("Tên trường lọc không hợp lệ.")
+        try:
+            value = json_util.loads(page.value)
+        except (ValueError, TypeError, KeyError, OverflowError) as exc:
+            raise ValueError("Giá trị lọc cần là JSON hoặc MongoDB Extended JSON hợp lệ.") from exc
+        criteria[page.field] = {"$eq": value}
+    elif page.value:
+        raise ValueError("Nhập tên trường cần lọc.")
+    records = []
+    total_bytes = 0
+    with client(profile) as db:
+        cursor = db[page.database][page.collection].find(criteria).sort("_id", 1).skip(page.offset)
+        with cursor.limit(page.limit + 1).max_time_ms(5000).batch_size(2) as rows:
+            for row in rows:
+                if len(records) == page.limit:
+                    return {"records": records, "more": True}
+                encoded = json_util.dumps(row, json_options=json_util.CANONICAL_JSON_OPTIONS, ensure_ascii=False)
+                total_bytes += len(encoded.encode())
+                if records and total_bytes > 2_000_000:
+                    return {"records": records, "more": True}
+                records.append(json.loads(encoded))
+    return {"records": records, "more": False}
+
+
+def parse_document(raw):
+    try:
+        value = json_util.loads(raw or "")
+        if isinstance(value, dict):
+            BSON.encode(value)
+            return value
+    except (ValueError, TypeError, KeyError, OverflowError, BSONError):
+        pass
+    raise ValueError("Document phải là một object JSON hoặc Extended JSON hợp lệ.")
+
+
+def write_document(profile, change):
+    if (change.database in {"admin", "config", "local"} or change.collection.startswith("system.")
+            or "\x00" in change.database + change.collection):
+        raise ValueError("Chỉ sửa được collection dữ liệu ứng dụng.")
+    document = parse_document(change.document) if change.action != "delete" else None
+    if change.action != "insert":
+        original = parse_document(change.original)
+        if "_id" not in original:
+            raise ValueError("Thiếu _id của document gốc.")
+        if document is not None and ("_id" not in document or
+                BSON.encode({"id": original["_id"]}) != BSON.encode({"id": document["_id"]})):
+            raise ValueError("Giữ nguyên _id khi sửa document.")
+        criteria = {"_id": {"$eq": original["_id"]},
+                    "$expr": {"$eq": ["$$ROOT", {"$literal": original}]}}
+    with client(profile) as connection:
+        db = connection[change.database]
+        namespace = next(db.list_collections(filter={"name": change.collection}, nameOnly=True), None)
+        if not namespace or namespace["type"] != "collection":
+            raise ValueError("Cần chọn một collection đang tồn tại để ghi dữ liệu.")
+        collection = db[change.collection]
+        if change.action == "insert":
+            collection.insert_one(document)
+        else:
+            if change.action == "delete":
+                count = collection.delete_one(criteria, collation={"locale": "simple"}).deleted_count
+            else:
+                count = collection.replace_one(criteria, document, collation={"locale": "simple"}).matched_count
+            if not count:
+                raise ValueError("Document đã thay đổi hoặc đã bị xóa. Hãy tải lại trước khi tiếp tục.")
+    return {"ok": True}
+
+
+def query(profile, section, database="", collection=""):
     with client(profile) as db:
         if section == "users":
             return serial(db.admin.command({"usersInfo": {"forAllDBs": True}, "showCredentials": False})["users"])
@@ -142,6 +223,10 @@ def query(profile, section, database=""):
             result = db.admin.command("replSetGetConfig")
             result["writeConcern"] = db.admin.command("getDefaultRWConcern")
             return serial(result)
+        if section == "namespaces":
+            return [{"name": c["name"], "type": c["type"]} for c in db[database].list_collections(nameOnly=True)]
+        if section == "indexes":
+            return serial(list(db[database][collection].list_indexes()))
         if section == "collections":
             return [{"name": c["name"], "type": c["type"], "indexes": serial(list(db[database][c["name"]].list_indexes())) if c["type"] == "collection" else []} for c in db[database].list_collections()]
         if section == "diagnostics":
@@ -171,7 +256,7 @@ def query(profile, section, database=""):
 
 def host_run(machine, action, params, emit):
     worker = Path(__file__).with_name("host_worker.py").read_text()
-    elevated = action in {"install", "setup", "provision", "prepare_member", "read_keyfile", "service", "backup", "backups", "restore", "logs"}
+    elevated = action in {"install", "setup", "provision", "prepare_member", "read_keyfile", "service", "backup", "backups", "restore", "preview_backup", "logs"}
     params = dict(params, service=machine["service"])
     if machine["mode"] == "ssh" and machine.get("ssh_auth") == "password":
         from .ssh_transport import run_password
@@ -240,30 +325,52 @@ LABELS = {
     "service": "Điều khiển dịch vụ", "add_member": "Thêm thành viên", "remove_member": "Gỡ thành viên",
     "member_options": "Sửa cấu hình thành viên", "step_down": "Step down Primary", "create_user": "Tạo user", "password": "Đổi mật khẩu",
     "drop_user": "Xóa user", "write_concern": "Đặt write concern", "backup": "Tạo backup", "backups": "Liệt kê backup",
-    "restore": "Restore backup", "drop_database": "Xóa database", "upgrade_check": "Kiểm tra nâng cấp 9.0",
+    "sync_backup": "Đồng bộ bản mới từ nguồn", "restore": "Restore backup", "drop_database": "Xóa database", "upgrade_check": "Kiểm tra nâng cấp 9.0",
     "provision": "Cài và tạo cụm mới", "join_fresh": "Kiểm tra VPS và thêm member"}
-HOST_ACTIONS = {"preflight", "logs", "install", "setup", "provision", "join_fresh", "service", "backup", "backups", "restore"}
-PROFILE_ACTIONS = set(LABELS) - HOST_ACTIONS | {"backup", "restore", "join_fresh"}
+HOST_ACTIONS = {"preflight", "logs", "install", "setup", "provision", "join_fresh", "service", "backup", "backups", "restore", "sync_backup"}
+PROFILE_ACTIONS = set(LABELS) - HOST_ACTIONS | {"backup", "restore", "sync_backup", "join_fresh"}
 READ_ACTIONS = {"preflight", "logs", "backups", "upgrade_check"}
 
 
-def validate_params(action, params):
+def member_address(machine, port):
+    saved = machine.get("mongo_endpoint")
+    if saved:
+        host = saved.rsplit(":", 1)[0]
+    else:
+        try:
+            address = ipaddress.ip_address(machine["host"])
+            if not address.is_global or address.is_multicast:
+                raise ValueError
+        except ValueError:
+            try:
+                result = host_run(machine, "public_address", {}, lambda _: None)
+                address = ipaddress.ip_address(result["ip"])
+                if not address.is_global or address.is_multicast:
+                    raise ValueError
+            except (RuntimeError, OSError, ValueError, KeyError) as exc:
+                raise ValueError("Không xác định được IP public của VPS. Nhập địa chỉ MongoDB mà các member truy cập được.") from exc
+        host = f"[{address}]" if address.version == 6 else str(address)
+    return f"{host}:{port}"
+
+
+def validate_params(action, params, machine=None):
     allowed = {
-        "preflight": [], "logs": [], "backups": [], "upgrade_check": [], "step_down": [],
+        "preflight": [], "logs": [], "backups": [], "upgrade_check": [], "step_down": ["host"],
         "install": ["series"], "setup": ["instance", "port", "replica_set", "advertise", "bind_ip", "username", "password"],
-        "service": ["operation"], "add_member": ["host", "arbiter"], "remove_member": ["host"],
+        "service": ["operation"], "add_member": ["host", "arbiter", "votes", "priority"], "remove_member": ["host"],
         "member_options": ["host", "priority", "votes", "hidden"], "create_user": ["username", "password", "database", "role"],
         "password": ["username", "password", "database"], "drop_user": ["username", "database"],
-        "write_concern": ["w"], "backup": ["database", "collection"], "restore": ["backup_id", "drop"], "drop_database": ["database"]}
+        "write_concern": ["w"], "backup": ["database", "databases", "collection", "collections", "application_only"], "restore": ["backup_id", "drop", "destination_id", "destination_machine_id"], "drop_database": ["database"]}
+    allowed["sync_backup"] = allowed["backup"] + ["destination_id", "drop"]
     allowed["provision"] = allowed["setup"] + ["series"]
-    allowed["join_fresh"] = ["instance", "port", "advertise", "bind_ip", "source_machine_id", "source_endpoint", "arbiter", "mode", "target_keyfile"]
+    allowed["join_fresh"] = ["instance", "port", "advertise", "bind_ip", "source_machine_id", "source_endpoint", "arbiter", "mode", "target_keyfile", "votes", "priority"]
     if action not in allowed or set(params) - set(allowed[action]):
         raise ValueError("Tác vụ hoặc tham số không hợp lệ.")
     p = copy.deepcopy(params)
     required = {"install": ["series"], "setup": allowed["setup"], "service": ["operation"], "add_member": ["host"], "remove_member": ["host"],
                 "member_options": ["host", "priority", "votes", "hidden"], "create_user": allowed["create_user"], "password": allowed["password"],
                 "drop_user": allowed["drop_user"], "write_concern": ["w"], "restore": ["backup_id"], "drop_database": ["database"]}
-    required.update(provision=allowed["provision"], join_fresh=["instance", "port", "advertise", "bind_ip", "source_machine_id", "source_endpoint"])
+    required.update(provision=allowed["provision"], join_fresh=["instance", "port", "bind_ip", "source_machine_id", "source_endpoint"])
     if action == 'join_fresh':
         p.setdefault('arbiter', False)
         p.setdefault('mode', 'prepare')
@@ -274,7 +381,30 @@ def validate_params(action, params):
     for key in required.get(action, []):
         if key not in p or p[key] is None or p[key] == "":
             raise ValueError("Thiếu thông tin: " + key)
+    if action in {"sync_backup", "restore"} and "drop" in p and type(p["drop"]) is not bool:
+        raise ValueError("Giá trị drop không hợp lệ.")
+    if action == "sync_backup" and not p.get("destination_id"):
+        raise ValueError("Chọn cụm đích.")
+    if "application_only" in p:
+        if type(p["application_only"]) is not bool or (p["application_only"] and any(p.get(k) for k in ("database","databases","collection"))):
+            raise ValueError("Phạm vi tất cả database ứng dụng không hợp lệ.")
+    if "databases" in p:
+        names = p["databases"]
+        if not isinstance(names, list) or any(not isinstance(n, str) or not re.fullmatch(r"[\w-]{1,63}", n) for n in names):
+            raise ValueError("Danh sách database không hợp lệ.")
+        if p.get("database") or (p.get("collection") and len(names) != 1):
+            raise ValueError("Chọn đúng một database khi chỉ định collection.")
+        p["databases"] = list(dict.fromkeys(names))
+    if "collections" in p:
+        names = p["collections"]
+        if (not isinstance(names, list) or not names or p.get("collection") or p.get("application_only")
+                or len(p.get("databases", [])) != 1 or
+                any(not isinstance(n, str) or not n or "\x00" in n or len(n.encode()) > 255 for n in names)):
+            raise ValueError("Chọn một database và ít nhất một collection hợp lệ.")
+        p["collections"] = list(dict.fromkeys(names))
     for key, value in p.items():
+        if key in {"databases", "collections", "application_only"}:
+            continue
         if key not in {"port", "priority", "votes", "arbiter", "hidden", "drop"} and not isinstance(value, str):
             raise ValueError("Kiểu dữ liệu không hợp lệ: " + key)
         if isinstance(value, str) and (len(value) > 1000 or "\x00" in value):
@@ -288,7 +418,7 @@ def validate_params(action, params):
             raise ValueError("Tên database/collection chỉ được chứa chữ, số, dấu chấm, gạch ngang và gạch dưới.")
     if action == "drop_database" and p["database"] in {"admin", "local", "config"}:
         raise ValueError("Không cho xóa database hệ thống.")
-    if action == "backup" and p.get("collection") and not p.get("database"):
+    if action in {"backup", "sync_backup"} and p.get("collection") and not (p.get("database") or p.get("databases")):
         raise ValueError("Chọn database trước khi backup collection.")
     if action in {"install", "provision"} and p["series"] not in {"8.0", "9.0"}:
         raise ValueError("Chỉ hỗ trợ nhánh 8.0 hoặc 9.0.")
@@ -301,6 +431,10 @@ def validate_params(action, params):
             raise ValueError("Tên replica set không hợp lệ.")
         if type(p["port"]) is not int or not 1024 <= p["port"] <= 65535:
             raise ValueError("Port phải từ 1024 đến 65535.")
+        if action == "join_fresh" and not p.get("advertise", "").strip():
+            if not machine:
+                raise ValueError("Chọn VPS đích để xác định địa chỉ MongoDB.")
+            p["advertise"] = member_address(machine, p["port"])
         p["advertise"] = endpoint(p["advertise"])
         if not p["advertise"].endswith(":" + str(p["port"])):
             raise ValueError("Port quảng bá phải khớp port instance.")
@@ -320,16 +454,26 @@ def validate_params(action, params):
     for key in ("arbiter", "hidden", "drop"):
         if key in p and type(p[key]) is not bool:
             raise ValueError(key + " phải là boolean.")
-    if action == "member_options":
+    if action in {"add_member", "join_fresh"}:
+        p.setdefault("votes", 1 if p.get("arbiter") else 0)
+        p.setdefault("priority", 0)
+        if p.get("arbiter") and (p["votes"] != 1 or p["priority"] != 0):
+            raise ValueError("Arbiter cần Votes = 1 và Ưu tiên = 0.")
+    if action in {"member_options", "add_member", "join_fresh"}:
         if type(p["priority"]) not in (int, float) or not 0 <= p["priority"] <= 1000 or type(p["votes"]) is not int or p["votes"] not in (0, 1):
             raise ValueError("Priority/votes không hợp lệ.")
-        if (p["hidden"] or p["votes"] == 0) and p["priority"] != 0:
+        if (p.get("hidden") or p["votes"] == 0) and p["priority"] != 0:
             raise ValueError("Hidden hoặc non-voting member cần priority = 0.")
     if action == "write_concern" and p["w"] not in ("majority", "1"):
         raise ValueError("Write concern không hợp lệ.")
     if action == "restore" and not re.fullmatch(r"[a-f0-9]{32}", p["backup_id"]):
         raise ValueError("ID backup không hợp lệ.")
     return p
+
+
+def check_new_vote(cfg, params):
+    if params.get("votes", 1 if params.get("arbiter") else 0) and sum(m.get("votes", 1) for m in cfg["members"]) >= 7:
+        raise ValueError("Replica set đã có 7 voting member. Hãy chọn Votes = 0 cho secondary mới.")
 
 
 def healthy_config(db):
@@ -362,6 +506,7 @@ def execute(action, p, profile, machine, emit):
                 raise ValueError("Endpoint nguồn không thuộc cụm đang chọn.")
             if p["advertise"] in {m["host"] for m in cfg["members"]}:
                 raise ValueError("Node đích đã thuộc cụm. Không khởi tạo lại.")
+            check_new_vote(cfg, p)
             if p.get('arbiter') and any(m.get('arbiterOnly') for m in cfg['members']):
                 raise ValueError('Cụm đã có arbiter. Không cài thêm arbiter trước khi xử lý cấu hình hiện có.')
             if p.get('arbiter') and 'defaultWriteConcern' not in db.admin.command('getDefaultRWConcern'):
@@ -408,17 +553,50 @@ def execute(action, p, profile, machine, emit):
         host_run(machine, 'member_network', {'endpoints': [p['advertise']] + [m['host'] for m in cfg['members']]}, emit)
         emit('Bước 5/6: Thêm membership bằng reconfig thông thường…')
         match = re.search(r'\bv(\d+\.\d+\.\d+)', environment.get('version', ''))
-        result = execute("add_member", {"host": p["advertise"], "arbiter": p.get('arbiter', False), '_verified_version': match.group(1) if match else ''}, profile, machine, emit)
-        emit('Bước 6/6: Đã xác minh node khỏe và ở trạng thái ' + ('ARBITER' if p.get('arbiter') else 'SECONDARY') + '.')
+        result = execute("add_member", {"host": p["advertise"], "arbiter": p.get('arbiter', False), "votes": p["votes"], "priority": p["priority"], '_verified_version': match.group(1) if match else ''}, profile, machine, emit)
+        emit('Bước 6/6: Đã xác minh trạng thái member và cấu hình bầu chọn.')
         return {**prepared, **result, "profile_id": profile["id"], "mongo_endpoint": p["advertise"]}
+    if action == "sync_backup":
+        destination = p["_destination"]
+        with client(profile) as source, client(destination) as target:
+            source_hello = source.admin.command("hello")
+            target_hello = target.admin.command("hello")
+            if source_hello["topologyVersion"]["processId"] == target_hello["topologyVersion"]["processId"] or (
+                source_hello.get("setName") and target_hello.get("setName") and
+                source.admin.command("replSetGetConfig")["config"]["settings"]["replicaSetId"] ==
+                target.admin.command("replSetGetConfig")["config"]["settings"]["replicaSetId"]
+            ):
+                raise ValueError("Cụm nguồn và đích trùng nhau.")
+        scope = {k: p[k] for k in ("databases", "database", "collection", "collections", "application_only") if k in p}
+        fresh = execute("backup", scope, profile, machine, emit)
+        emit("Đã lưu backup " + fresh["id"] + ". Đang khôi phục sang " + destination["name"])
+        return execute("restore", {"backup_id": fresh["id"], "drop": p.get("drop", False)}, destination, machine, emit)
     if action in HOST_ACTIONS:
         if action in {"backup", "restore"}:
             with client(profile) as db:
+                hello = db.admin.command("hello")
+                if profile.get("_restore_direct") and hello.get("isreplicaset") and not hello.get("setName"):
+                    raise ValueError("Máy nhận vẫn chạy ở chế độ replica set nhưng chưa có cấu hình hợp lệ. Gỡ member không tự chuyển máy thành standalone. Để restore ở cổng này, cần chuyển đúng instance sang chế độ độc lập trước.")
+                if profile.get("_restore_direct") and (not hello.get("isWritablePrimary") or hello.get("arbiterOnly") or hello.get("msg") == "isdbgrid"):
+                    raise ValueError("Máy nhận cần là MongoDB standalone hoặc primary có thể ghi. Muốn thử riêng trên VPS secondary, dùng một instance độc lập trên cổng khác.")
+                replica = bool(hello.get("setName"))
+                if action == "backup" and p.get("application_only"):
+                    names = sorted(set(db.list_database_names()) - {"admin", "local", "config"})
+                    if not names:
+                        raise ValueError("Không có database ứng dụng để sao lưu.")
+                    p = dict(p, databases=names)
+                if action == "backup" and (p.get("database") or p.get("databases")):
+                    requested = p.get("databases") or [p["database"]]
+                    if set(requested) - set(db.list_database_names()):
+                        raise ValueError("Database đã chọn không tồn tại hoặc không đọc được.")
+                    selected = p.get("collections") or ([p["collection"]] if p.get("collection") else [])
+                    if selected and set(selected) - set(db[requested[0]].list_collection_names()):
+                        raise ValueError("Collection đã chọn không tồn tại.")
                 version = db.admin.command("buildInfo")["version"]
                 fcv = db.admin.command({"getParameter": 1, "featureCompatibilityVersion": 1})["featureCompatibilityVersion"]
                 if "targetVersion" in fcv or "previousVersion" in fcv:
                     raise ValueError("Chờ chuyển đổi FCV hoàn tất trước khi backup/restore.")
-            p = dict(p, connection={"uri": uri(profile), "password": profile.get("password", "")}, source=profile["name"], compatibility={"version": version, "fcv": fcv["version"]})
+            p = dict(p, replica=replica, connection={"uri": uri(profile), **({"password": profile["password"]} if profile.get("username") else {})}, source=profile["name"], source_id=profile.get("id"), compatibility={"version": version, "fcv": fcv["version"]})
         return host_run(machine, action, p, emit)
     emit('Kết nối cụm nguồn và tìm primary hiện tại…')
     with client(profile) as db:
@@ -448,23 +626,68 @@ def execute(action, p, profile, machine, emit):
             primary_id = next(m["_id"] for m in states.values() if m["state"] == 1)
             check_quorum(cfg, states)
             # The stepping-down member remains online and can still vote.
-            if not any(states.get(m["_id"], {}).get("state") == 2 and states[m["_id"]].get("health") == 1
-                       and m.get("priority", 1) > 0 and m.get("votes", 1) == 1 and not m.get("arbiterOnly")
-                       for m in cfg["members"]):
-                raise ValueError("Chưa có secondary khỏe, có phiếu và đủ priority để được bầu.")
-            try:
-                db.admin.command({"replSetStepDown": 60, "secondaryCatchUpPeriodSecs": 15})
-            except AutoReconnect:
-                pass
-            for _ in range(30):
+            candidates = {m["host"] for m in cfg["members"]
+                          if states.get(m["_id"], {}).get("state") == 2 and states[m["_id"]].get("health") == 1
+                          and m.get("priority", 1) > 0 and m.get("votes", 1) == 1 and not m.get("arbiterOnly")}
+            target = p.get("host")
+            if not candidates or (target and target not in candidates):
+                raise ValueError("Cần secondary đang khỏe, votes=1 và priority lớn hơn 0 để bầu primary.")
+            if target:
+                with client(profile, direct=target) as candidate:
+                    hello = candidate.admin.command("hello")
+                    if hello.get("setName") != cfg["_id"] or not hello.get("secondary"):
+                        raise ValueError("Node đã chọn không còn là secondary của cụm.")
+                    emit("Chờ secondary áp dụng đến mốc oplog hiện tại của primary…")
+                    reference = db.admin.command("replSetGetStatus")["optimes"]["appliedOpTime"]["ts"]
+                    for _ in range(30):
+                        applied = candidate.admin.command("replSetGetStatus")["optimes"]["appliedOpTime"]["ts"]
+                        if applied >= reference:
+                            break
+                        time.sleep(1)
+                    else:
+                        raise ValueError("Secondary chưa bắt kịp mốc oplog của primary sau 30 giây. Kiểm tra replication lag trước khi bầu lại.")
+                    # A recent step-down may still prevent the chosen secondary from standing.
+                    candidate.admin.command({"replSetFreeze": 0})
+                old = states[primary_id]["name"]
+                started = time.monotonic()
+                for host in sorted(candidates - {target}):
+                    with client(profile, direct=host) as peer:
+                        hello = peer.admin.command("hello")
+                        if hello.get("setName") != cfg["_id"] or not hello.get("secondary"):
+                            raise ValueError("Vai trò member đã thay đổi trước khi bàn giao: " + host)
+                        peer.admin.command({"replSetFreeze": 45})
+                        emit("Tạm hoãn ứng cử 45 giây trên " + host + "; node vẫn bỏ phiếu.")
+                with client(profile, direct=old) as incumbent:
+                    hello = incumbent.admin.command("hello")
+                    if (not hello.get("isWritablePrimary") or hello.get("setName") != cfg["_id"]
+                            or time.monotonic() - started > 10):
+                        raise ValueError("Trạng thái cụm đã đổi hoặc chuẩn bị quá lâu. Chưa gửi lệnh nhường primary.")
+                    emit("Bàn giao từ " + old + " sang " + target + ". Chờ MongoDB đồng bộ trước khi nhường vai trò…")
+                    try:
+                        incumbent.admin.command({"replSetStepDown": 45, "secondaryCatchUpPeriodSecs": 10, "force": False})
+                    except AutoReconnect:
+                        pass
+                    except OperationFailure as exc:
+                        raise ValueError(f"Primary từ chối bàn giao (code {exc.code}): {(exc.details or {}).get('errmsg', '')}") from None
+            else:
+                try:
+                    db.admin.command({"replSetStepDown": 60, "secondaryCatchUpPeriodSecs": 15})
+                except AutoReconnect:
+                    pass
+            deadline = time.monotonic() + 60
+            observed = None
+            while time.monotonic() < deadline:
                 try:
                     new = db.admin.command("hello")
+                    observed = new.get("primary")
                     old = states[primary_id]["name"]
-                    if new.get("primary") and new["primary"] != old:
+                    if new.get("isWritablePrimary") and new.get("primary") != old and (not target or new.get("primary") == target):
                         return {"previous_primary": old, "primary": new["primary"]}
                 except PyMongoError:
                     pass
                 time.sleep(2)
+            if target:
+                raise RuntimeError(f"Chưa xác minh được {target} làm primary. Primary quan sát gần nhất: {observed or 'chưa có'}. Kiểm tra quorum, trạng thái và replication lag.")
             raise RuntimeError("Đã gửi step down nhưng chưa xác minh được primary mới; kiểm tra trạng thái.")
         cfg, states = healthy_config(db)
         check_quorum(cfg, states)
@@ -473,6 +696,7 @@ def execute(action, p, profile, machine, emit):
         if action == "add_member":
             if member:
                 return {"message": "Node đã tồn tại; không thêm trùng."}
+            check_new_vote(cfg, p)
             # A fresh member has not replicated users yet. hello is intentionally
             # unauthenticated here; the reconfiguration itself uses cluster credentials.
             emit('Kiểm tra node đã chuẩn bị tại ' + p['host'] + '…')
@@ -505,7 +729,7 @@ def execute(action, p, profile, machine, emit):
                 raise ValueError("Cụm đã có arbiter.")
             if arbiter and "defaultWriteConcern" not in db.admin.command("getDefaultRWConcern"):
                 raise ValueError("Hãy chọn write concern rõ ràng trước khi thêm arbiter.")
-            member = {"_id": max(m["_id"] for m in cfg["members"]) + 1, "host": p["host"], "priority": 0, "votes": 1 if arbiter else 0}
+            member = {"_id": max(m["_id"] for m in cfg["members"]) + 1, "host": p["host"], "priority": p.get("priority", 0), "votes": p.get("votes", 1 if arbiter else 0)}
             if arbiter:
                 member["arbiterOnly"] = True
             cfg["members"].append(member)
@@ -539,11 +763,14 @@ def execute(action, p, profile, machine, emit):
                 raise RuntimeError("Chưa xác minh được votes/priority sau reconfig. Cụm có thể vừa đổi primary; kiểm tra trạng thái trước khi thử lại.")
         if action == "add_member":
             emit("Đã thêm member. Chờ SECONDARY/ARBITER, tối đa 5 phút…")
-            target = 7 if p.get("arbiter") else 2
+            actual = next(m for m in final_cfg["members"] if m["host"] == p["host"])
+            if any(actual.get(k, 1) != member[k] for k in ("votes", "priority")):
+                raise RuntimeError("Cấu hình votes/priority sau khi thêm khác giá trị đã chọn.")
+            target_states = {7} if p.get("arbiter") else {1, 2}
             for _ in range(100):
                 status = db.admin.command("replSetGetStatus")
-                if any(m["name"] == p["host"] and m["state"] == target and m["health"] == 1 for m in status["members"]):
-                    return {"ready": True, "host": p["host"], "seeds": [m["host"] for m in final_cfg["members"]], "note": "Secondary mới có votes=0, priority=0. Có thể nâng votes/priority sau khi đồng bộ ổn định.", "previous_config": serial(old_cfg)}
+                if any(m["name"] == p["host"] and m["state"] in target_states and m["health"] == 1 for m in status["members"]):
+                    return {"ready": True, "host": p["host"], "seeds": [m["host"] for m in final_cfg["members"]], "votes": member["votes"], "priority": member["priority"], "previous_config": serial(old_cfg)}
                 time.sleep(3)
             raise RuntimeError("Member đã được thêm nhưng còn đang đồng bộ. Theo dõi trạng thái; không thêm lại.")
         return {"config": serial(final_cfg), "previous_config": serial(old_cfg)}

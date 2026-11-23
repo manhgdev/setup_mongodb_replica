@@ -114,3 +114,20 @@ class Action(StrictModel):
 class Apply(StrictModel):
     plan_id: str
     confirmation: str = ""
+
+
+class DocumentPage(StrictModel):
+    database: str = Field(min_length=1, max_length=128)
+    collection: str = Field(min_length=1, max_length=255)
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=10, ge=1, le=50)
+    field: str = Field(default="", max_length=255)
+    value: str = Field(default="", max_length=8192)
+
+
+class DocumentWrite(StrictModel):
+    database: str = Field(min_length=1, max_length=128)
+    collection: str = Field(min_length=1, max_length=255)
+    action: Literal["insert", "replace", "delete"]
+    document: str | None = None
+    original: str | None = None

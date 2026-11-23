@@ -96,7 +96,7 @@ VPS nguồn của wizard thêm Secondary chỉ dùng để đọc **keyfile**, c
 
 1. Thêm hồ sơ SSH trong **Máy chủ**, bấm **Kiểm tra** để đọc hệ điều hành, binary và service. Không tự coi “chưa thấy binary” là không có MongoDB chạy bằng container.
 2. Chọn **Cài và tạo cụm mới**, chọn VPS, nhánh MongoDB, instance, replica set, port, endpoint quảng bá và tài khoản quản trị mới.
-3. Xem lại đích và nhập tên VPS xác nhận. Worker kiểm tra port/thư mục, cài package nếu thiếu, tạo instance/keyfile/service riêng, khởi tạo một-node replica set và tạo user quản trị.
+3. Xem lại đích rồi bấm **Thực hiện**. Worker kiểm tra port/thư mục, cài package nếu thiếu, tạo instance/keyfile/service riêng, khởi tạo một-node replica set và tạo user quản trị.
 4. Hồ sơ cụm và liên kết VPS được lưu sau bootstrap; tác vụ kiểm tra thêm kết nối MongoDB từ máy quản trị. Nếu bước kết nối cuối thất bại, giữ lại hồ sơ để sửa firewall/địa chỉ rồi kiểm tra lại. Không chạy lại khởi tạo trên thư mục đã tạo.
 
 Các nút cài package/setup riêng vẫn có để thực hiện theo từng bước khi cần. Cụm một node chưa có dự phòng trên máy khác.
@@ -108,7 +108,7 @@ Các nút cài package/setup riêng vẫn có để thực hiện theo từng b�
 3. Chọn cụm, VPS đích, VPS nguồn, endpoint MongoDB nguồn, tên instance và endpoint quảng bá mới.
 4. Backend kiểm tra nguồn thuộc cụm, đọc đường dẫn keyfile đang chạy bằng `getCmdLineOpts`, lấy keyfile qua SSH rồi chuyển trong bộ nhớ tới node mới. Không trả keyfile ra UI/API lịch sử. VPS nguồn cần quyền đọc keyfile qua root/`sudo -n`.
 5. Cài package cùng nhánh 8.0/9.0 nếu thiếu, tạo service/thư mục trống và cấu hình cùng replSetName/keyfile. **Không chạy replSetInitiate hoặc tạo user riêng trên node mới**. Thêm member bằng reconfig thông thường và chờ SECONDARY tối đa 5 phút.
-6. Node mới vào với `votes=0`, `priority=0`. Khi đồng bộ ổn định, chỉnh votes/priority trong bảng member. MongoDB giới hạn số voting member; đừng tăng nhiều phiếu cùng lúc.
+6. Chọn Votes và Ưu tiên ngay khi thêm node. Mặc định secondary dùng `votes=0`, `priority=0`. Khi đồng bộ ổn định, chỉnh votes/priority trong bảng member. MongoDB giới hạn số voting member; đừng tăng nhiều phiếu cùng lúc.
 
 Wizard này dành cho keyfile không TLS, data directory mới. Node đã được chuẩn bị đúng cấu hình có thể dùng **Node đã chuẩn bị**; member đã thuộc cụm thì chỉ tiếp nhận hồ sơ, không thêm lại. Khi initial sync quá 5 phút, kiểm tra trạng thái hiện có trước khi thử lại. Nếu lỗi sau chuẩn bị service nhưng trước reconfig, sửa mạng rồi dùng **Node đã chuẩn bị**, tránh tạo lại instance.
 
@@ -125,7 +125,7 @@ Wizard này dành cho keyfile không TLS, data directory mới. Node đã đư�
 
 ## Backup và restore
 
-Backup nằm trên **máy thực thi đã chọn**, tại `/var/backups/mongodb-manager/<id>`, gồm archive gzip và manifest SHA-256, nhánh MongoDB/FCV nguồn, phiên bản Database Tools. Backup toàn cụm dùng oplog, backup database/collection riêng không dùng oplog. Giữ nguyên FCV, phiên bản và cấu trúc dữ liệu trong suốt quá trình dump; backup riêng cần ứng dụng ngừng ghi nếu cần một ảnh chụp nhất quán.
+Backup nằm trên **máy thực thi đã chọn**, tại `/var/backups/mongodb-manager/<id>`, gồm các archive theo database (hoặc thư mục dump và oplog riêng với bản toàn replica set mới) và manifest SHA-256, nhánh MongoDB/FCV nguồn, phiên bản Database Tools. Backup toàn replica set dùng oplog, backup database/collection riêng không dùng oplog. Giữ nguyên FCV, phiên bản và cấu trúc dữ liệu trong suốt quá trình dump; backup riêng cần ứng dụng ngừng ghi nếu cần một ảnh chụp nhất quán.
 
 Restore kiểm tra checksum và yêu cầu cùng nhánh MongoDB, cùng FCV. Chọn đúng máy chứa archive và đúng hồ sơ cụm đích; tùy chọn `drop` xóa collection đích trước khi restore. Nên restore thử vào cụm tách biệt và kiểm tra dữ liệu ứng dụng. Checksum chỉ kiểm tra file, không chứng minh khả năng phục hồi; giao diện luôn ghi rõ chưa restore thử. Bản restore toàn cụm có thể thay cả user/role theo nội dung archive.
 
@@ -141,7 +141,7 @@ Tham khảo [cài Community Linux](https://www.mongodb.com/docs/manual/administr
 
 `.web-data` chứa SQLite mã hóa các bản ghi, khóa `secret.key` và lịch sử tác vụ. Thư mục có quyền 0700, file 0600. Sao lưu cả database và key khi ứng dụng đã dừng; mất key sẽ không đọc lại được dữ liệu. Có thể đổi vị trí bằng biến `MONGO_MANAGER_DATA`. Không đưa thư mục này lên Git hay chia sẻ công khai.
 
-Tác vụ chạy tuần tự. Khi backend dừng giữa chừng, tác vụ được đánh dấu gián đoạn ở lần mở sau; kiểm tra máy đích trước khi chạy lại. Chưa hỗ trợ hủy lệnh từ UI, backup theo lịch, chép backup qua SSH sang nơi thứ hai, sửa trực tiếp mongod.conf hoặc reset cụm. Không chạy đồng thời nhiều backend trên cùng thư mục dữ liệu.
+Tác vụ chạy tuần tự. Khi backend dừng giữa chừng, tác vụ được đánh dấu gián đoạn ở lần mở sau; kiểm tra máy đích trước khi chạy lại. Đặt lịch theo từng workspace tại **Backup & restore → Các bản backup → Lịch backup**. Dịch vụ tự chạy lịch theo UTC+7. Chưa hỗ trợ hủy lệnh từ UI, chép backup qua SSH sang nơi thứ hai, sửa trực tiếp mongod.conf hoặc reset cụm. Không chạy đồng thời nhiều backend trên cùng thư mục dữ liệu.
 
 Đã kiểm tra API, validation, mã hóa, quorum, SSH password thực với server thử local. Đã chạy MongoDB Community 8.0.16 và 9.0.7 thật trên macOS: tiếp nhận từ secondary của cụm hai member, xác minh dữ liệu/config không đổi, thêm node thứ ba với keyfile/auth và xác minh dữ liệu đồng bộ. Cài đặt apt/systemd trên Ubuntu, wizard chuẩn bị VPS mới qua SSH và backup/restore chưa được kiểm chứng end-to-end trên VPS thật. Xem `WEB_VALIDATION.md` để biết ranh giới kiểm thử.
 

@@ -98,3 +98,54 @@ def test_public_mode_without_admin_refuses_startup(tmp_path):
     with pytest.raises(RuntimeError, match='tài khoản'):
         with client_for(tmp_path):
             pass
+
+
+@pytest.mark.parametrize(("kind", "field"), [("profiles", "password"), ("machines", "ssh_password")])
+def test_admin_reveals_one_saved_password(directory, kind, field):
+    with client_for(directory) as api:
+        item = api.app.state.store.save(kind, {"name": "example", field: "example-only"})
+        path = f"/api/{kind}/{item['id']}/reveal-password"
+        assert api.post(path).status_code == 401
+        login(api)
+        assert api.post(path, headers={"X-CSRF-Token": ""}).status_code == 403
+        response = api.post(path)
+        assert response.json() == {"password": "example-only"}
+        assert response.headers["cache-control"] == "no-store"
+        assert "example-only" not in api.get("/api/state").text
+
+
+def test_saved_mongo_account_password_lifecycle(directory):
+    from unittest.mock import patch
+
+    with client_for(directory) as api:
+        login(api)
+        db_profile = api.post('/api/profiles', json={'name':'Cluster', 'seeds':['localhost:27017'],
+                              'username':'admin', 'password':'old-login'}).json()
+        root = '/api/profiles/' + db_profile['id']
+        path = root + '/user-password?database=shop&username=reader'
+        with patch('web.app.client') as connect:
+            assert api.put(path, json={'username':'reader','password':'saved-example'}).status_code == 200
+            assert connect.call_args.args[0]['auth_db'] == 'shop'
+            connect.return_value.__enter__.return_value.admin.command.assert_called_once_with('ping')
+        assert api.post(path).json() == {'password':'saved-example'}
+        assert api.post(path, headers={'X-CSRF-Token':''}).status_code == 403
+        with patch('web.app.query', return_value=[{'user':'reader','db':'shop'}]):
+            listed = api.get(root + '/query/users')
+            assert listed.json()[0]['has_password'] and 'saved-example' not in listed.text
+        assert 'saved-example' not in api.get('/api/state').text
+        for action, params in [('password', {'database':'shop','username':'reader','password':'new-example-secret'}),
+                               ('password', {'database':'admin','username':'admin','password':'new-admin-secret'}),
+                               ('drop_user', {'database':'shop','username':'reader'})]:
+            with patch('web.app.execute', return_value={'ok':1}):
+                plan = api.post('/api/plans', json={'action':action,'profile_id':db_profile['id'],'params':params}).json()
+                job = api.post('/api/jobs', json={'plan_id':plan['id'],'confirmation':plan['confirmation']}).json()
+                for _ in range(100):
+                    job = api.get('/api/jobs/' + job['id']).json()
+                    if job['status'] == 'succeeded':
+                        break
+                    time.sleep(.01)
+                assert job['status'] == 'succeeded'
+                if action=='password':
+                    assert api.post(root+'/user-password', params={k:params[k] for k in ('database','username')}).json()['password']==params['password']
+        assert api.post(path).status_code==404
+        assert api.post(root+'/reveal-password').json()['password']=='new-admin-secret'

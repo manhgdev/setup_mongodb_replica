@@ -7,6 +7,7 @@ import os
 import secrets
 import socket
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -112,6 +113,31 @@ def test_adopt_existing_secondary_and_expand_real_replica(live_cluster):
         'ssh_auth': 'password', 'ssh_password': secrets.token_urlsafe(24)}}]))
     assert saved.status_code == 200, saved.text
     profile = saved.json()['profile']
+    base = '/api/profiles/' + profile['id']
+    namespaces = api.get(base + '/query/namespaces', params={'database': 'application'}).json()
+    assert any(ns['name'] == 'events' for ns in namespaces)
+    assert api.get(base + '/query/indexes', params={'database':'application','collection':'events'}).json()[0]['name'] == '_id_'
+    root.application.events.insert_one({'_id':'nested','meta':{'values':[1, 2], 'active':True}})
+    page = {'database':'application','collection':'events','limit':1}
+    first = api.post(base + '/documents', json=page).json()
+    assert first['more'] and first['records'][0]['meta']['values'][1] == {'$numberInt':'2'}
+    second = api.post(base + '/documents', json=dict(page, offset=1)).json()
+    assert second['records'][0]['_id'] == 'preserved' and not second['more']
+    filtered = api.post(base + '/documents', json=dict(page, field='meta.active',value='true')).json()
+    assert [d['_id'] for d in filtered['records']] == ['nested'] and not filtered['more']
+    assert api.post(base + '/documents', json=dict(page, field='$where',value='true')).status_code == 400
+
+    namespace = {"database": "application", "collection": "events"}
+    write_url = base + '/documents/write'
+    before = '{"_id":"edit-test","count":{"$numberLong":"9007199254740993"}}'
+    after = '{"_id":"edit-test","count":{"$numberLong":"9007199254740994"}}'
+    assert api.post(write_url, json=dict(namespace, action="insert", document=before)).status_code == 200
+    assert api.post(write_url, json=dict(namespace, action="replace", original=before, document=after)).status_code == 200
+    assert api.post(write_url, json=dict(namespace, action="delete", original=before)).status_code == 400
+    assert root.application.events.find_one({"_id":"edit-test"})["count"] == 9007199254740994
+    assert api.post(write_url, json=dict(namespace, action="delete", original=after)).status_code == 200
+    assert root.application.events.find_one({"_id":"edit-test"}) is None
+
     assert saved.json()['machines'][0]['profile_id'] == profile['id']
     assert saved.json()['machines'][0]['has_ssh_password']
     assert 'ssh_password' not in saved.json()['machines'][0]
@@ -123,14 +149,14 @@ def test_adopt_existing_secondary_and_expand_real_replica(live_cluster):
     wrong = api.post('/api/profiles/adopt', json=dict(body, password='incorrect-password'))
     assert wrong.status_code == 502
     assert len(api.get('/api/state').json()['profiles']) == 1
-    plan = api.post('/api/plans', json={'action': 'add_member', 'profile_id': profile['id'], 'params': {'host': hosts[2]}}).json()
+    plan = api.post('/api/plans', json={'action': 'add_member', 'profile_id': profile['id'], 'params': {'host': hosts[2], 'votes': 1, 'priority': 0.5}}).json()
     job = api.post('/api/jobs', json={'plan_id': plan['id'], 'confirmation': plan['confirmation']}).json()
     result = wait_for(lambda: (j if (j := api.get('/api/jobs/' + job['id']).json())['status'] in ('succeeded', 'failed') else None), timeout=120)
     assert result['status'] == 'succeeded', result
     assert result['result']['ready']
     config = root.admin.command('replSetGetConfig')['config']
     new = next(m for m in config['members'] if m['host'] == hosts[2])
-    assert new['votes'] == 0 and new['priority'] == 0
+    assert new['votes'] == 1 and new['priority'] == 0.5
     with MongoClient(hosts[2], directConnection=True, username='managerAdmin', password=password, authSource='admin',
                      readPreference='secondary', serverSelectionTimeoutMS=3000) as secondary:
         wait_for(lambda: secondary.application.events.find_one({'_id': 'preserved'}), timeout=30)
@@ -154,9 +180,29 @@ def test_adopt_existing_secondary_and_expand_real_replica(live_cluster):
     run_action('member_options', {'host': hosts[2], 'priority': 1, 'votes': 1, 'hidden': False})
     pending = api.post('/api/plans', json={'action': 'create_user', 'profile_id': profile['id'], 'params': {
         'username': 'afterElection', 'password': secrets.token_urlsafe(24), 'database': 'application', 'role': 'readWrite'}}).json()
-    moved = run_action('step_down', {})
-    assert moved['previous_primary'] == hosts[0]
-    assert moved['primary'] in hosts[1:]
+    # Exercise a moving oplog and a second handoff to a recently frozen candidate.
+    stop = threading.Event()
+    wrote = threading.Event()
+
+    def write_during_handoff():
+        while not stop.is_set():
+            try:
+                root.application.handoff.update_one({'_id': 'counter'}, {'$inc': {'n': 1}}, upsert=True)
+                wrote.set()
+            except PyMongoError:
+                pass  # Elections can briefly interrupt writes.
+            stop.wait(.02)
+
+    writer = threading.Thread(target=write_during_handoff)
+    writer.start()
+    try:
+        assert wrote.wait(10)
+        for previous, target in [(hosts[0], hosts[1]), (hosts[1], hosts[2])]:
+            moved = run_action('step_down', {'host': target})
+            assert moved == {'previous_primary': previous, 'primary': target}
+    finally:
+        stop.set()
+        writer.join(15)
     with MongoClient(hosts[0], directConnection=True, username='managerAdmin', password=password,
                      authSource='admin', serverSelectionTimeoutMS=3000) as old_primary:
         try:

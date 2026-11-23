@@ -61,6 +61,8 @@ class Store:
     def delete(self, kind, record_id):
         with self.connect() as db:
             db.execute("DELETE FROM records WHERE kind=? AND id=?", (kind, record_id))
+            if kind == "profiles":
+                db.execute("DELETE FROM records WHERE kind=?", ("user-passwords:" + record_id,))
 
     def update_fields(self, kind, record_id, changes, expected=None):
         """Merge topology metadata without replacing concurrent connection edits."""
