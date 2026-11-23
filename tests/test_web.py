@@ -636,3 +636,31 @@ def test_independent_hosts_run_concurrently_and_conflict_points_to_owner(api):
             finish.set()
         for job in jobs:
             assert wait_job(api, job)["status"] == "succeeded"
+
+
+def test_remove_member_retires_only_matching_machine_and_clears_workspace(api):
+    p = profile(api)
+    host = "example.test:27017"
+    api.app.state.store.update_fields("profiles", p["id"], {
+        "seeds": [*p["seeds"], host], "member_hostnames": {host: "old-node"},
+    })
+    m = api.post("/api/machines", json={
+        "name": "old-node", "host": "example.test", "mongo_endpoint": host,
+        "profile_id": p["id"], "service": "mongod-manager-old-node",
+    }).json()
+    api.app.state.store.save("backup-schedules", {"machine_id": m["id"], "enabled": False}, p["id"])
+    plan = api.post("/api/plans", json={
+        "action": "remove_member", "profile_id": p["id"], "params": {"host": host},
+    }).json()
+    with patch("web.app.execute", return_value={"seeds": p["seeds"]}), patch(
+            "web.app.retire_removed_member", return_value={"state": "inactive"}) as retire:
+        task = api.post("/api/jobs", json={"plan_id": plan["id"], "confirmation": plan["confirmation"]}).json()
+        job = wait_job(api, task["id"])
+    assert job["status"] == "succeeded", job
+    retire.assert_called_once()
+    assert retire.call_args.args[1]["id"] == m["id"]
+    store = api.app.state.store
+    assert store.get("profiles", p["id"])["seeds"] == p["seeds"]
+    assert store.get("profiles", p["id"])["member_hostnames"] == {}
+    assert store.get("machines", m["id"])["profile_id"] == ""
+    assert store.get("machines", m["id"])["mongo_endpoint"] == ""

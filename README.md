@@ -160,6 +160,8 @@ Mỗi lần sửa dự án, cập nhật README này trong cùng thay đổi. N�
 
 ### Thay đổi gần đây
 
+- Khi gỡ node, Manager cập nhật seed list, bỏ liên kết MongoDB khỏi hồ sơ VPS và tắt lịch backup của cụm nếu lịch dùng chính VPS đó. Manager chỉ dừng và tắt tự khởi động service do Manager tạo khi tiến trình khớp endpoint đã gỡ và cổng không còn kết nối vào. Xem kết quả từng bước trong nhật ký tác vụ. Dữ liệu và cấu hình instance được giữ để có thể tiếp nhận lại.
+
 - Sửa lỗi `filedescriptor out of range in select()` khi đọc backup và chạy tác vụ qua SSH bằng mật khẩu.
 
 - Khi hai tác vụ cần cùng VPS hoặc cùng sửa replica set, Manager mở nhật ký của tác vụ đang giữ tài nguyên đó. Kiểm tra VPS khác vẫn chạy song song. Popup cập nhật mỗi 2,5 giây và cho phép cuộn lên đọc các dòng cũ. Thao tác vừa bấm cần được thực hiện lại sau khi tác vụ hiện tại kết thúc.

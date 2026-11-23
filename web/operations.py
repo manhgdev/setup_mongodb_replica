@@ -256,7 +256,7 @@ def query(profile, section, database="", collection=""):
 
 def host_run(machine, action, params, emit):
     worker = Path(__file__).with_name("host_worker.py")
-    elevated = action in {"arbiter_check", "arbiter_packages", "arbiter_install", "ubuntu_start", "ubuntu_finalize", "ubuntu_status", "ubuntu_precheck", "ubuntu_restore_service", "install", "setup", "provision", "prepare_member", "read_keyfile", "service", "backup", "backups", "restore", "preview_backup", "delete_backup", "logs"}
+    elevated = action in {"retire_member", "arbiter_check", "arbiter_packages", "arbiter_install", "ubuntu_start", "ubuntu_finalize", "ubuntu_status", "ubuntu_precheck", "ubuntu_restore_service", "install", "setup", "provision", "prepare_member", "read_keyfile", "service", "backup", "backups", "restore", "preview_backup", "delete_backup", "logs"}
     params = dict(params, service=machine["service"])
     payload = {"action": action, "params": params}
     if machine["mode"] == "local":
@@ -551,6 +551,22 @@ def upgrade_arbiter(p, profile, machine, emit):
     raise ValueError("Chưa xác minh được phiên bản và vai trò sau khi nâng. Kiểm tra nhật ký dịch vụ.")
 
 
+def retire_removed_member(profile, machine, host):
+    if not machine or not machine["service"].startswith("mongod-manager-"):
+        raise ValueError("Cần hồ sơ VPS và service do Manager tạo để tự dừng.")
+    for _ in range(10):
+        with client(dict(profile, username="", password=""), direct=host) as target:
+            hello = target.admin.command("hello")
+        if (hello.get("isreplicaset") and not hello.get("setName") and not hello.get("isWritablePrimary")
+                and not hello.get("secondary") and hello.get("topologyVersion")):
+            return host_run(machine, "retire_member", {
+                "replica_set": profile["replica_set"], "port": int(host.rsplit(":", 1)[1]),
+                "process_id": str(hello["topologyVersion"]["processId"]),
+            }, lambda _: None)
+        time.sleep(1)
+    raise ValueError("Node chưa xác nhận đã nhận cấu hình gỡ khỏi cụm.")
+
+
 def execute(action, p, profile, machine, emit):
     if action == "arbiter_upgrade":
         return upgrade_arbiter(p, profile, machine, emit)
@@ -801,6 +817,9 @@ def execute(action, p, profile, machine, emit):
                 member["arbiterOnly"] = True
             cfg["members"].append(member)
         elif not member:
+            if action == "remove_member":
+                emit("Endpoint đã rời cấu hình. Tiếp tục xác minh tài nguyên trên VPS.")
+                return {"config": serial(cfg)}
             raise ValueError("Node không có trong replica set.")
         elif action == "remove_member":
             if states.get(member["_id"], {}).get("state") == 1:

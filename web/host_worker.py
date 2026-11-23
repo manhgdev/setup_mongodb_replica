@@ -553,6 +553,46 @@ print(JSON.stringify({ready:true,primary:input.advertise}));
     return {**result, "service": service, "config": str(configpath), "data": str(data), "keyfile": str(keyfile)}
 
 
+def retire_member(p):
+    service = p["service"]
+    match = re.fullmatch(r"mongod-manager-([a-z][a-z0-9-]{0,30})", service)
+    if not match:
+        raise ValueError("Chỉ tự dừng instance do Manager tạo.")
+    instance = match[1]
+    configpath = Path("/etc/mongodb-manager") / instance / "mongod.conf"
+    unit = run(["systemctl", "show", "-p", "FragmentPath", "--value", service])
+    pid = run(["systemctl", "show", "-p", "MainPID", "--value", service])
+    if unit != f"/etc/systemd/system/{service}.service" or not pid.isdigit() or int(pid) < 1:
+        raise ValueError("Chưa xác minh được service đang chạy trên VPS.")
+    config = json.loads(configpath.read_text())
+    if (config.get("replication", {}).get("replSetName") != p["replica_set"]
+            or config.get("net", {}).get("port") != p["port"]
+            or config.get("storage", {}).get("dbPath") != f"/var/lib/mongodb-manager/{instance}"):
+        raise ValueError("Service không khớp cấu hình replica set đã gỡ.")
+    argv = (Path("/proc") / pid / "cmdline").read_bytes().rstrip(b"\0").split(b"\0")
+    if argv != [b"/usr/bin/mongod", b"--config", os.fsencode(configpath)]:
+        raise ValueError("Tiến trình không dùng đúng cấu hình của Manager.")
+    port = str(p["port"])
+    listen = run(["ss", "-Hlnpt", f"sport = :{port}"])
+    if not listen or any(f'"mongod",pid={pid},' not in row for row in listen.splitlines()):
+        raise ValueError("Chưa đối chiếu được cổng MongoDB với service.")
+    local = shell_js("""
+const conn = new Mongo("mongodb://127.0.0.1:" + input.port + "/?directConnection=true&serverSelectionTimeoutMS=2000");
+const h = conn.getDB("admin").runCommand({hello: 1});
+print(JSON.stringify({removed: h.isreplicaset === true && !h.setName && !h.isWritablePrimary && !h.secondary,
+                      process_id: h.topologyVersion?.processId?.toHexString()}));
+""", {"port": p["port"]}, timeout=10)
+    if not local.get("removed") or local.get("process_id") != p["process_id"]:
+        raise ValueError("Instance chưa xác nhận đã rời cụm hoặc khác tiến trình tại endpoint.")
+    if run(["ss", "-Hnt", "state", "established", f"sport = :{port}"]):
+        raise ValueError("Cổng MongoDB còn kết nối vào. Giữ service để kiểm tra.")
+    run(["systemctl", "disable", "--now", service], timeout=150)
+    if (run(["systemctl", "is-active", service], check=False) != "inactive"
+            or run(["systemctl", "is-enabled", service], check=False) != "disabled"):
+        raise RuntimeError("Chưa xác minh được service đã dừng và tắt tự khởi động.")
+    return {"service": service, "state": "inactive", "autostart": "disabled"}
+
+
 def prepare_member(p):
     # A removed node can still own the port under its original service name.
     service = p.get('service', '')
@@ -1016,6 +1056,8 @@ def main(request):
         direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         with direct.open("https://api.ipify.org", timeout=8) as response:
             return {"ip": response.read(64).decode("ascii").strip()}
+    if action == "retire_member":
+        return retire_member(p)
     if action == "hostname":
         return {"hostname": socket.gethostname()}
     if action == "preflight":

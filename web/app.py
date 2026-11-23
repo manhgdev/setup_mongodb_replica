@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pymongo.errors import OperationFailure, PyMongoError
 
 from .models import Action, Apply, Machine, Profile, ProfileProbe, ProfileAdopt, AttachedMachine, DocumentPage, DocumentWrite
-from .operations import (HOST_ACTIONS, LABELS, PROFILE_ACTIONS, READ_ACTIONS, execute, arbiter_upgrade_target,
+from .operations import (HOST_ACTIONS, LABELS, PROFILE_ACTIONS, READ_ACTIONS, execute, arbiter_upgrade_target, retire_removed_member,
                          client, discover, host_run, mongo_error, read_documents, write_document, query, redact, snapshot, validate_params)
 from . import ubuntu
 from .job_slots import Busy, JobSlots, job_scope, machine_keys
@@ -674,6 +674,12 @@ def create_app(data_dir=None):
             notices.append("Đọc keyfile từ máy nguồn " + source_machine["name"] + ", cài/cấu hình node mới rồi thêm vào cụm. Không khởi tạo replica set riêng. Chọn Votes và Ưu tiên khi thêm secondary.")
         if body.action == "add_member":
             notices.append("Node phải được cấu hình cùng replSetName/keyfile và truy cập được từ các member. Kiểm tra Votes và Ưu tiên đã chọn.")
+        if body.action == "remove_member":
+            candidates = [m for m in store.all("machines") if m.get("profile_id") == profile["id"]
+                          and m.get("mongo_endpoint") == params["host"]]
+            if len(candidates) == 1:
+                machine = candidates[0]
+            notices.append("Sau khi xác nhận đã gỡ khỏi cụm, Manager thử dừng và tắt tự khởi động service do Manager tạo nếu không còn kết nối vào. Dữ liệu được giữ lại.")
         if body.action in {"remove_member", "member_options", "step_down"}:
             notices.append("Kiểm tra lại quorum và cấu hình ngay trước khi thực hiện; không force reconfig.")
         if body.action == "step_down":
@@ -767,6 +773,31 @@ def create_app(data_dir=None):
                 # Seed lists are cluster membership, never a permanent primary IP.
                 seeds = result.get('seeds') or [m['host'] for m in result.get('config', {}).get('members', [])]
                 remember_topology(plan['profile'], {'seeds': seeds, 'replica_set': plan['profile']['replica_set']})
+            if job["action"] == "remove_member":
+                host = params["host"]
+                latest = store.get("profiles", profile["id"])
+                names = latest.get("member_hostnames", {})
+                if host in names:
+                    store.update_fields("profiles", profile["id"],
+                                        {"member_hostnames": {k: v for k, v in names.items() if k != host}},
+                                        expected={"member_hostnames": names})
+                machine = plan["machine"]
+                if machine and store.get("machines", machine["id"]) == machine:
+                    try:
+                        if any(p["id"] != profile["id"] and host in p["seeds"] for p in store.all("profiles")):
+                            raise ValueError("Endpoint vẫn được một hồ sơ MongoDB khác sử dụng.")
+                        result["service_cleanup"] = retire_removed_member(profile, machine, host)
+                        emit("Đã dừng service và tắt tự khởi động trên VPS đã gỡ.")
+                    except (RuntimeError, ValueError, OSError, PyMongoError) as exc:
+                        reason = mongo_error(exc) if isinstance(exc, PyMongoError) else str(exc)
+                        emit("Đã gỡ khỏi cụm. Cần kiểm tra service trên VPS: " + reason)
+                        result["service_cleanup"] = {"state": "unverified", "reason": reason}
+                    if store.update_fields("machines", machine["id"], {"profile_id": "", "mongo_endpoint": ""}, expected=machine):
+                        store.update_fields(SCHEDULES, profile["id"], {"enabled": False, "next_run": None},
+                                            expected={"machine_id": machine["id"]})
+                        emit("Đã bỏ liên kết VPS với cụm. Hồ sơ SSH vẫn dùng được trong Manager.")
+                else:
+                    emit("Chưa có hồ sơ VPS khớp để kiểm tra và dừng service.")
             def scrub(value):
                 if isinstance(value, dict):
                     return {k: scrub(v) for k, v in value.items()}
