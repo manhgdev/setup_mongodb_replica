@@ -161,13 +161,13 @@ def test_single_job_and_local_preflight(api):
     job = wait_job(api, task["id"])
     assert job["status"] == "succeeded", job
     assert "architecture" in job["result"]
-    api.app.state.lock.acquire()
+    api.app.state.slots.reserve("test", set(), {("machine", m["id"])})
     try:
         plan = api.post("/api/plans", json={"action": "preflight", "machine_id": m["id"]}).json()
         assert api.post("/api/jobs", json={"plan_id": plan["id"]}).status_code == 409
         assert api.delete("/api/machines/" + m["id"]).status_code == 409
     finally:
-        api.app.state.lock.release()
+        api.app.state.slots.release("test")
 
 
 def test_interrupted_jobs_are_not_replayed(tmp_path):
@@ -503,8 +503,9 @@ def test_backup_schedule_lifecycle(api):
     scheduler = api.app.state.scheduler
     current = due + timedelta(days=2)
     with patch("web.app.execute", return_value={"id": "test-archive"}) as execute:
-        with api.app.state.lock:
-            scheduler.tick(current)
+        api.app.state.slots.reserve("test", set(), {("machine", host["id"])})
+        scheduler.tick(current)
+        api.app.state.slots.release("test")
         assert not api.app.state.store.all("jobs")
         scheduler.tick(current)
         for _ in range(100):
@@ -553,8 +554,9 @@ def test_delete_backup_only_on_selected_host(api, tmp_path, monkeypatch):
     monkeypatch.setattr(host_worker, "backups_root", lambda create=False: tmp_path)
     monkeypatch.setattr("web.app.host_run", lambda machine, action, params, emit: host_worker.delete_backup(params))
     path = f'/api/profiles/{cluster["id"]}/machines/{host["id"]}/backups/'
-    with api.app.state.lock:
-        assert api.delete(path+keys[0]).status_code == 409
+    api.app.state.slots.reserve("test", set(), {("machine", host["id"])})
+    assert api.delete(path+keys[0]).status_code == 409
+    api.app.state.slots.release("test")
     assert api.delete(path+"invalid").status_code == 400
     assert api.delete(path.replace(cluster["id"], "other")+keys[0]).status_code == 404
     assert api.delete(path+keys[0]).json() == {"deleted":keys[0]}
@@ -603,3 +605,34 @@ def test_busy_submission_identifies_running_job(api):
         finally:
             finish.set()
         assert wait_job(api, active)["status"] == "succeeded"
+
+
+def test_independent_hosts_run_concurrently_and_conflict_points_to_owner(api):
+    from threading import Event
+
+    machines = [api.post("/api/machines", json={"name": host, "mode": "ssh", "host": host}).json()
+                for host in ("one.example", "two.example")]
+    entered = {m["id"]: Event() for m in machines}
+    finish = Event()
+
+    def check(action, params, profile, machine, emit):
+        entered[machine["id"]].set()
+        assert finish.wait(5)
+        return {}
+
+    def submit(machine):
+        plan = api.post("/api/plans", json={"action": "preflight", "machine_id": machine["id"]}).json()
+        return api.post("/api/jobs", json={"plan_id": plan["id"]})
+
+    with patch("web.app.execute", side_effect=check):
+        try:
+            jobs = [submit(m).json()["id"] for m in machines]
+            assert all(event.wait(2) for event in entered.values())
+            for m, job in zip(machines, jobs):
+                conflict = submit(m)
+                assert conflict.status_code == 409
+                assert conflict.headers["X-Active-Job"] == job
+        finally:
+            finish.set()
+        for job in jobs:
+            assert wait_job(api, job)["status"] == "succeeded"

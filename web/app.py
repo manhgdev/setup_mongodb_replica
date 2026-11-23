@@ -25,6 +25,7 @@ from .models import Action, Apply, Machine, Profile, ProfileProbe, ProfileAdopt,
 from .operations import (HOST_ACTIONS, LABELS, PROFILE_ACTIONS, READ_ACTIONS, execute, arbiter_upgrade_target,
                          client, discover, host_run, mongo_error, read_documents, write_document, query, redact, snapshot, validate_params)
 from . import ubuntu
+from .job_slots import Busy, JobSlots, job_scope, machine_keys
 from .store import Store
 from .auth import Auth, SESSION_AGE, password_matches, password_hash, private_json
 from .backup_schedule import BackupScheduler, KIND as SCHEDULES, ScheduleInput
@@ -59,21 +60,25 @@ def create_app(data_dir=None):
         app.state.store = Store(data_dir or os.environ.get("MONGO_MANAGER_DATA", ROOT.parent / ".web-data"))
         app.state.store.rename_generated_machines()
         app.state.auth = Auth(app.state.store)
-        app.state.pool = ThreadPoolExecutor(max_workers=1)
+        app.state.pool = ThreadPoolExecutor(max_workers=8)
         app.state.admin_lock = threading.Lock()
-        app.state.lock = threading.Lock()
+        app.state.slots = JobSlots()
         app.state.plans = {}
         app.state.stop = threading.Event()
         for job in app.state.store.all("jobs"):
             if job["status"] in {"queued", "running"}:
                 if job.get("action") == "ubuntu_upgrade":
                     ctx = app.state.store.get("ubuntu-jobs", job["id"])
-                    if app.state.lock.acquire(blocking=False):
+                    try:
+                        reserve_job(ctx["plan"], job["id"])
+                    except Busy:
+                        pass
+                    else:
                         app.state.pool.submit(run_job, ctx["plan"], job)
                         continue
                 job.update(status="interrupted", finished_at=now(), error="Ứng dụng đã dừng giữa tác vụ. Kiểm tra máy đích trước khi chạy lại.")
                 app.state.store.save("jobs", job, job["id"])
-        scheduler = BackupScheduler(app.state.store, app.state.lock, dispatch_scheduled)
+        scheduler = BackupScheduler(app.state.store, dispatch_scheduled)
         app.state.scheduler = scheduler
         scheduler.thread.start()
         try:
@@ -306,17 +311,22 @@ def create_app(data_dir=None):
         saved = app.state.store.save_many(records)
         return {"profile": public_profile(saved[0]), "machines": [public_machine(m) for m in saved[1:]], "status": status}
 
-    def busy(message):
-        active = next((job for job in reversed(app.state.store.all("jobs"))
-                       if job["status"] in {"queued", "running"}), None)
-        headers = {"X-Active-Job": active["id"]} if active else {}
-        return HTTPException(409, message, headers=headers)
+    def reserve_job(plan, job_id):
+        app.state.slots.reserve(job_id, *job_scope(plan), job_id=job_id)
+
+    @app.exception_handler(Busy)
+    async def busy_response(request, exc):
+        headers = {"X-Active-Job": exc.job_id} if exc.job_id else {}
+        return JSONResponse({"detail": "Tài nguyên đang được một thao tác khác sử dụng."}, status_code=409, headers=headers)
 
     @app.delete("/api/profiles/{record_id}")
     def delete_profile(record_id: str):
-        if app.state.lock.locked():
-            raise busy("Chờ tác vụ hiện tại hoàn tất.")
-        app.state.store.delete("profiles", record_id)
+        owner = uuid4().hex
+        app.state.slots.reserve(owner, set(), {("profile", record_id)})
+        try:
+            app.state.store.delete("profiles", record_id)
+        finally:
+            app.state.slots.release(owner)
         return {"ok": True}
 
     def read_hostname(machine):
@@ -458,9 +468,12 @@ def create_app(data_dir=None):
 
     @app.delete("/api/machines/{record_id}")
     def delete_machine(record_id: str):
-        if app.state.lock.locked():
-            raise busy("Chờ tác vụ hiện tại hoàn tất.")
-        app.state.store.delete("machines", record_id)
+        owner = uuid4().hex
+        app.state.slots.reserve(owner, set(), {("machine", record_id)})
+        try:
+            app.state.store.delete("machines", record_id)
+        finally:
+            app.state.slots.release(owner)
         return {"ok": True}
 
     @app.get("/api/profiles/{record_id}/status")
@@ -504,14 +517,14 @@ def create_app(data_dir=None):
         machine = app.state.store.get("machines", machine_id)
         if machine.get("profile_id") != record_id:
             raise HTTPException(404, "Máy lưu backup không thuộc cụm đang mở.")
-        if not app.state.lock.acquire(blocking=False):
-            raise busy("Chờ tác vụ đang chạy hoàn tất rồi xóa backup.")
+        owner = uuid4().hex
+        app.state.slots.reserve(owner, {("profile", record_id)}, machine_keys(machine))
         try:
             return host_run(machine, "delete_backup", {"backup_id": backup_id}, lambda _: None)
         except (RuntimeError, OSError) as exc:
             raise HTTPException(502, redact(str(exc), machine.get("ssh_password") or "")) from exc
         finally:
-            app.state.lock.release()
+            app.state.slots.release(owner)
 
     @app.get("/api/profiles/{record_id}/machines/{machine_id}/backups/{backup_id}/preview")
     def view_archive(record_id: str, machine_id: str, backup_id: str, database: str = "", collection: str = "", offset: int = Query(0, ge=0)):
@@ -567,6 +580,7 @@ def create_app(data_dir=None):
         target = machine["name"] if body.action in HOST_ACTIONS else profile["name"]
         if body.action in {"backup", "restore", "join_fresh"}:
             target += " → " + profile["name"]
+        receiver = None
         destination = None
         if body.action in {"sync_backup", "restore"} and params.get("destination_id"):
             destination = store.get("profiles", params["destination_id"])
@@ -662,7 +676,7 @@ def create_app(data_dir=None):
         app.state.plans = {k: v for k, v in app.state.plans.items() if v["expires"] > current}
         if len(app.state.plans) >= 100:
             raise HTTPException(429, "Có quá nhiều bản xem trước; hãy chờ hết hạn.")
-        app.state.plans[plan_id] = {"public": plan, "ubuntu_info": ubuntu_info, "destination": destination, "params": params, "profile": profile, "machine": machine, "source_machine": source_machine, "expires": current + 600}
+        app.state.plans[plan_id] = {"public": plan, "ubuntu_info": ubuntu_info, "destination": destination, "params": params, "profile": profile, "machine": machine, "source_machine": source_machine, "receiver": receiver, "expires": current + 600}
         return plan
 
     def run_job(plan, job):
@@ -751,11 +765,11 @@ def create_app(data_dir=None):
                 if job.get("action") == "ubuntu_upgrade" and job["status"] == "succeeded":
                     store.delete("ubuntu-jobs", job["id"])
             finally:
-                app.state.lock.release()
+                app.state.slots.release(job["id"])
 
-    def enqueue(plan, schedule=None):
+    def enqueue(plan, job_id, schedule=None):
         public = plan["public"]
-        job = {"id": uuid4().hex, "machine_id": (plan["machine"] or {}).get("id", ""), "profile_id": (plan["profile"] or {}).get("id") or (plan["machine"] or {}).get("profile_id", ""), "action": public["action"], "label": public["label"], "target": public["target"],
+        job = {"id": job_id, "machine_id": (plan["machine"] or {}).get("id", ""), "profile_id": (plan["profile"] or {}).get("id") or (plan["machine"] or {}).get("profile_id", ""), "action": public["action"], "label": public["label"], "target": public["target"],
                "status": "queued", "created_at": now(), "events": [], "result": None, "error": None}
         records = [("jobs", job, job["id"])]
         if public["action"] == "ubuntu_upgrade":
@@ -774,7 +788,14 @@ def create_app(data_dir=None):
 
     def dispatch_scheduled(schedule, profile, machine):
         public = {"action": "backup", "label": "Backup định kỳ", "target": machine["name"] + " → " + profile["name"]}
-        enqueue({"public": public, "params": schedule["params"], "profile": profile, "machine": machine}, schedule)
+        plan = {"public": public, "params": schedule["params"], "profile": profile, "machine": machine}
+        job_id = uuid4().hex
+        reserve_job(plan, job_id)
+        try:
+            enqueue(plan, job_id, schedule)
+        except Exception:
+            app.state.slots.release(job_id)
+            raise
 
     @app.post("/api/jobs", status_code=202)
     def apply(body: Apply):
@@ -799,15 +820,14 @@ def create_app(data_dir=None):
                 if latest.get(field) != plan['profile'].get(field):
                     raise HTTPException(409, 'Kết nối cụm đã đổi sau khi xem trước. Tạo lại kế hoạch thao tác.')
             plan['profile']['seeds'] = latest['seeds']
-        if not app.state.lock.acquire(blocking=False):
-            raise busy("Đang có tác vụ chạy. Chờ hoàn tất trước khi thực hiện thao tác khác.")
-        if app.state.plans.pop(body.plan_id, None) is None:
-            app.state.lock.release()
-            raise HTTPException(409, "Kế hoạch đã được thực hiện.")
+        job_id = uuid4().hex
+        reserve_job(plan, job_id)
         try:
-            return enqueue(plan)
+            if app.state.plans.pop(body.plan_id, None) is None:
+                raise HTTPException(409, "Kế hoạch đã được thực hiện.")
+            return enqueue(plan, job_id)
         except Exception:
-            app.state.lock.release()
+            app.state.slots.release(job_id)
             raise
 
     @app.post("/api/jobs/{job_id}/verify-ubuntu", status_code=202)
@@ -818,8 +838,7 @@ def create_app(data_dir=None):
             raise HTTPException(409, "Chỉ kiểm tra lại tác vụ nâng Ubuntu đã dừng.")
         ctx = store.get("ubuntu-jobs", job_id)
         plan = ctx["plan"]
-        if not app.state.lock.acquire(blocking=False):
-            raise busy("Đang có tác vụ chạy.")
+        reserve_job(plan, job_id)
         try:
             if store.get("jobs", job_id)["status"] != "failed":
                 raise HTTPException(409, "Tác vụ đã được kiểm tra lại.")
@@ -839,7 +858,7 @@ def create_app(data_dir=None):
             app.state.pool.submit(run_job, plan, job)
             return job
         except Exception:
-            app.state.lock.release()
+            app.state.slots.release(job_id)
             raise
 
     @app.get("/api/jobs/{job_id}")

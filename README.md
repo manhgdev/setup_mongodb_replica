@@ -146,7 +146,7 @@ Khi kết quả là **Cần nâng Ubuntu**, nhấn **Nâng Ubuntu lên …** nga
 
 Bản xem trước hiển thị hệ điều hành, kiến trúc, phiên bản MongoDB và các chặng nâng. Với máy có dữ liệu, gắn đúng hồ sơ, endpoint và service, chuẩn bị bản sao lưu có thể phục hồi rồi xác nhận trong popup. Máy cần systemd, quyền root hoặc sudo không hỏi mật khẩu, update-manager-core, chính sách nâng LTS và tối thiểu 5 GiB trống trên phân vùng gốc. Trình nâng Ubuntu kiểm tra thêm dung lượng thực tế cần cho từng chặng.
 
-Manager dùng hàng đợi tác vụ hiện có để thực hiện lần lượt từng máy. Mỗi chặng chạy trên VPS, có thể reboot sau khi cập nhật gói và sau khi nâng bản phát hành. Mở **Tác vụ** để theo dõi hoặc xem lại sau khi khởi động Manager. Nếu nâng bị gián đoạn, xem đường dẫn log của chặng trên VPS rồi bấm **Kiểm tra lại**. Khi hệ điều hành đã nâng xong và bước cài gói MongoDB bị lỗi, Manager có thể tiếp tục từ bước cài gói sau khi xác nhận. Khi máy mới đã sẵn sàng, bấm **Cài MongoDB** trong kết quả để tiếp tục với đúng máy và nhánh đã chọn.
+Manager cho các VPS độc lập chạy song song. Các lần nâng có thể làm gián đoạn thành viên của cùng replica set chạy lần lượt để bảo toàn quorum. Mỗi chặng chạy trên VPS, có thể reboot sau khi cập nhật gói và sau khi nâng bản phát hành. Mở **Tác vụ** để theo dõi hoặc xem lại sau khi khởi động Manager. Nếu nâng bị gián đoạn, xem đường dẫn log của chặng trên VPS rồi bấm **Kiểm tra lại**. Khi hệ điều hành đã nâng xong và bước cài gói MongoDB bị lỗi, Manager có thể tiếp tục từ bước cài gói sau khi xác nhận. Khi máy mới đã sẵn sàng, bấm **Cài MongoDB** trong kết quả để tiếp tục với đúng máy và nhánh đã chọn.
 
 Kiểm chứng ngày 23/11/2026 trên VM ARM64 có snapshot. Máy trống nâng từ Ubuntu 24.04.5 lên 26.04.1, sau đó cài MongoDB 9.0.8 từ giao diện và trả lời ping. Một replica một node trở lại PRIMARY với cùng phiên bản MongoDB và đọc được document đã ghi trước khi nâng. Kiểm thử riêng trên replica set ba node kiểm tra quorum và bàn giao primary.
 
@@ -156,7 +156,7 @@ Mỗi lần sửa dự án, cập nhật README này trong cùng thay đổi. N�
 
 ### Thay đổi gần đây
 
-- Khi bấm thực hiện trong lúc một tác vụ khác đang chạy, Manager mở nhật ký của tác vụ đang giữ hàng đợi. Popup cập nhật mỗi 2,5 giây và cho phép cuộn lên đọc các dòng cũ. Thao tác vừa bấm cần được thực hiện lại sau khi tác vụ hiện tại kết thúc.
+- Khi hai tác vụ cần cùng VPS hoặc cùng sửa replica set, Manager mở nhật ký của tác vụ đang giữ tài nguyên đó. Kiểm tra VPS khác vẫn chạy song song. Popup cập nhật mỗi 2,5 giây và cho phép cuộn lên đọc các dòng cũ. Thao tác vừa bấm cần được thực hiện lại sau khi tác vụ hiện tại kết thúc.
 
 - Khi chọn primary, ứng dụng chờ secondary áp dụng tới mốc oplog lấy từ primary trước khi yêu cầu bầu. Primary cũ nhường vai trò bằng step-down có kiểm tra đồng bộ. Secondary khác vẫn bỏ phiếu trong thời gian tạm hoãn ứng cử.
 

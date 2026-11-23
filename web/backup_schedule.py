@@ -1,4 +1,4 @@
-"""Persistent cron schedules for the manager's single-worker job runner."""
+"""Persistent cron schedules for the manager's job runner."""
 import logging
 import threading
 from datetime import datetime, timedelta, timezone
@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from croniter import croniter
 from pydantic import BaseModel, ConfigDict, Field
 
+from .job_slots import Busy
 from .operations import validate_params
 
 KIND = "backup-schedules"
@@ -30,9 +31,8 @@ def next_run(expression, current):
 
 
 class BackupScheduler:
-    def __init__(self, store, job_lock, dispatch):
+    def __init__(self, store, dispatch):
         self.store = store
-        self.job_lock = job_lock
         self.dispatch = dispatch
         self.settings_lock = threading.Lock()
         self.stop = threading.Event()
@@ -74,12 +74,8 @@ class BackupScheduler:
                 if not machine or machine.get("profile_id") != schedule["id"]:
                     self.store.update_fields(KIND, schedule["id"], {"enabled": False, "next_run": None})
                     continue
-                if not self.job_lock.acquire(blocking=False):
-                    return
+                schedule["next_run"] = next_run(schedule["cron"], current)
                 try:
-                    schedule["next_run"] = next_run(schedule["cron"], current)
                     self.dispatch(schedule, profile, machine)
-                except Exception:
-                    self.job_lock.release()
-                    raise
-                return  # The worker now owns the job lock.
+                except Busy:
+                    continue  # Stored due time stays unchanged until this host is available.
