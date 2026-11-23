@@ -616,6 +616,24 @@ def prepare_member(p):
                     raise RuntimeError("Phiên bản service đang chạy khác nhánh nguồn.")
                 event(f"Tái sử dụng service {service} đang chạy trên cổng {p['port']}.")
                 return dict(prepared=True, reused=True, service=service, config=str(live_path), data=live['storage']['dbPath'])
+    config_root = Path('/etc/mongodb-manager')
+    if not (config_root / p['instance'] / 'mongod.conf').exists():
+        matches = []
+        for path in config_root.glob('*/mongod.conf'):
+            instance = path.parent.name
+            if not re.fullmatch(r'[a-z][a-z0-9-]{0,30}', instance):
+                continue
+            try:
+                config = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue
+            if (config.get('replication', {}).get('replSetName') == p['replica_set']
+                    and config.get('net', {}).get('port') == p['port']):
+                matches.append(instance)
+        if len(matches) > 1:
+            raise ValueError('Có nhiều instance cũ cùng cụm và cổng. Nhập đúng tên instance cần bật lại.')
+        if matches:
+            p = dict(p, instance=matches[0])
     root = Path('/etc/mongodb-manager') / p['instance']
     data = Path('/var/lib/mongodb-manager') / p['instance']
     configpath = root / 'mongod.conf'
@@ -642,8 +660,14 @@ def prepare_member(p):
             raise RuntimeError('Instance có sẵn không khớp cấu hình/keyfile nguồn. Không ghi đè. Chọn instance/port trống hoặc kiểm tra cấu hình đang dùng.')
         service = 'mongod-manager-' + p['instance']
         if run(['systemctl', 'is-active', service], check=False) != 'active':
-            event('Instance do manager tạo đã khớp cấu hình. Khởi động lại service hiện có, giữ nguyên dữ liệu…')
-            run(['systemctl', 'start', service])
+            unit = run(['systemctl', 'show', '-p', 'FragmentPath', '--value', service])
+            if unit != f'/etc/systemd/system/{service}.service':
+                raise ValueError('Không tìm thấy unit systemd do Manager tạo cho instance cũ.')
+            exec_start = run(['systemctl', 'show', '-p', 'ExecStart', '--value', service])
+            if f'argv[]=/usr/bin/mongod --config /etc/mongodb-manager/{p["instance"]}/mongod.conf ;' not in exec_start:
+                raise ValueError('Unit systemd không dùng đúng cấu hình instance cũ.')
+            event('Đã xác minh instance cũ. Bật lại dịch vụ và tự khởi động…')
+            run(['systemctl', 'enable', '--now', service])
         else:
             event('Instance do manager tạo đã chạy và khớp cấu hình. Tái sử dụng, không cài lại hoặc xóa dữ liệu.')
         return {'prepared': True, 'reused': True, 'service': service, 'config': str(configpath), 'data': str(data)}

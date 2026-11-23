@@ -73,11 +73,18 @@ class Store:
             raise KeyError("Không tìm thấy hồ sơ hoặc tác vụ.")
         return json.loads(self.cipher.decrypt(row[0].encode()))
 
-    def delete(self, kind, record_id):
+    def delete(self, kind, record_id, expected=None):
         with self.connect() as db:
-            db.execute("DELETE FROM records WHERE kind=? AND id=?", (kind, record_id))
+            if expected is not None:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute("SELECT value FROM records WHERE kind=? AND id=?", (kind, record_id)).fetchone()
+                if not row or json.loads(self.cipher.decrypt(row[0].encode())) != expected:
+                    return False
+            deleted = db.execute("DELETE FROM records WHERE kind=? AND id=?", (kind, record_id)).rowcount
+
             if kind == "profiles":
                 db.execute("DELETE FROM records WHERE kind=?", ("user-passwords:" + record_id,))
+            return bool(deleted)
 
     def update_fields(self, kind, record_id, changes, expected=None):
         """Merge topology metadata without replacing concurrent connection edits."""

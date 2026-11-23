@@ -394,15 +394,23 @@ def test_managed_member_resume_preserves_existing_files(tmp_path):
     (root / 'mongod.conf').write_text(json.dumps(config))
     marker = data / 'preserve'
     marker.write_text('real-data')
-    params = {'instance': 'member', 'port': 27017, 'bind_ip': '0.0.0.0', 'replica_set': 'rs0', 'series': '9.0',
+    params = {'instance': 'new-name', 'port': 27017, 'bind_ip': '0.0.0.0', 'replica_set': 'rs0', 'series': '9.0',
               'keyfile_b64': base64.b64encode(b'shared-key').decode()}
     def fake_run(args, **kwargs):
-        return 'db version v9.0.8' if args[0] == 'mongod' else 'active'
+        if args[0] == 'mongod':
+            return 'db version v9.0.8'
+        if 'FragmentPath' in args:
+            return '/etc/systemd/system/mongod-manager-member.service'
+        if 'ExecStart' in args:
+            return '{ argv[]=/usr/bin/mongod --config /etc/mongodb-manager/member/mongod.conf ; }'
+        return 'inactive'
     with patch('web.host_worker.Path', side_effect=lambda value: tmp_path / str(value).lstrip('/')):
-        with patch('web.host_worker.shutil.which', return_value='/usr/bin/mongod'), patch('web.host_worker.run', side_effect=fake_run), patch('web.host_worker.setup') as setup:
+        with patch('web.host_worker.shutil.which', return_value='/usr/bin/mongod'), patch('web.host_worker.run', side_effect=fake_run) as command, patch('web.host_worker.setup') as setup:
             result = prepare_member(params)
             assert result['reused'] and result['service'] == 'mongod-manager-member'
             setup.assert_not_called()
+            command.assert_any_call(['systemctl', 'enable', '--now', 'mongod-manager-member'])
+            params['instance'] = 'member'
             params['replica_set'] = 'wrong-set'
             with pytest.raises(RuntimeError, match='Không ghi đè'):
                 prepare_member(params)
@@ -662,5 +670,6 @@ def test_remove_member_retires_only_matching_machine_and_clears_workspace(api):
     store = api.app.state.store
     assert store.get("profiles", p["id"])["seeds"] == p["seeds"]
     assert store.get("profiles", p["id"])["member_hostnames"] == {}
-    assert store.get("machines", m["id"])["profile_id"] == ""
-    assert store.get("machines", m["id"])["mongo_endpoint"] == ""
+    assert job["result"]["machine_deleted"]
+    with pytest.raises(KeyError):
+        store.get("machines", m["id"])

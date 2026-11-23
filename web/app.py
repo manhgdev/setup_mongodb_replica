@@ -679,7 +679,7 @@ def create_app(data_dir=None):
                           and m.get("mongo_endpoint") == params["host"]]
             if len(candidates) == 1:
                 machine = candidates[0]
-            notices.append("Sau khi xác nhận đã gỡ khỏi cụm, Manager thử dừng và tắt tự khởi động service do Manager tạo nếu không còn kết nối vào. Dữ liệu được giữ lại.")
+            notices.append("Sau khi xác nhận đã gỡ khỏi cụm, Manager thử dừng và tắt tự khởi động service do Manager tạo nếu không còn kết nối vào. Khi xác nhận đã dừng, Manager xóa hồ sơ VPS. Dữ liệu được giữ lại.")
         if body.action in {"remove_member", "member_options", "step_down"}:
             notices.append("Kiểm tra lại quorum và cấu hình ngay trước khi thực hiện; không force reconfig.")
         if body.action == "step_down":
@@ -792,10 +792,14 @@ def create_app(data_dir=None):
                         reason = mongo_error(exc) if isinstance(exc, PyMongoError) else str(exc)
                         emit("Đã gỡ khỏi cụm. Cần kiểm tra service trên VPS: " + reason)
                         result["service_cleanup"] = {"state": "unverified", "reason": reason}
-                    if store.update_fields("machines", machine["id"], {"profile_id": "", "mongo_endpoint": ""}, expected=machine):
-                        store.update_fields(SCHEDULES, profile["id"], {"enabled": False, "next_run": None},
-                                            expected={"machine_id": machine["id"]})
-                        emit("Đã bỏ liên kết VPS với cụm. Hồ sơ SSH vẫn dùng được trong Manager.")
+                    store.update_fields(SCHEDULES, profile["id"], {"enabled": False, "next_run": None},
+                                        expected={"machine_id": machine["id"]})
+                    if result["service_cleanup"]["state"] == "inactive":
+                        result["machine_deleted"] = store.delete("machines", machine["id"], expected=machine)
+                        if result["machine_deleted"]:
+                            emit("Đã xóa hồ sơ VPS khỏi Manager.")
+                    else:
+                        emit("Giữ hồ sơ SSH để có thể kiểm tra và dừng service.")
                 else:
                     emit("Chưa có hồ sơ VPS khớp để kiểm tra và dừng service.")
             def scrub(value):
