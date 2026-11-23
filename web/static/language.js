@@ -329,7 +329,7 @@ const englishLabels = {
   "Kiểm tra & lưu cụm": "Verify & save cluster",
   "Lưu hồ sơ": "Save profile",
   "Tiếp nhận cụm đang chạy: chỉ đọc và kiểm tra kết nối, không cài đặt hay khởi tạo lại.": "Connect an existing cluster using read-only checks.",
-  "Chọn mật khẩu hoặc SSH key/agent. Máy đích cần có trong known_hosts.": "Choose an SSH password, key or agent. The host must be in known_hosts.",
+  "Với mật khẩu SSH, Manager tự lưu khóa VPS ở lần kết nối đầu tiên. Với key/agent, cần thêm VPS vào known_hosts trước.": "With password authentication, Manager remembers the host key on first connection. For key/agent authentication, add the host to known_hosts first.",
   "Cài MongoDB Community": "Install MongoDB Community",
   "Cài mới bằng package chính thức. Nếu đã có mongod, tác vụ sẽ dừng và giữ nguyên phiên bản hiện tại.": "Install official packages. If mongod already exists, installation stops and preserves the current version.",
   "Nhánh MongoDB": "MongoDB series",

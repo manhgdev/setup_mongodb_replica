@@ -34,6 +34,10 @@ def enroll_host_key(machine, expected):
     if fingerprint(key) != expected:
         raise ValueError("Fingerprint đã đổi. Đọc lại khóa và đối chiếu với console VPS.")
     host = machine["host"] if machine["port"] == 22 else f'[{machine["host"]}]:{machine["port"]}'
+    remember_host_key(host, key)
+
+
+def remember_host_key(host, key):
     folder = Path.home() / ".ssh"
     folder.mkdir(mode=0o700, exist_ok=True)
     path = folder / "known_hosts"
@@ -59,11 +63,14 @@ def enroll_host_key(machine, expected):
         output.flush()
 
 
-class RequireKnownKey(paramiko.MissingHostKeyPolicy):
+class RememberNewKey(paramiko.MissingHostKeyPolicy):
     def missing_host_key(self, client, hostname, key):
-        raise RuntimeError(f"Chưa có khóa của {hostname} trong known_hosts của tài khoản chạy Manager. "
-                           f"Khóa VPS gửi là {key.get_name()} {fingerprint(key)}. "
-                           "Mở Máy chủ → Sửa → Xác minh khóa SSH để đối chiếu với console VPS và lưu khóa.")
+        # Persist the key from this handshake before sending the SSH password.
+        try:
+            remember_host_key(hostname, key)
+        except OSError as exc:
+            raise RuntimeError(f"Không lưu được khóa SSH của {hostname} vào ~/.ssh/known_hosts. "
+                               "Kiểm tra quyền ghi của tài khoản chạy Manager.") from exc
 
 
 def run_password(machine, command, payload, emit):
@@ -76,7 +83,7 @@ def run_password(machine, command, payload, emit):
         system_hosts = Path("/etc/ssh/ssh_known_hosts")
         if system_hosts.is_file():
             ssh.load_system_host_keys(str(system_hosts))
-        ssh.set_missing_host_key_policy(RequireKnownKey())
+        ssh.set_missing_host_key_policy(RememberNewKey())
         stage = "bắt tay SSH"
         ssh.connect(hostname=machine["host"], port=machine["port"], username=machine["user"],
                     password=machine["ssh_password"], allow_agent=False, look_for_keys=False,

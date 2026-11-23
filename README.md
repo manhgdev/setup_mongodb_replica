@@ -62,7 +62,7 @@ Trong **Máy chủ**, nhấn **Kiểm tra** trên từng dòng để đọc môi
 
 Khi thêm máy chủ, để trống tên để Manager đọc hostname qua SSH (hoặc đọc tại máy nếu chọn Local). Nhập tên để dùng tên riêng. Nếu chưa đọc được hostname, Manager giữ tên gợi ý và thử cập nhật lại khi nhấn **Kiểm tra**. Tên gợi ý được đánh số theo từng cụm: `mongo-01`, `mongo-02`, … Khi khởi động, Manager cũng đổi các tên cũ đúng mẫu tự sinh `tên cụm · địa chỉ SSH`. Bạn có thể sửa tên hiển thị trong hồ sơ máy.
 
-Khi dùng mật khẩu SSH, Manager đối chiếu khóa VPS với `known_hosts` của tài khoản chạy dịch vụ. Nếu thiếu khóa, nhấn **Xác minh khóa SSH** trong popup kiểm tra hoặc vào **Máy chủ → Sửa → Xác minh khóa SSH**. So sánh fingerprint SHA256 với khóa cùng loại trong console VPS rồi nhấn **Khớp, lưu khóa**. Manager đọc lại khóa, lưu theo đúng host và cổng rồi chạy lại **Kiểm tra**. Nếu gặp lỗi thiếu khóa khi mở **Backup & restore**, nhấn **Xác minh khóa SSH** ngay dưới lỗi. Sau khi lưu, bảng tự tải lại danh sách của đúng VPS đang chọn.
+Khi dùng mật khẩu SSH, Manager tin cậy khóa VPS ở lần kết nối đầu tiên và tự lưu vào `~/.ssh/known_hosts` theo địa chỉ và cổng. Tài khoản chạy Manager cần có quyền ghi thư mục này. Những lần sau, nếu khóa thay đổi, Manager dừng trước khi gửi mật khẩu. Có thể đối chiếu fingerprint qua console VPS trước lần kết nối đầu bằng **Máy chủ → Sửa → Xác minh khóa SSH**.
 
 ## Chọn đúng thao tác
 

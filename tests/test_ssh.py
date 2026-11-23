@@ -106,12 +106,26 @@ def test_password_ssh_rejects_wrong_password(ssh_server):
         run_password(dict(machine, ssh_password='wrong-secret'), 'true', {}, lambda _: None)
 
 
-def test_password_ssh_rejects_unknown_host(ssh_server):
+def test_password_ssh_remembers_first_handshake(ssh_server, tmp_path, monkeypatch):
     machine, seen = ssh_server
+    monkeypatch.setenv("HOME", str(tmp_path))
     with patch.object(paramiko.SSHClient, 'load_system_host_keys', lambda *args: None):
-        with pytest.raises(RuntimeError, match=r'known_hosts.*SHA256:'):
-            run_password(machine, 'true', {}, lambda _: None)
+        assert run_password(machine, 'true', {}, lambda _: None) == {'ok': True}
+    path = tmp_path / '.ssh' / 'known_hosts'
+    assert path.read_bytes() == (tmp_path / 'known_hosts').read_bytes()
+    assert seen['password'] == machine['ssh_password']
+
+
+def test_password_ssh_changed_key_blocks_authentication(ssh_server, tmp_path):
+    machine, seen = ssh_server
+    other = paramiko.RSAKey.generate(2048)
+    path = tmp_path / 'known_hosts'
+    saved = f'[127.0.0.1]:{machine["port"]} ssh-rsa {other.get_base64()}\n'
+    path.write_text(saved)
+    with pytest.raises(RuntimeError, match="đã thay đổi"):
+        run_password(machine, 'true', {}, lambda _: None)
     assert 'password' not in seen
+    assert path.read_text() == saved
 
 
 def test_enroll_verified_host_key(tmp_path, monkeypatch):
