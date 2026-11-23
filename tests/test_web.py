@@ -79,7 +79,7 @@ def test_sensitive_validation_and_service_scope(api):
 
 def test_ssh_password_storage_and_updates(api):
     secret = 'ssh-private-$"secret123'
-    body = {"name": "VPS", "host": "127.0.0.1", "ssh_auth": "password", "ssh_password": secret}
+    body = {"name": "VPS", "host": "8.8.4.10", "ssh_auth": "password", "ssh_password": secret}
     response = api.post('/api/machines', json=body)
     assert response.status_code == 200
     saved = response.json()
@@ -98,7 +98,7 @@ def test_ssh_password_storage_and_updates(api):
 
 def test_ssh_job_failure_redacts_password(api):
     secret = 'private-ssh-secret'
-    m = api.post('/api/machines', json={"name": "VPS", "ssh_auth": "password", "ssh_password": secret}).json()
+    m = api.post('/api/machines', json={"name": "VPS", "host": "8.8.4.10", "ssh_auth": "password", "ssh_password": secret}).json()
     plan = api.post('/api/plans', json={"action": "preflight", "machine_id": m['id']}).json()
     assert secret not in json.dumps(plan)
     with patch('web.app.execute', side_effect=RuntimeError('failed ' + secret)):
@@ -229,19 +229,22 @@ def test_adopt_and_probe_only_save_after_verification(api):
 
 def test_join_fresh_requires_distinct_source_and_explicit_confirmation(api):
     p = profile(api)
-    source = api.post('/api/machines', json={'name': 'Primary VPS', 'host': '192.0.2.10'}).json()
-    target = api.post('/api/machines', json={'name': 'Fresh VPS', 'host': '192.0.2.11'}).json()
-    params = {'instance': 'secondary', 'port': 27017, 'advertise': '192.0.2.11:27017', 'bind_ip': '0.0.0.0',
-              'source_machine_id': source['id'], 'source_endpoint': '192.0.2.10:27017'}
+    source = api.post('/api/machines', json={'name': 'Primary VPS', 'host': '8.8.4.10', 'mongo_endpoint': '8.8.4.10:27017', 'profile_id': p['id']}).json()
+    target = api.post('/api/machines', json={'name': 'Fresh VPS', 'host': '8.8.4.11'}).json()
+    params = {'instance': 'secondary', 'port': 27017, 'advertise': '8.8.4.11:27017', 'bind_ip': '0.0.0.0'}
     body = {'action': 'join_fresh', 'profile_id': p['id'], 'machine_id': target['id'], 'params': params}
-    plan = api.post('/api/plans', json=body)
-    assert plan.status_code == 200
-    assert plan.json()['confirmation'] == 'Fresh VPS → Test'
-    assert api.post('/api/jobs', json={'plan_id': plan.json()['id']}).status_code == 400
-    body['machine_id'] = source['id']
-    assert api.post('/api/plans', json=body).status_code == 400
+    with patch("web.app.client") as connect:
+        connect.return_value.__enter__.return_value.admin.command.return_value = {
+            "me": source["mongo_endpoint"], "isWritablePrimary": True, "setName": p["replica_set"],
+        }
+        plan = api.post('/api/plans', json=body)
+        assert plan.status_code == 200
+        assert plan.json()['confirmation'] == 'Fresh VPS → Test'
+        assert api.post('/api/jobs', json={'plan_id': plan.json()['id']}).status_code == 400
+        body['machine_id'] = source['id']
+        assert api.post('/api/plans', json=body).status_code == 400
     with pytest.raises(ValueError):
-        validate_params('join_fresh', dict(params, advertise='192.0.2.11:27018'))
+        validate_params('join_fresh', dict(params, advertise='8.8.4.11:27018'))
 
 
 def test_new_vps_refuses_existing_instance_before_install(tmp_path):
@@ -280,10 +283,10 @@ def test_seed_without_port_and_invalid_seed_messages(api):
 
 
 def test_adopt_with_ssh_credentials_commits_and_preserves_password(api):
-    status = {'checked_at': '2026-11-12T00:00:00Z', 'members': [{'host': '192.0.2.10:27017'}]}
-    body = {'name': 'Existing', 'seeds': ['192.0.2.10'], 'replica_set': '', 'password': 'mongo-secret'}
-    machine_body = {'name': 'Member VPS', 'host': '192.0.2.10', 'mongo_endpoint': '192.0.2.10', 'ssh_auth': 'password', 'ssh_password': 'ssh-private-secret'}
-    detected = dict(body, seeds=['192.0.2.10:27017'], replica_set='rsExisting')
+    status = {'checked_at': '2026-11-12T00:00:00Z', 'members': [{'host': '8.8.4.10:27017'}]}
+    body = {'name': 'Existing', 'seeds': ['8.8.4.10'], 'replica_set': '', 'password': 'mongo-secret'}
+    machine_body = {'name': 'Member VPS', 'host': '8.8.4.10', 'mongo_endpoint': '8.8.4.10', 'ssh_auth': 'password', 'ssh_password': 'ssh-private-secret'}
+    detected = dict(body, seeds=['8.8.4.10:27017'], replica_set='rsExisting')
     with patch('web.app.discover', return_value=(detected, status)):
         response = api.post('/api/profiles/adopt', json=dict(body, machines=[{'machine': machine_body}]))
     assert response.status_code == 200, response.text
@@ -291,7 +294,7 @@ def test_adopt_with_ssh_credentials_commits_and_preserves_password(api):
     assert 'ssh-private-secret' not in response.text and 'mongo-secret' not in response.text
     saved_machine = data['machines'][0]
     assert saved_machine['profile_id'] == data['profile']['id']
-    assert saved_machine['mongo_endpoint'] == '192.0.2.10:27017'
+    assert saved_machine['mongo_endpoint'] == '8.8.4.10:27017'
     assert saved_machine['has_ssh_password']
     assert api.app.state.store.get('machines', saved_machine['id'])['ssh_password'] == 'ssh-private-secret'
     update = dict(body, record_id=data['profile']['id'], machines=[{'record_id': saved_machine['id'], 'machine': dict(machine_body, ssh_password=None)}])
@@ -303,10 +306,10 @@ def test_adopt_with_ssh_credentials_commits_and_preserves_password(api):
 
 def test_invalid_attached_ssh_does_not_partially_adopt(api):
     status = {'checked_at': '2026-11-12T00:00:00Z', 'members': []}
-    body = {'name': 'Existing', 'seeds': ['192.0.2.10:27017'], 'replica_set': 'rs0'}
+    body = {'name': 'Existing', 'seeds': ['8.8.4.10:27017'], 'replica_set': 'rs0'}
     for machine_body in [
-        {'name': 'Wrong member', 'host': '192.0.2.11', 'mongo_endpoint': '192.0.2.11:27017'},
-        {'name': 'Missing SSH password', 'host': '192.0.2.10', 'mongo_endpoint': '192.0.2.10:27017', 'ssh_auth': 'password'},
+        {'name': 'Wrong member', 'host': '8.8.4.11', 'mongo_endpoint': '8.8.4.11:27017'},
+        {'name': 'Missing SSH password', 'host': '8.8.4.10', 'mongo_endpoint': '8.8.4.10:27017', 'ssh_auth': 'password'},
     ]:
         with patch('web.app.discover', return_value=(body, status)):
             response = api.post('/api/profiles/adopt', json=dict(body, machines=[{'machine': machine_body}]))
@@ -316,7 +319,7 @@ def test_invalid_attached_ssh_does_not_partially_adopt(api):
 
 
 def test_ssh_can_be_saved_before_mongodb_is_reachable(api):
-    body = [{'machine': {'name': 'Repair VPS', 'host': '192.0.2.10', 'ssh_auth': 'password', 'ssh_password': 'private-ssh', 'mongo_endpoint': '192.0.2.10'}}]
+    body = [{'machine': {'name': 'Repair VPS', 'host': '8.8.4.10', 'ssh_auth': 'password', 'ssh_password': 'private-ssh', 'mongo_endpoint': '8.8.4.10'}}]
     with patch('web.app.discover', side_effect=AssertionError('MongoDB must not be contacted')):
         response = api.post('/api/machines/batch', json=body)
     assert response.status_code == 200
@@ -328,9 +331,9 @@ def test_ssh_can_be_saved_before_mongodb_is_reachable(api):
 
 def test_bulk_ssh_across_clusters_preserves_individual_passwords(api):
     first = profile(api)
-    second = api.post('/api/profiles', json={'name': 'Other cluster', 'seeds': ['192.0.2.20'], 'replica_set': 'rsOther'}).json()
+    second = api.post('/api/profiles', json={'name': 'Other cluster', 'seeds': ['8.8.4.20'], 'replica_set': 'rsOther'}).json()
     records = [{'machine': {'name': p['name'], 'host': host, 'profile_id': p['id'], 'mongo_endpoint': host + ':27017',
-                           'ssh_auth': 'password', 'ssh_password': 'bulk-private-secret'}} for p, host in [(first, '192.0.2.10'), (second, '192.0.2.20')]]
+                           'ssh_auth': 'password', 'ssh_password': 'bulk-private-secret'}} for p, host in [(first, '8.8.4.10'), (second, '8.8.4.20')]]
     response = api.post('/api/machines/batch', json=records)
     assert response.status_code == 200
     assert 'bulk-private-secret' not in response.text
@@ -368,8 +371,8 @@ def test_arbiter_diagnostics_uses_unauthenticated_hello_and_trusted_status():
 
 
 def test_member_workflow_prepared_and_arbiter_validation():
-    values = {'instance': 'member', 'port': 27017, 'advertise': '192.0.2.11:27017', 'bind_ip': '0.0.0.0',
-              'source_machine_id': 'source', 'source_endpoint': '192.0.2.10:27017', 'arbiter': True}
+    values = {'instance': 'member', 'port': 27017, 'advertise': '8.8.4.11:27017', 'bind_ip': '0.0.0.0',
+              'source_machine_id': 'source', 'source_endpoint': '8.8.4.10:27017', 'arbiter': True}
     parsed = validate_params('join_fresh', values)
     assert parsed['arbiter'] and parsed['mode'] == 'prepare'
     with pytest.raises(ValueError, match='keyfile'):
@@ -384,12 +387,12 @@ def test_managed_member_resume_preserves_existing_files(tmp_path):
     from pathlib import Path
     import base64
     root = tmp_path / 'etc/mongodb-manager/member'
-    data = tmp_path / 'var/lib/mongodb-manager/member'
+    data = tmp_path / 'var/lib/mongodb-manager/member-rejoin'
     root.mkdir(parents=True)
     data.mkdir(parents=True)
     key = root / 'keyfile'
     key.write_text('shared-key')
-    config = {'replication': {'replSetName': 'rs0'}, 'net': {'port': 27017, 'bindIp': '0.0.0.0'},
+    config = {'replication': {'replSetName': 'rs0'}, 'net': {'port': 27017, 'bindIp': '10.0.0.221'},
               'storage': {'dbPath': str(data)}, 'security': {'keyFile': str(key), 'authorization': 'enabled'}}
     (root / 'mongod.conf').write_text(json.dumps(config))
     marker = data / 'preserve'
@@ -421,11 +424,11 @@ def test_member_network_checks_self_before_membership():
     from web.host_worker import member_network
     from unittest.mock import MagicMock
     with patch('web.host_worker.socket.create_connection', return_value=MagicMock()) as connect:
-        assert member_network({'endpoints': ['192.0.2.11:27018', '192.0.2.10:27017']})['checked'] == 2
-        assert connect.call_args_list[0].args[0] == ('192.0.2.11', 27018)
+        assert member_network({'endpoints': ['8.8.4.11:27018', '8.8.4.10:27017']})['checked'] == 2
+        assert connect.call_args_list[0].args[0] == ('8.8.4.11', 27018)
     with patch('web.host_worker.socket.create_connection', side_effect=OSError('blocked')):
         with pytest.raises(RuntimeError, match='Chưa thêm membership'):
-            member_network({'endpoints': ['192.0.2.11:27018']})
+            member_network({'endpoints': ['8.8.4.11:27018']})
 
 
 def test_port_conflict_reports_actionable_error(tmp_path):
@@ -660,16 +663,93 @@ def test_remove_member_retires_only_matching_machine_and_clears_workspace(api):
     plan = api.post("/api/plans", json={
         "action": "remove_member", "profile_id": p["id"], "params": {"host": host},
     }).json()
-    with patch("web.app.execute", return_value={"seeds": p["seeds"]}), patch(
-            "web.app.retire_removed_member", return_value={"state": "inactive"}) as retire:
+    with patch("web.app.execute", return_value={"seeds": p["seeds"], "service_cleanup": {"state": "inactive"}}) as execute:
         task = api.post("/api/jobs", json={"plan_id": plan["id"], "confirmation": plan["confirmation"]}).json()
         job = wait_job(api, task["id"])
     assert job["status"] == "succeeded", job
-    retire.assert_called_once()
-    assert retire.call_args.args[1]["id"] == m["id"]
+    execute.assert_called_once()
+    assert execute.call_args.args[3]["id"] == m["id"]
     store = api.app.state.store
     assert store.get("profiles", p["id"])["seeds"] == p["seeds"]
     assert store.get("profiles", p["id"])["member_hostnames"] == {}
     assert job["result"]["machine_deleted"]
     with pytest.raises(KeyError):
         store.get("machines", m["id"])
+
+
+@pytest.mark.parametrize("address", ["10.0.0.221", "192.168.0.5", "100.64.0.1", "127.0.0.1", "[fd00::1]"])
+def test_vps_rejects_nonpublic_endpoint(api, address):
+    machine = {"name": "VPS", "host": "8.8.4.10", "mongo_endpoint": address + ":27017"}
+    assert api.post("/api/machines", json=machine).status_code == 400
+    with pytest.raises(ValueError, match="public"):
+        validate_params("add_member", {"host": machine["mongo_endpoint"]})
+
+
+def test_remove_member_stops_service_before_reconfig(monkeypatch):
+    from unittest.mock import MagicMock
+    from web import operations
+
+    hosts = ["primary:27017", "secondary:27017", "arbiter:27017"]
+    config = {"_id": "rs0", "version": 1, "members": [
+        {"_id": i, "host": host} for i, host in enumerate(hosts)
+    ]}
+    states = {i: {"health": 1, "state": state} for i, state in enumerate((1, 2, 7))}
+    client = MagicMock()
+    admin = client.return_value.__enter__.return_value.admin
+    called = []
+
+    def command(value):
+        if isinstance(value, dict) and "replSetReconfig" in value:
+            called.append("reconfig")
+        if value == "replSetGetConfig":
+            return {"config": config}
+
+    def stop(*args):
+        called.append("stop")
+        return {"state": "inactive"}
+
+    admin.command.side_effect = command
+    monkeypatch.setattr(operations, "client", client)
+    monkeypatch.setattr(operations, "healthy_config", lambda db: (config, states))
+    monkeypatch.setattr(operations, "stop_member_service", stop)
+    result = operations.execute("remove_member", {"host": hosts[1]}, {"replica_set": "rs0"}, {}, lambda _: None)
+    assert called == ["stop", "reconfig"]
+    assert result["service_cleanup"]["state"] == "inactive"
+
+
+def test_delete_stopped_service_disables_autostart(monkeypatch):
+    from web import host_worker
+
+    run = monkeypatch.setattr
+    calls = []
+
+    def command(args, **kwargs):
+        calls.append(args)
+        if args[1] == "is-active":
+            return "inactive"
+        if args[1] == "is-enabled":
+            return "disabled" if ["systemctl", "disable", "mongod"] in calls else "enabled"
+        return ""
+
+    run(host_worker, "run", command)
+    assert host_worker.check_service_stopped({"service": "mongod", "port": 27017})["state"] == "inactive"
+    assert ["systemctl", "disable", "mongod"] in calls
+
+
+def test_delete_stopped_service_allows_other_local_service(monkeypatch, tmp_path):
+    from pathlib import Path
+    from web import host_worker
+
+    group = tmp_path / "863227" / "cgroup"
+    group.parent.mkdir()
+    group.write_text("0::/system.slice/mongod.service\n")
+    monkeypatch.setattr(host_worker, "Path", lambda _: tmp_path)
+    monkeypatch.setattr(host_worker, "run", lambda args, **kwargs: {
+        "is-active": "inactive",
+        "is-enabled": "disabled",
+        "-Hlnpt": 'LISTEN 0 4096 127.0.0.1:27017 0.0.0.0:* users:(("mongod",pid=863227,fd=9))',
+    }[args[1]])
+    p = {"service": "mongod-manager-old", "port": 27017}
+    assert host_worker.check_service_stopped(p)["state"] == "inactive"
+    with pytest.raises(ValueError, match="dịch vụ khác"):
+        host_worker.check_service_stopped(dict(p, service="mongod"))

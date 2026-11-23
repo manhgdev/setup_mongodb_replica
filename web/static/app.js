@@ -290,7 +290,7 @@ function machinePage(){
  const fetching=hostnameBatches.has(profile()?.id||'');
  const hostnameAction=workspaceSSHHosts().length?button(fetching?dataLabel('Đang lấy tên…','Reading hostnames…'):dataLabel('Lấy tên từ VPS','Get VPS hostnames'),'machine-hostname','refresh','small',fetching?'disabled':''):'';
  const primaryAction=members.some(m=>m.state==='PRIMARY')?button(uiText("Đổi primary"),'step-down','','small change-primary'):'';
- html+=panel(uiText("Máy chủ của bạn"),rows.length?table(headers,rows):empty(uiText("Thêm máy chủ đầu tiên"),uiText("Kết nối bằng mật khẩu SSH, key/agent hoặc chọn Local."),'machine-new',uiText("Thêm máy chủ"),'server'), '', `<div class="actions">${hostnameAction}${primaryAction}</div>`);
+ html+=panel(uiText("Máy chủ của bạn"),rows.length?table(headers,rows):empty(uiText("Thêm máy chủ đầu tiên"),uiText("Kết nối bằng mật khẩu SSH hoặc key/agent."),'machine-new',uiText("Thêm máy chủ"),'server'), '', `<div class="actions">${hostnameAction}${primaryAction}</div>`);
  if(discovered.length)html+=panel(uiText("Thành viên chưa lưu hồ sơ máy"),table(headers,discovered));
 
  if(!profile())html+=`<div class="cards">${feature(uiText("Cài MongoDB Server"),uiText("Kiểm tra repository và cài package Community 8.0 hoặc 9.0 đúng phiên bản Ubuntu."),'server','install',uiText("Cài package"))}${feature(uiText("Tạo replica set"),uiText("Tạo instance mới với service riêng, keyfile và tài khoản quản trị."),'cluster','setup',uiText("Bắt đầu setup"))}${feature(uiText("Xem nhật ký dịch vụ"),uiText("Đọc 100 dòng journal gần nhất của service đã cấu hình."),'terminal','logs',uiText("Mở nhật ký"))}</div>`;
@@ -591,11 +591,21 @@ function modal(title,body,footer='',subtitle=''){
   if(!$('#modal').open)$('#modal').showModal();
   const scrollBody=$('.modal-body',$('#modal'));if(scrollBody)scrollBody.scrollTop=0;
 }
-function confirmProfileDeletion(name){
+function confirmProfileDeletion(name,machineId){
   const dialog=document.createElement('dialog');
   dialog.className='delete-confirmation';
   dialog.setAttribute('aria-labelledby','delete-confirmation-title');
   dialog.innerHTML=`<form method="dialog"><div class="modal-header"><h2 id="delete-confirmation-title">${uiText("Xóa hồ sơ")}</h2></div><div class="modal-body"><p><strong>${esc(name)}</strong> · ${uiText("Hồ sơ sẽ được xóa khỏi ứng dụng. Dữ liệu và dịch vụ trên VPS vẫn giữ nguyên.")}</p></div><div class="modal-footer"><button class="button" value="cancel" autofocus>${uiText("Hủy")}</button><button class="button danger" value="delete">${uiText("Xoá")}</button></div></form>`;
+  if(machineId){
+    const status=dialog.querySelector('.modal-body p');
+    const submit=dialog.querySelector('[value="delete"]');
+    submit.disabled=true;
+    status.textContent=dataLabel('Đang kiểm tra dịch vụ trên ','Checking service on ')+name+'…';
+    api('/machines/'+machineId+'/delete-check').then(result=>{
+      status.textContent=name+' · '+result.service+' · '+dataLabel('Đã dừng. Manager sẽ kiểm tra lại khi xác nhận xóa.','Stopped. Manager will check again on confirmation.');
+      if(dialog.open)submit.disabled=false;
+    }).catch(error=>{status.textContent=error.message;status.setAttribute('role','alert');});
+  }
   document.body.append(dialog);
   return new Promise(resolve=>{
     dialog.addEventListener('close',()=>{
@@ -643,13 +653,30 @@ function field(name,label,value='',type='text',help='',wide=false,options=[]){
   if(type==='password')input=passwordControl(input);
   return `<label class="field ${wide?'wide':''} ${type==='checkbox'?'checkbox':''}">${type==='checkbox'?input:''}<span>${label}</span>${type!=='checkbox'?input:''}${help?`<small>${help}</small>`:''}</label>`;
 }
-function showRecord(kind,record=null){
+function showRecord(kind,record=null,draft={}){
   recordContext={kind,profileId:record?.profile_id||profile()?.id||'',id:record?.id,hasSSHPassword:!!record?.has_ssh_password,sshIndex:0};jobId=null;
   let fields='';
   if(kind==='profiles'){
     fields=field('name',uiText("Tên hiển thị"),record?.name||'','text',uiText("Ví dụ: Production hoặc Staging"),true)+field('seeds','Seed list',record?.seeds.join('\n')||'','textarea',uiText("Nhập IP hoặc hostname của member; bỏ trống port sẽ dùng 27017. Ví dụ: 203.0.113.10 hoặc 203.0.113.10:27018."),true)+field('replica_set',uiText("Tên replica set"),record?.replica_set??'','text',uiText("Để trống để tự nhận diện từ primary hoặc secondary."))+field('auth_db','Auth database',record?.auth_db||'admin')+field('username','Username MongoDB',record?.username||'')+field('password',uiText("Mật khẩu MongoDB"), '', 'password',record?uiText("Để trống để giữ mật khẩu đã lưu."):uiText("Được mã hóa trên máy quản trị."))+field('tls',uiText("Bật TLS"),record?.tls||false,'checkbox','',true)+field('tls_ca',uiText("Đường dẫn CA (nếu dùng)"),record?.tls_ca||'','text',uiText("Đường dẫn trên máy quản trị. Để trống để dùng CA hệ thống."),true);
   }else{
-    fields=field('name',uiText("Tên máy chủ"),record?.name||nextMachineName(recordContext.profileId),'text',dataLabel('Để trống để tự đọc hostname. Có thể nhập tên riêng.','Leave blank to detect the hostname, or enter a custom name.'),true)+field('mode',uiText("Chế độ"),record?.mode||'ssh','select','',false,[{value:'ssh',label:uiText("SSH — VPS từ xa")},{value:'local',label:uiText("Local — máy chạy web")}])+field('host',uiText("Địa chỉ SSH"),record?.host||'','text',uiText("Mật khẩu dùng IP/hostname trực tiếp; key/agent có thể dùng alias SSH."))+field('port','Port SSH',record?.port||22,'number')+field('user','User SSH',record?.user||'root')+field('ssh_auth',uiText("Xác thực SSH"),record?.ssh_auth||'key','select','',true,[{value:'key',label:'SSH key / Agent'},{value:'password',label:uiText("Mật khẩu SSH")}])+field('ssh_password',uiText("Mật khẩu SSH"),'','password',record?.has_ssh_password?uiText("Đã lưu mật khẩu. Để trống để giữ nguyên."):uiText("Mật khẩu được lưu mã hóa trên máy quản trị."),true)+field('identity',uiText("SSH private key (tùy chọn)"),record?.identity||'','text',uiText("Để trống để dùng SSH agent hoặc ~/.ssh/config."),true)+field('mongo_endpoint',uiText("Endpoint MongoDB trên VPS"),record?.mongo_endpoint||'','text',uiText("Ví dụ: 203.0.113.10:27017. Port này khác port SSH."),true)+field('service',uiText("Tên service"),record?.service||'mongod','text',uiText("Service systemd của instance cần quản lý."),true);
+    const mode=record?.mode==='local'?'local':'ssh';
+    const endpoint=record?.mongo_endpoint||draft.mongo_endpoint||'';
+    const [,mongoHost='',mongoPort='27017']=endpoint.match(/^(\[[^\]]+\]|[^:]+)(?::(\d+))?$/)||[];
+    const address=mongoHost.replace(/^\[|\]$/g,'');
+    const sshOverride=record?.host&&record.host!==address?record.host:'';
+    const t=dataLabel;
+    fields=field('name',uiText("Tên máy chủ"),record?.name||nextMachineName(recordContext.profileId),'text',t('Để trống để tự đọc hostname.','Leave blank to detect the hostname.'),true)
+      +field('mongo_host',mode==='ssh'?t('Địa chỉ IP public','Public IP address'):t('Địa chỉ MongoDB','MongoDB address'),address)
+      +field('mongo_port',t('Cổng MongoDB','MongoDB port'),mongoPort,'number')
+      +`<input type="hidden" name="mode" value="${mode}">`
+      +field('user','User SSH',record?.user||'root')
+      +field('port','Port SSH',record?.port||22,'number')
+      +field('ssh_auth',uiText("Xác thực SSH"),record?.ssh_auth||draft.ssh_auth||'key','select','',true,[{value:'key',label:'SSH key / Agent'},{value:'password',label:uiText("Mật khẩu SSH")}])
+      +field('ssh_password',uiText("Mật khẩu SSH"),'','password',record?.has_ssh_password?uiText("Đã lưu mật khẩu. Để trống để giữ nguyên."):'' ,true)
+      +field('identity',uiText("SSH private key (tùy chọn)"),record?.identity||'','text',uiText("Để trống để dùng SSH agent hoặc ~/.ssh/config."),true)
+      +`<details class="field wide" ${mode==='local'?'hidden':''} ${sshOverride?'open':''}><summary>${t('Địa chỉ SSH riêng','Separate SSH address')}</summary>
+          ${field('host',t('Địa chỉ SSH (nếu khác)','SSH address (if different)'),sshOverride,'text',t('Để trống để dùng địa chỉ IP public ở trên.','Leave blank to use the public address above.'))}</details>`
+      +field('service',uiText("Tên service"),record?.service||'mongod','text','',true);
   }
   modal(record?uiText("Chỉnh sửa hồ sơ"):kind==='profiles'?uiText("Kết nối cụm MongoDB"):uiText("Thêm máy chủ"),`<form id="record-form"><div class="modal-body"><div class="form-grid">${fields}</div>${kind==='profiles'?("<div id=\"probe-result\"></div><details class=\"cluster-ssh\"><summary>"+uiText("SSH cho các VPS trong cụm (tùy chọn)")+"</summary><p>"+uiText("Tài khoản SSH dùng để đọc log, điều khiển service, cài đặt và xử lý trên VPS. Mỗi VPS có thông tin SSH riêng; tài khoản này khác tài khoản MongoDB ở trên. Lưu hồ sơ không tự chạy lệnh trên VPS.")+"</p><div id=\"cluster-ssh-list\"></div>")+button(uiText("Thêm VPS bằng SSH"),'cluster-ssh-add','plus')+' '+button(uiText("Lưu SSH"),'cluster-ssh-save')+("<p>"+uiText("Có thể lưu SSH trước để kiểm tra VPS khi MongoDB chưa kết nối được. Sau đó tiếp nhận cụm khi đã xử lý xong.")+"</p></details>"):''}<div id="form-error"></div></div><div class="modal-footer">${kind==='profiles'?button(uiText("Kiểm tra kết nối"),'profile-probe'):''}${kind==='machines'&&record?.mode==='ssh'&&record.ssh_auth==='password'&&!demo?sshKeyButton(record.id):''}${record?button(uiText("Xóa hồ sơ"),'record-delete','trash','danger'):''}${button(uiText("Hủy"),'modal-close')}<button class="button primary" type="submit">${icon('check')}${kind==='profiles'?uiText("Kiểm tra & lưu cụm"):uiText("Lưu hồ sơ")}</button></div></form>`,'',kind==='profiles'?uiText("Tiếp nhận cụm đang chạy: chỉ đọc và kiểm tra kết nối, không cài đặt hay khởi tạo lại."):uiText("Với mật khẩu SSH, Manager tự lưu khóa VPS ở lần kết nối đầu tiên. Với key/agent, cần thêm VPS vào known_hosts trước."));
   if(record?.has_password || record?.has_ssh_password){
@@ -671,6 +698,7 @@ function syncSSHFields(){
     const input=form.elements[name];
     const shown=remote&&(name==='identity'?!password:name==='ssh_password'?password:true);
     input.closest('.field').hidden=!shown; input.disabled=!shown;
+    if(name==='host')input.required=false;
     if(name==='ssh_password')input.required=password&&!recordContext.hasSSHPassword;
   }
 }
@@ -748,7 +776,7 @@ schemas.ubuntu_upgrade={title:dataLabel('Quản lý Ubuntu','Manage Ubuntu'),hos
       [{value:'auto',label:dataLabel('Tự chọn LTS tương thích gần nhất','Nearest compatible LTS')},
        ...Object.entries({focal:'20.04',jammy:'22.04',noble:'24.04',resolute:'26.04'}).map(([value,v])=>({value,label:'Ubuntu '+v+' LTS'}))]]]};
 schemas.provision={...schemas.setup,title:uiText("Cài và tạo cụm mới"),note:uiText("Dành cho VPS chưa có cụm ở port này. Kiểm tra đích, cài package nếu thiếu, tạo keyfile và replica set, lưu hồ sơ và xác minh kết nối."),fields:[['series',uiText("Nhánh MongoDB"),'9.0','select','',true,['9.0','8.0']],...schemas.setup.fields]};
-schemas.join_fresh={title:uiText("Kiểm tra VPS và thêm member"),host:true,profile:true,note:uiText("Mọi chế độ đều kiểm tra SSH, phiên bản và keyfile. Chế độ cài mới cần port/thư mục trống hoặc instance manager khớp cấu hình để tái sử dụng. Chọn member nguồn bất kỳ, có quyền SSH đọc keyfile; nguồn không cần là primary; tài khoản MongoDB cần quyền getCmdLineOpts và quản lý cụm. Không tạo replica set/user riêng trên Secondary. Cụm TLS cần chuẩn bị node riêng."),fields:[['mode',uiText("Cách xử lý VPS"),'prepare','select',uiText("Cài khi thiếu; instance manager khớp cấu hình được tái sử dụng. Không tự cài đè dữ liệu."),true,[{value:'prepare',label:uiText("Kiểm tra và cài/cấu hình instance manager")},{value:'prepared',label:uiText("Kiểm tra node đã cấu hình sẵn (giữ nguyên)")}]],['arbiter',uiText("Thêm dưới vai trò Arbiter"),false,'checkbox',uiText("Bỏ chọn để thêm Secondary."),true],['target_keyfile',uiText("Keyfile trên node đã chuẩn bị"),'','text',uiText("Chỉ bắt buộc với chế độ node đã chuẩn bị; nhập đường dẫn thực tế để đối chiếu nguồn."),true],['source_machine_id',uiText("VPS nguồn giữ keyfile (bất kỳ member)"),'','select',uiText("Dùng để đọc keyfile đang chạy; không thay đổi VPS nguồn."),true,[]],['source_endpoint',uiText("Endpoint MongoDB của VPS nguồn"),'','text',uiText("Phải là member của cụm đã chọn."),true],['instance',uiText("Tên instance mới"),'secondary'],['port','Port MongoDB',27017,'number'],['advertise',uiText("Địa chỉ MongoDB của VPS mới (tùy chọn)"),'','text',uiText("Để trống để dùng địa chỉ MongoDB đã lưu hoặc IP public của VPS cùng cổng đã chọn."),true],['bind_ip','Bind address','0.0.0.0','text',uiText("Kiểm tra firewall giữa các VPS trước khi chạy."),true]]};
+schemas.join_fresh={title:uiText("Kiểm tra VPS và thêm member"),host:true,profile:true,note:uiText("Mọi chế độ đều kiểm tra SSH, phiên bản và keyfile. Chế độ cài mới cần port/thư mục trống hoặc instance manager khớp cấu hình để tái sử dụng. Manager dùng SSH của primary hiện tại để đọc keyfile. Tài khoản MongoDB cần quyền getCmdLineOpts và quản lý cụm. Không tạo replica set/user riêng trên Secondary. Cụm TLS cần chuẩn bị node riêng."),fields:[['mode',uiText("Cách xử lý VPS"),'prepare','select',uiText("Cài khi thiếu; instance manager khớp cấu hình được tái sử dụng. Không tự cài đè dữ liệu."),true,[{value:'prepare',label:uiText("Kiểm tra và cài/cấu hình instance manager")},{value:'prepared',label:uiText("Kiểm tra node đã cấu hình sẵn (giữ nguyên)")}]],['arbiter',uiText("Thêm dưới vai trò Arbiter"),false,'checkbox',uiText("Bỏ chọn để thêm Secondary."),true],['target_keyfile',uiText("Keyfile trên node đã chuẩn bị"),'','text',uiText("Chỉ bắt buộc với chế độ node đã chuẩn bị; nhập đường dẫn thực tế để đối chiếu nguồn."),true],['instance',uiText("Tên instance mới"),'secondary'],['port','Port MongoDB',27017,'number'],['advertise',uiText("Địa chỉ MongoDB của VPS mới (tùy chọn)"),'','text',uiText("Để trống để dùng địa chỉ MongoDB đã lưu hoặc IP public của VPS cùng cổng đã chọn."),true],['bind_ip','Bind address','0.0.0.0','text',uiText("Kiểm tra firewall giữa các VPS trước khi chạy."),true]]};
 for(const schema of [schemas.add_member,schemas.join_fresh]){
   schema.fields.push(['votes','Votes',0,'select','',false,[0,1]],
     ['priority',uiText("Ưu tiên bầu primary"),0,'number',uiText("Giá trị cao hơn được ưu tiên. Đặt 0 để node không thể làm primary.")]);
@@ -757,12 +785,32 @@ function openAction(action,overrides={}){
   jobId=null;const schema=schemas[action];
   if(schema.profile&&!profile()){toast(uiText("Thêm hồ sơ MongoDB trước khi thực hiện."));showRecord('profiles');return;}
   const cluster=profile();
-  const hosts=machines().filter(m=>cluster?m.profile_id===cluster.id:!m.profile_id);
+  const joining=action==='join_fresh';
+  if(joining&&!overrides.machine_id){
+    pendingJoinOptions=overrides;
+    pendingJoin=true;
+    showRecord('machines',null,{ssh_auth:'password'});
+    return;
+  }
+  const memberEndpoints=new Set(currentStatus?.members?.length?currentStatus.members.map(m=>m.host):cluster?.seeds||[]);
+  const hosts=machines().filter(m=>joining
+    ?m.mode==='ssh'&&(!m.profile_id||m.profile_id===cluster.id)&&!memberEndpoints.has(m.mongo_endpoint)
+    :cluster?m.profile_id===cluster.id:!m.profile_id);
+  const selectedHost=joining&&hosts.find(m=>m.id===overrides.machine_id);
+  if(joining&&overrides.machine_id&&!selectedHost){
+    toast(dataLabel('VPS đã chọn không còn đủ điều kiện để thêm. Kiểm tra danh sách thành viên và hồ sơ SSH.','The selected VPS is no longer eligible. Check replica set membership and its SSH profile.'),true);
+    return;
+  }
   if(schema.host&&!hosts.length){toast(uiText("Thêm máy thực thi trước khi thực hiện."));showRecord('machines');return;}
-  if(action==='join_fresh'&&hosts.length<2){pendingJoinOptions=overrides;toast(uiText("Cần SSH của VPS nguồn và VPS đích. Nhập VPS mới trước."));pendingJoin=true;showRecord('machines');return;}
   actionContext={action,overrides,profileId:schema.profile?cluster.id:''};
   let fields='';
-  if(schema.host)fields+=field('machine_id',action==='join_fresh'?uiText("VPS đích mới"):(schema.hostLabel||uiText("Máy thực thi")),overrides.machine_id||(action==='join_fresh'?(hosts.find(m=>!m.profile_id)||hosts.at(-1)).id:hosts[0].id),'select','',true,hosts.map(m=>({value:m.id,label:`${m.name} · ${m.mode==='local'?'Local':`${m.user}@${m.host}`} · ${m.service}`})));
+  if(selectedHost){
+    fields+=`<input type="hidden" name="machine_id" value="${esc(selectedHost.id)}"><div class="field wide"><span>${dataLabel('VPS sẽ thêm vào cụm','VPS to add')}</span><strong>${esc(selectedHost.name)} · ${esc(selectedHost.host)}</strong></div>`;
+  }else if(schema.host){
+    fields+=field('machine_id',schema.hostLabel||uiText("Máy thực thi"),
+      overrides.machine_id||hosts[0].id,'select','',true,
+      hosts.map(m=>({value:m.id,label:`${m.name} · ${m.mode==='local'?'Local':`${m.user}@${m.host}`} · ${m.service}`})));
+  }
   if(action==='backup_schedule'){
     const presets=[{value:'0 * * * *',label:dataLabel('Mỗi giờ','Hourly')},
       {value:'0 2 * * *',label:dataLabel('Hằng ngày lúc 02:00','Daily at 02:00')},
@@ -791,9 +839,9 @@ function openAction(action,overrides={}){
     }
     fields+=field('destination_id',action==='restore'?dataLabel('Restore vào','Restore to'):dataLabel('Cụm đích','Destination cluster'),overrides.destination_id||(action==='restore'?'':targets[0].id),'select',action==='restore'?dataLabel('Chọn cụm để tự tìm primary, hoặc chọn máy để ghi trực tiếp vào MongoDB trên máy đó. Primary sẽ sao chép thay đổi sang các secondary.','Choose a cluster for primary discovery or a server for a direct write. A primary replicates changes to its secondaries.'):'',true,options);
   }
-  for(const entry of schema.fields){const f=[...entry];if(f[0]==='source_machine_id')f[6]=hosts.map(m=>({value:m.id,label:m.name+' · '+m.host}));if(f[0] in overrides)f[2]=overrides[f[0]];fields+=field(...f);}
-  modal(schema.title,`<form id="action-form"><div class="modal-body">${schema.note?`<div class="callout">${schema.note}</div>`:''}<div class="form-grid">${fields}</div><div id="form-error"></div></div><div class="modal-footer">${action==='install'?button(dataLabel('Kiểm tra Ubuntu','Check Ubuntu'),'ubuntu-from-install'):''}${action==='backup_schedule'&&currentSchedule()?.enabled?button(dataLabel('Tạm dừng lịch','Pause schedule'),'schedule-pause'):''}${button(uiText("Hủy"),'modal-close')}<button class="button primary" type="submit">${action==='backup_schedule'?dataLabel('Lưu và bật lịch','Save and enable'):uiText("Xem lại thao tác →")}</button></div></form>`);
-  const form=$('#action-form');let lastSource='';
+  for(const entry of schema.fields){const f=[...entry];if(f[0] in overrides)f[2]=overrides[f[0]];fields+=field(...f);}
+  modal(schema.title,`<form id="action-form"><div class="modal-body">${schema.note?`<div class="callout">${schema.note}</div>`:''}<div class="form-grid">${fields}</div><div id="form-error"></div></div><div class="modal-footer">${['add_member','join_fresh'].includes(action)?button(dataLabel('Cấu hình SSH cho VPS','Configure VPS SSH'),'node-ssh-new','server'):''}${action==='add_member'?button(dataLabel('Tự lấy keyfile từ Primary','Copy keyfile from Primary'),'node-auto-keyfile','key'):''}${action==='install'?button(dataLabel('Kiểm tra Ubuntu','Check Ubuntu'),'ubuntu-from-install'):''}${action==='backup_schedule'&&currentSchedule()?.enabled?button(dataLabel('Tạm dừng lịch','Pause schedule'),'schedule-pause'):''}${button(uiText("Hủy"),'modal-close')}<button class="button primary" type="submit">${action==='backup_schedule'?dataLabel('Lưu và bật lịch','Save and enable'):uiText("Xem lại thao tác →")}</button></div></form>`);
+  const form=$('#action-form');
   if(form.elements.frequency){
     const {frequency,cron}=form.elements;
     frequency.onchange=()=>{if(frequency.value==='custom')cron.focus();else cron.value=frequency.value;};
@@ -814,7 +862,22 @@ function openAction(action,overrides={}){
     }
   }
   if(form.elements.scope)backupScope(form,cluster,overrides);
-  if(action==='join_fresh')form.elements.advertise.required=false;
+  if(joining){
+    const {machine_id,advertise,port}=form.elements;
+    advertise.required=false;
+    let previous=null;
+    const fillEndpoint=()=>{
+      const endpoint=hosts.find(m=>m.id===machine_id.value)?.mongo_endpoint||'';
+      if(!advertise.value||advertise.value===previous){
+        advertise.value=endpoint;
+        const savedPort=endpoint.match(/:(\d+)$/)?.[1];
+        if(savedPort)port.value=savedPort;
+      }
+      previous=endpoint;
+    };
+    fillEndpoint();
+    machine_id.addEventListener('change',fillEndpoint);
+  }
   const fill=()=>{
     if(form.elements.arbiter && form.elements.votes){
       const {arbiter,votes,priority}=form.elements;
@@ -825,8 +888,6 @@ function openAction(action,overrides={}){
       priority.min=0;priority.max=1000;
     }
     if(form.elements.target_keyfile){const prepared=form.elements.mode?.value==='prepared';form.elements.target_keyfile.closest('.field').hidden=!prepared;form.elements.target_keyfile.disabled=!prepared;form.elements.target_keyfile.required=prepared;}
-    const src=machines().find(m=>m.id===form.elements.source_machine_id?.value);
-    if(form.elements.source_endpoint&&src){const next=src.mongo_endpoint||'';if(!form.elements.source_endpoint.value||form.elements.source_endpoint.value===lastSource)form.elements.source_endpoint.value=next;lastSource=next;}
   };fill();form.addEventListener('change',fill);
 }
 function formError(error){const target=$('#form-error');if(target)target.innerHTML=`<div class="form-error">${esc(error.message||error)}</div>`;else toast(error.message||error,true);}
@@ -971,12 +1032,47 @@ async function runDiagnostics(){
 async function saveRecord(form){
   let data=Object.fromEntries(new FormData(form));const ctx=recordContext;
   if(ctx.kind==='profiles'){data=profileFormData(form);data.machines=clusterSSHData();}
-  else {data.name=data.name.trim();data.auto_name=!data.name;data.name||=form.elements.name.dataset.fallback;data.profile_id=ctx.profileId;data.port=Number(data.port||22);if(!data.ssh_password)data.ssh_password=null;}
+  else {
+    data.name=data.name.trim();
+    data.auto_name=!data.name;
+    data.name||=form.elements.name.dataset.fallback;
+    data.profile_id=ctx.profileId;
+    data.port=Number(data.port||22);
+    data.ssh_password||=null;
+    const address=data.mongo_host.trim().replace(/^\[|\]$/g,'');
+    const mongoPort=Number(data.mongo_port||27017);
+    if(!Number.isInteger(mongoPort)||mongoPort<1||mongoPort>65535){
+      throw new Error(dataLabel('Cổng MongoDB phải từ 1 đến 65535.','MongoDB port must be between 1 and 65535.'));
+    }
+    data.mongo_endpoint=address?`${address.includes(':')?'['+address+']':address}:${mongoPort}`:'';
+    delete data.mongo_host;
+    delete data.mongo_port;
+    if(data.mode==='ssh'){
+      data.host=data.host.trim()||address;
+      if(!data.host)throw new Error(dataLabel('Nhập IP public hoặc địa chỉ SSH của VPS.','Enter the public IP or SSH address of the VPS.'));
+    }
+  }
   if(demo){toast(uiText("Hồ sơ xem thử không được lưu. Chuyển sang dữ liệu thật để kết nối."));$('#modal').close();return;}
   const adopted=ctx.kind==='profiles'?await api('/profiles/adopt',{method:'POST',body:JSON.stringify({...data,record_id:ctx.id||''})}):null;
   const saved=adopted?adopted.profile:await api('/'+ctx.kind+(ctx.id?'/'+ctx.id:''),{method:ctx.id?'PUT':'POST',body:JSON.stringify(data)});
   if(ctx.kind==='profiles'){if(!profile()){selected=saved.id;localStorage.setItem('mongo-manager-profile',selected);}currentStatus=null;}
-  $('#modal').close();toast(uiText("Đã lưu hồ sơ."));await refreshState();await render();if(ctx.kind==='machines'&&pendingJoin){pendingJoin=false;openAction('join_fresh',{...pendingJoinOptions,machine_id:saved.id});pendingJoinOptions={};}
+  const next=ctx.kind==='machines'&&pendingJoin?pendingJoinOptions:null;
+  if(next){pendingJoin=false;pendingJoinOptions={};}
+  if(!next)$('#modal').close();
+  toast(uiText("Đã lưu hồ sơ."));
+  await refreshState();
+  await render();
+  if(next){
+    const {action='join_fresh',...options}=next;
+    if(action==='add_member')openAction(action,{...options,host:saved.mongo_endpoint||options.host});
+    else {
+      if(saved.mongo_endpoint&&!options.advertise){
+        const port=saved.mongo_endpoint.match(/:(\d+)$/)?.[1];
+        if(port)options.port=Number(port);
+      }
+      openAction(action,{...options,machine_id:saved.id});
+    }
+  }
 }
 document.addEventListener('submit',async event=>{
   if(event.target.id==='manager-admin-form'){
@@ -1135,7 +1231,32 @@ document.addEventListener('click',async event=>{
     if(act==='node-add'){showNodeAdd();return;}
     if(act==='prepared-node'){openAction('add_member');return;}
     if(act==='add-arbiter'){showNodeAdd(true);return;}
-    if(act==='node-ssh-new'){pendingJoin=true;showRecord('machines');return;}
+    if(act==='node-ssh-new'||act==='node-auto-keyfile'){
+      const form=$('#action-form');
+      const action=actionContext.action;
+      const options={...actionContext.overrides};
+      for(const [name,,,type] of schemas[action].fields){
+        const input=form.elements[name];
+        if(input)options[name]=type==='checkbox'?input.checked:input.value;
+      }
+      const endpoint=(options.host||options.advertise||'').trim();
+      const sshHost=endpoint.startsWith('[')?endpoint.slice(1,endpoint.indexOf(']')):endpoint.split(':')[0];
+      const normalized=endpoint&&endpoint===sshHost?endpoint+':27017':endpoint;
+      const existing=machines().find(m=>m.profile_id===profile()?.id&&m.mode==='ssh'&&
+        ((normalized&&m.mongo_endpoint===normalized)||(!normalized&&m.id===form.elements.machine_id?.value)));
+      if(act==='node-auto-keyfile'){
+        const port=normalized.match(/:(\d+)$/)?.[1];
+        pendingJoinOptions={action:'join_fresh',arbiter:options.arbiter,votes:options.votes,priority:options.priority,
+          ...(port?{port:Number(port),advertise:normalized}:{})};
+        if(existing){openAction('join_fresh',{...pendingJoinOptions,machine_id:existing.id});pendingJoinOptions={};return;}
+        delete pendingJoinOptions.advertise;
+      }else{
+        pendingJoinOptions={...options,action};
+      }
+      pendingJoin=true;
+      showRecord('machines',existing||null,{mongo_endpoint:normalized,ssh_auth:'password'});
+      return;
+    }
     if(act==='machine-hostname'){
       if(demo){toast(dataLabel('Chọn một VPS thật để đọc hostname qua SSH.','Select a real VPS to read its SSH hostname.'));return;}
       const pid=profile()?.id||'',hosts=workspaceSSHHosts();
@@ -1163,7 +1284,7 @@ document.addEventListener('click',async event=>{
       if(!ctx.id)return;
       const label=ctx.kind==='profiles'?profiles().find(p=>p.id===ctx.id)?.name:machines().find(m=>m.id===ctx.id)?.name;
       if(demo){toast(uiText("Không xóa hồ sơ minh họa."));return;}
-      if(!await confirmProfileDeletion(label||ctx.id))return;
+      if(!await confirmProfileDeletion(label||ctx.id,ctx.kind==='machines'?ctx.id:null))return;
       await api('/'+ctx.kind+'/'+ctx.id,{method:'DELETE'});$('#modal').close();currentStatus=null;await refreshState();await render();return;
     }
     if(act==='connection'){

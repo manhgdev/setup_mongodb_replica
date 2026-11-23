@@ -142,7 +142,7 @@ const englishLabels = {
   "MÁY CHỦ": "SERVER",
   "KẾT NỐI": "CONNECTION",
   "Thêm máy chủ đầu tiên": "Add your first server",
-  "Kết nối bằng mật khẩu SSH, key/agent hoặc chọn Local.": "Use an SSH password, a key or agent, or choose Local.",
+  "Kết nối bằng mật khẩu SSH hoặc key/agent.": "Use an SSH password, a key or agent, or choose Local.",
   "Cài MongoDB Server": "Install MongoDB Server",
   "Kiểm tra repository và cài package Community 8.0 hoặc 9.0 đúng phiên bản Ubuntu.": "Check the repository and install Community 8.0 or 9.0 for your Ubuntu release.",
   "Cài package": "Install packages",

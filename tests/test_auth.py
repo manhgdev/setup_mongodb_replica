@@ -40,15 +40,15 @@ def test_protected_routes_csrf_and_logout(directory):
     with client_for(directory) as api:
         assert not api.get('/api/auth/status').json()['authenticated']
         assert api.get('/api/state').status_code == 401
-        assert api.post('/api/machines', json={'name': 'x'}).status_code == 401
+        assert api.post('/api/machines', json={'name': 'x', 'mode': 'local'}).status_code == 401
         response = login(api)
         cookie = response.headers['set-cookie']
         assert 'HttpOnly' in cookie and 'SameSite=strict' in cookie
         assert 'test-only-password' not in response.text
         assert api.get('/api/state').status_code == 200
-        assert api.post('/api/machines', json={'name': 'x'}, headers={'X-CSRF-Token': ''}).status_code == 403
-        assert api.post('/api/machines', json={'name': 'x'}, headers={'X-CSRF-Token': 'bad-token'}).status_code == 403
-        assert api.post('/api/machines', json={'name': 'x'}).status_code == 200
+        assert api.post('/api/machines', json={'name': 'x', 'mode': 'local'}, headers={'X-CSRF-Token': ''}).status_code == 403
+        assert api.post('/api/machines', json={'name': 'x', 'mode': 'local'}, headers={'X-CSRF-Token': 'bad-token'}).status_code == 403
+        assert api.post('/api/machines', json={'name': 'x', 'mode': 'local'}).status_code == 200
         old_cookie = api.cookies.get('mongo_manager_session')
         assert api.post('/api/auth/logout').status_code == 200
         api.cookies.set('mongo_manager_session', old_cookie, domain='127.0.0.1', path='/')

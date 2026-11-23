@@ -18,7 +18,7 @@ from bson.errors import BSONError
 from pymongo import MongoClient
 from pymongo.errors import AutoReconnect, OperationFailure, PyMongoError
 
-from .models import endpoint
+from .models import endpoint, public_endpoint
 
 
 def serial(value):
@@ -256,7 +256,7 @@ def query(profile, section, database="", collection=""):
 
 def host_run(machine, action, params, emit):
     worker = Path(__file__).with_name("host_worker.py")
-    elevated = action in {"retire_member", "arbiter_check", "arbiter_packages", "arbiter_install", "ubuntu_start", "ubuntu_finalize", "ubuntu_status", "ubuntu_precheck", "ubuntu_restore_service", "install", "setup", "provision", "prepare_member", "read_keyfile", "service", "backup", "backups", "restore", "preview_backup", "delete_backup", "logs"}
+    elevated = action in {"retire_member", "check_service_stopped", "arbiter_check", "arbiter_packages", "arbiter_install", "ubuntu_start", "ubuntu_finalize", "ubuntu_status", "ubuntu_precheck", "ubuntu_restore_service", "install", "setup", "provision", "prepare_member", "read_keyfile", "service", "backup", "backups", "restore", "preview_backup", "delete_backup", "logs"}
     params = dict(params, service=machine["service"])
     payload = {"action": action, "params": params}
     if machine["mode"] == "local":
@@ -343,7 +343,7 @@ READ_ACTIONS = {"preflight", "logs", "backups", "upgrade_check"}
 def member_address(machine, port):
     saved = machine.get("mongo_endpoint")
     if saved:
-        host = saved.rsplit(":", 1)[0]
+        host = public_endpoint(saved).rsplit(":", 1)[0]
     else:
         try:
             address = ipaddress.ip_address(machine["host"])
@@ -382,7 +382,7 @@ def validate_params(action, params, machine=None):
     required = {"install": ["series"], "setup": allowed["setup"], "service": ["operation"], "add_member": ["host"], "remove_member": ["host"],
                 "member_options": ["host", "priority", "votes", "hidden"], "create_user": allowed["create_user"], "password": allowed["password"],
                 "drop_user": allowed["drop_user"], "write_concern": ["w"], "restore": ["backup_id"], "drop_database": ["database"]}
-    required.update(provision=allowed["provision"], join_fresh=["instance", "port", "bind_ip", "source_machine_id", "source_endpoint"])
+    required.update(provision=allowed["provision"], join_fresh=["instance", "port", "bind_ip"])
     if action == "ubuntu_upgrade" and (p.get("series") not in ("8.0", "9.0") or p.get("target") not in ("auto", "focal", "jammy", "noble", "resolute")):
         raise ValueError("Chọn nhánh MongoDB và bản Ubuntu đích hợp lệ.")
     if action == 'join_fresh':
@@ -424,7 +424,7 @@ def validate_params(action, params, machine=None):
         if isinstance(value, str) and (len(value) > 1000 or "\x00" in value):
             raise ValueError("Giá trị quá dài hoặc chứa ký tự không hợp lệ.")
     if "host" in p:
-        p["host"] = endpoint(p["host"])
+        p["host"] = (public_endpoint if action == "add_member" else endpoint)(p["host"])
     if "source_endpoint" in p:
         p["source_endpoint"] = endpoint(p["source_endpoint"])
     for key in ("database", "collection"):
@@ -449,7 +449,7 @@ def validate_params(action, params, machine=None):
             if not machine:
                 raise ValueError("Chọn VPS đích để xác định địa chỉ MongoDB.")
             p["advertise"] = member_address(machine, p["port"])
-        p["advertise"] = endpoint(p["advertise"])
+        p["advertise"] = (endpoint if machine and machine.get("mode") == "local" else public_endpoint)(p["advertise"])
         if not p["advertise"].endswith(":" + str(p["port"])):
             raise ValueError("Port quảng bá phải khớp port instance.")
         from .models import hostname
@@ -551,20 +551,24 @@ def upgrade_arbiter(p, profile, machine, emit):
     raise ValueError("Chưa xác minh được phiên bản và vai trò sau khi nâng. Kiểm tra nhật ký dịch vụ.")
 
 
-def retire_removed_member(profile, machine, host):
-    if not machine or not machine["service"].startswith("mongod-manager-"):
-        raise ValueError("Cần hồ sơ VPS và service do Manager tạo để tự dừng.")
-    for _ in range(10):
+def stop_member_service(profile, machine, host, member_present):
+    if not machine or machine.get("mongo_endpoint") != host:
+        raise ValueError("Cần hồ sơ SSH khớp endpoint của node trước khi gỡ.")
+    process_id = None
+    try:
         with client(dict(profile, username="", password=""), direct=host) as target:
             hello = target.admin.command("hello")
-        if (hello.get("isreplicaset") and not hello.get("setName") and not hello.get("isWritablePrimary")
-                and not hello.get("secondary") and hello.get("topologyVersion")):
-            return host_run(machine, "retire_member", {
-                "replica_set": profile["replica_set"], "port": int(host.rsplit(":", 1)[1]),
-                "process_id": str(hello["topologyVersion"]["processId"]),
-            }, lambda _: None)
-        time.sleep(1)
-    raise ValueError("Node chưa xác nhận đã nhận cấu hình gỡ khỏi cụm.")
+        role_matches = (hello.get("setName") == profile["replica_set"]
+                        and (hello.get("secondary") or hello.get("arbiterOnly"))) if member_present else (
+                            hello.get("isreplicaset") and not hello.get("setName"))
+        if hello.get("isWritablePrimary") or not role_matches or not hello.get("topologyVersion"):
+            raise ValueError("Endpoint không khớp node cần dừng. Kiểm tra vai trò và cấu hình.")
+        process_id = str(hello["topologyVersion"]["processId"])
+    except AutoReconnect:
+        # Allow retry only if the SSH worker confirms that the service and port are idle.
+        pass
+    return host_run(machine, "retire_member", {"port": int(host.rsplit(":", 1)[1]),
+                    "process_id": process_id, "member_present": member_present}, lambda _: None)
 
 
 def execute(action, p, profile, machine, emit):
@@ -580,8 +584,8 @@ def execute(action, p, profile, machine, emit):
         with client(profile) as db:
             cfg, states = healthy_config(db)
             check_quorum(cfg, states)
-            if p["source_endpoint"] not in {m["host"] for m in cfg["members"]}:
-                raise ValueError("Endpoint nguồn không thuộc cụm đang chọn.")
+            if not any(s.get("name") == p["source_endpoint"] and s.get("state") == 1 for s in states.values()):
+                raise ValueError("Primary đã thay đổi. Mở lại thao tác để Manager nhận diện primary mới.")
             if p["advertise"] in {m["host"] for m in cfg["members"]}:
                 member = next(m for m in cfg["members"] if m["host"] == p["advertise"])
                 state = states.get(member["_id"], {})
@@ -599,6 +603,8 @@ def execute(action, p, profile, machine, emit):
             if series not in {"8.0", "9.0"}:
                 raise ValueError("Wizard node mới hỗ trợ nguồn Community 8.0/9.0.")
         with client(profile, direct=p["source_endpoint"]) as node:
+            if not node.admin.command("hello").get("isWritablePrimary"):
+                raise ValueError("VPS nguồn đã nhường primary. Mở lại thao tác để chọn nguồn hiện tại.")
             opts = node.admin.command("getCmdLineOpts")["parsed"]
             security = opts.get("security", {})
             keypath = security.get("keyFile")
@@ -819,11 +825,16 @@ def execute(action, p, profile, machine, emit):
         elif not member:
             if action == "remove_member":
                 emit("Endpoint đã rời cấu hình. Tiếp tục xác minh tài nguyên trên VPS.")
-                return {"config": serial(cfg)}
+                return {"config": serial(cfg), "service_cleanup": stop_member_service(profile, machine, p["host"], False)}
             raise ValueError("Node không có trong replica set.")
         elif action == "remove_member":
             if states.get(member["_id"], {}).get("state") == 1:
                 raise ValueError("Step down primary trước khi gỡ node.")
+            remaining = {i: state for i, state in states.items() if i != member["_id"]}
+            check_quorum(cfg, remaining)
+            emit("Đủ quorum khi dừng node. Đang dừng mongod và tắt tự khởi động…")
+            cleanup = stop_member_service(profile, machine, p["host"], True)
+            emit("Đã xác minh dịch vụ dừng. Đang gỡ node khỏi cấu hình cụm…")
             cfg["members"].remove(member)
             check_quorum(cfg, states)
         elif action == "member_options":
@@ -859,4 +870,7 @@ def execute(action, p, profile, machine, emit):
                     return {"ready": True, "host": p["host"], "seeds": [m["host"] for m in final_cfg["members"]], "votes": member["votes"], "priority": member["priority"], "previous_config": serial(old_cfg)}
                 time.sleep(3)
             raise RuntimeError("Member đã được thêm nhưng còn đang đồng bộ. Theo dõi trạng thái; không thêm lại.")
-        return {"config": serial(final_cfg), "previous_config": serial(old_cfg)}
+        result = {"config": serial(final_cfg), "previous_config": serial(old_cfg)}
+        if action == "remove_member":
+            result["service_cleanup"] = cleanup
+        return result

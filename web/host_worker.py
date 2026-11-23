@@ -555,42 +555,67 @@ print(JSON.stringify({ready:true,primary:input.advertise}));
 
 def retire_member(p):
     service = p["service"]
-    match = re.fullmatch(r"mongod-manager-([a-z][a-z0-9-]{0,30})", service)
-    if not match:
-        raise ValueError("Chỉ tự dừng instance do Manager tạo.")
-    instance = match[1]
-    configpath = Path("/etc/mongodb-manager") / instance / "mongod.conf"
-    unit = run(["systemctl", "show", "-p", "FragmentPath", "--value", service])
+    port = str(int(p["port"]))
     pid = run(["systemctl", "show", "-p", "MainPID", "--value", service])
-    if unit != f"/etc/systemd/system/{service}.service" or not pid.isdigit() or int(pid) < 1:
-        raise ValueError("Chưa xác minh được service đang chạy trên VPS.")
-    config = json.loads(configpath.read_text())
-    if (config.get("replication", {}).get("replSetName") != p["replica_set"]
-            or config.get("net", {}).get("port") != p["port"]
-            or config.get("storage", {}).get("dbPath") != f"/var/lib/mongodb-manager/{instance}"):
-        raise ValueError("Service không khớp cấu hình replica set đã gỡ.")
-    argv = (Path("/proc") / pid / "cmdline").read_bytes().rstrip(b"\0").split(b"\0")
-    if argv != [b"/usr/bin/mongod", b"--config", os.fsencode(configpath)]:
-        raise ValueError("Tiến trình không dùng đúng cấu hình của Manager.")
-    port = str(p["port"])
-    listen = run(["ss", "-Hlnpt", f"sport = :{port}"])
-    if not listen or any(f'"mongod",pid={pid},' not in row for row in listen.splitlines()):
-        raise ValueError("Chưa đối chiếu được cổng MongoDB với service.")
-    local = shell_js("""
-const conn = new Mongo("mongodb://127.0.0.1:" + input.port + "/?directConnection=true&serverSelectionTimeoutMS=2000");
-const h = conn.getDB("admin").runCommand({hello: 1});
-print(JSON.stringify({removed: h.isreplicaset === true && !h.setName && !h.isWritablePrimary && !h.secondary,
-                      process_id: h.topologyVersion?.processId?.toHexString()}));
-""", {"port": p["port"]}, timeout=10)
-    if not local.get("removed") or local.get("process_id") != p["process_id"]:
-        raise ValueError("Instance chưa xác nhận đã rời cụm hoặc khác tiến trình tại endpoint.")
-    if run(["ss", "-Hnt", "state", "established", f"sport = :{port}"]):
-        raise ValueError("Cổng MongoDB còn kết nối vào. Giữ service để kiểm tra.")
+    listeners = run(["ss", "-Hlnpt", f"sport = :{port}"]).splitlines()
+    state = run(["systemctl", "is-active", service], check=False)
+    if pid == "0" and not listeners and state == "inactive":
+        load = run(["systemctl", "show", "-p", "LoadState", "--value", service])
+        if load == "not-found":
+            return {"service": service, "state": "inactive", "autostart": "not-found"}
+    else:
+        if not pid.isdigit() or int(pid) < 1 or not p.get("process_id") or not listeners:
+            raise ValueError("Chưa xác minh được tiến trình MongoDB thuộc service đã chọn.")
+        if any(f'"mongod",pid={pid},' not in row for row in listeners):
+            raise ValueError("Cổng MongoDB không thuộc đúng service.")
+        address = listeners[0].split()[3].rsplit(":", 1)[0].strip("[]")
+        if address in {"0.0.0.0", "*", "::"}:
+            address = "::1" if address == "::" else "127.0.0.1"
+        local = shell_js("""
+const h = new Mongo("mongodb://" + input.host + ":" + input.port +
+    "/?directConnection=true&serverSelectionTimeoutMS=2000").getDB("admin").runCommand({hello: 1});
+print(JSON.stringify({primary: h.isWritablePrimary, process_id: h.topologyVersion?.processId?.toHexString()}));
+""", {"host": '[' + address + ']' if ':' in address else address, "port": p["port"]}, timeout=10)
+        if local.get("primary") or local.get("process_id") != p["process_id"]:
+            raise ValueError("Tiến trình trên VPS không khớp endpoint hoặc vừa lên primary.")
+        if not p["member_present"] and run(["ss", "-Hnt", "state", "established", f"sport = :{port}"]):
+            raise ValueError("Node đã rời cụm nhưng cổng MongoDB còn kết nối vào.")
     run(["systemctl", "disable", "--now", service], timeout=150)
     if (run(["systemctl", "is-active", service], check=False) != "inactive"
-            or run(["systemctl", "is-enabled", service], check=False) != "disabled"):
+            or run(["systemctl", "is-enabled", service], check=False) != "disabled"
+            or run(["ss", "-Hlnpt", f"sport = :{port}"])):
         raise RuntimeError("Chưa xác minh được service đã dừng và tắt tự khởi động.")
     return {"service": service, "state": "inactive", "autostart": "disabled"}
+
+
+def check_service_stopped(p):
+    service = p["service"]
+    if run(["systemctl", "is-active", service], check=False) != "inactive":
+        raise ValueError("Dịch vụ MongoDB chưa dừng.")
+    if p.get("port"):
+        listeners = run(["ss", "-Hlnpt", f"sport = :{int(p['port'])}"]).splitlines()
+        unit = service if service.endswith(".service") else service + ".service"
+        for row in listeners:
+            address = row.split()[3].rsplit(":", 1)[0].strip("[]")
+            pids = re.findall(r"pid=(\d+)", row)
+            if address not in {"127.0.0.1", "::1"} or not pids:
+                raise ValueError("Cổng MongoDB vẫn đang lắng nghe. Kiểm tra tiến trình trước khi xóa.")
+            for pid in pids:
+                groups = (Path("/proc") / pid / "cgroup").read_text().splitlines()
+                units = {part for group in groups for part in group.split("/") if part.endswith(".service")}
+                if unit in units or not units:
+                    raise ValueError("Chưa xác minh được tiến trình lắng nghe thuộc dịch vụ khác.")
+    if p.get("precheck"):
+        return {"state": "inactive"}
+    autostart = run(["systemctl", "is-enabled", service], check=False)
+    if autostart in {"enabled", "enabled-runtime"}:
+        run(["systemctl", "disable", service])
+        autostart = run(["systemctl", "is-enabled", service], check=False)
+    if autostart not in {"disabled", "not-found", "masked", "masked-runtime"}:
+        raise ValueError("Chưa xác minh được tự khởi động của dịch vụ đã tắt.")
+    if run(["systemctl", "is-active", service], check=False) != "inactive":
+        raise ValueError("Dịch vụ MongoDB vừa đổi trạng thái. Kiểm tra lại trước khi xóa.")
+    return {"state": "inactive"}
 
 
 def prepare_member(p):
@@ -635,12 +660,14 @@ def prepare_member(p):
         if matches:
             p = dict(p, instance=matches[0])
     root = Path('/etc/mongodb-manager') / p['instance']
-    data = Path('/var/lib/mongodb-manager') / p['instance']
+    data_root = Path('/var/lib/mongodb-manager')
     configpath = root / 'mongod.conf'
-    existing = configpath.is_file() and data.is_dir()
+    existing = configpath.is_file()
     if not existing:
         check_instance_target(p)
     if not shutil.which("mongod"):
+        if existing:
+            raise RuntimeError("Đã có cấu hình instance nhưng thiếu binary mongod.")
         install(p)
     version = run(["mongod", "--version"])
     if not re.search(r"\bv" + re.escape(p["series"]) + r"\.", version):
@@ -649,15 +676,21 @@ def prepare_member(p):
         config = json.loads(configpath.read_text())
         keypath = root / 'keyfile'
         expected_key = base64.b64decode(p['keyfile_b64']).decode()
-        if (config.get('replication', {}).get('replSetName') != p['replica_set']
-                or config.get('net', {}).get('port') != p['port']
-                or config.get('net', {}).get('bindIp') != p['bind_ip']
-                or config.get('storage', {}).get('dbPath') != str(data)
-                or config.get('security', {}).get('keyFile') != str(keypath)
-                or config.get('security', {}).get('authorization') != 'enabled'
-                or not keypath.is_file()
-                or ''.join(keypath.read_text().split()) != ''.join(expected_key.split())):
-            raise RuntimeError('Instance có sẵn không khớp cấu hình/keyfile nguồn. Không ghi đè. Chọn instance/port trống hoặc kiểm tra cấu hình đang dùng.')
+        raw_data = config.get('storage', {}).get('dbPath', '')
+        data = data_root / os.path.basename(raw_data)
+        checks = {
+            'replSetName': config.get('replication', {}).get('replSetName') == p['replica_set'],
+            'net.port': config.get('net', {}).get('port') == p['port'],
+            'storage.dbPath': raw_data == str(data) and data != data_root and data.is_dir()
+                              and data.resolve().parent == data_root.resolve(),
+            'security.keyFile': config.get('security', {}).get('keyFile') == str(keypath) and keypath.is_file(),
+            'security.authorization': config.get('security', {}).get('authorization') == 'enabled',
+        }
+        if checks['security.keyFile']:
+            checks['nội dung keyfile'] = ''.join(keypath.read_text().split()) == ''.join(expected_key.split())
+        mismatches = [name for name, valid in checks.items() if not valid]
+        if mismatches:
+            raise RuntimeError('Instance có sẵn không khớp: ' + ', '.join(mismatches) + '. Không ghi đè cấu hình.')
         service = 'mongod-manager-' + p['instance']
         if run(['systemctl', 'is-active', service], check=False) != 'active':
             unit = run(['systemctl', 'show', '-p', 'FragmentPath', '--value', service])
@@ -1080,6 +1113,8 @@ def main(request):
         direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         with direct.open("https://api.ipify.org", timeout=8) as response:
             return {"ip": response.read(64).decode("ascii").strip()}
+    if action == "check_service_stopped":
+        return check_service_stopped(p)
     if action == "retire_member":
         return retire_member(p)
     if action == "hostname":

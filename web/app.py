@@ -21,8 +21,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pymongo.errors import OperationFailure, PyMongoError
 
-from .models import Action, Apply, Machine, Profile, ProfileProbe, ProfileAdopt, AttachedMachine, DocumentPage, DocumentWrite
-from .operations import (HOST_ACTIONS, LABELS, PROFILE_ACTIONS, READ_ACTIONS, execute, arbiter_upgrade_target, retire_removed_member,
+from .models import Action, Apply, Machine, Profile, ProfileProbe, ProfileAdopt, AttachedMachine, DocumentPage, DocumentWrite, public_endpoint, public_host
+from .operations import (HOST_ACTIONS, LABELS, PROFILE_ACTIONS, READ_ACTIONS, execute, arbiter_upgrade_target,
                          client, discover, host_run, mongo_error, read_documents, write_document, query, redact, snapshot, validate_params)
 from . import ubuntu
 from .job_slots import Busy, JobSlots, job_scope, machine_keys
@@ -362,6 +362,10 @@ def create_app(data_dir=None):
         if value["profile_id"]:
             app.state.store.get("profiles", value["profile_id"])
         previous = app.state.store.get("machines", record_id) if record_id else {}
+        if value["mode"] == "ssh":
+            public_host(value["host"])
+            if value["mongo_endpoint"]:
+                public_endpoint(value["mongo_endpoint"])
         if value["mode"] == "ssh" and value["ssh_auth"] == "password":
             if value["ssh_password"] is None:
                 value["ssh_password"] = previous.get("ssh_password", "")
@@ -488,12 +492,39 @@ def create_app(data_dir=None):
         return dict(result, endpoint=endpoint, endpoint_error=endpoint_error, live=bool(version), role=role,
                     pid_match=str(live_pid) == result["pid"] if live_pid else None)
 
+    def verify_machine_deletion(machine, precheck=False):
+        store = app.state.store
+        endpoint = machine.get("mongo_endpoint")
+        if endpoint and machine.get("profile_id"):
+            profile = store.get("profiles", machine["profile_id"])
+            if profile.get("replica_set"):
+                with client(profile) as db:
+                    config = db.admin.command("replSetGetConfig")["config"]
+                    if any(m["host"] == endpoint for m in config["members"]):
+                        raise ValueError("VPS còn trong replica set. Dùng Gỡ để dừng mongod và gỡ node trước.")
+        try:
+            host_run(machine, "check_service_stopped",
+                     {"port": int(endpoint.rsplit(":", 1)[1]) if endpoint else 27017,
+                      "precheck": precheck}, lambda _: None)
+        except (RuntimeError, OSError) as exc:
+            raise ValueError(redact(str(exc), machine.get("ssh_password") or "")) from exc
+
+    @app.get("/api/machines/{record_id}/delete-check")
+    def machine_delete_check(record_id: str):
+        machine = app.state.store.get("machines", record_id)
+        verify_machine_deletion(machine, precheck=True)
+        return {"service": machine["service"], "state": "inactive"}
+
     @app.delete("/api/machines/{record_id}")
     def delete_machine(record_id: str):
+        store = app.state.store
+        machine = store.get("machines", record_id)
         owner = uuid4().hex
-        app.state.slots.reserve(owner, set(), {("machine", record_id)})
+        app.state.slots.reserve(owner, set(), machine_keys(machine))
         try:
-            app.state.store.delete("machines", record_id)
+            verify_machine_deletion(machine)
+            if not store.delete("machines", record_id, expected=machine):
+                raise HTTPException(409, "Hồ sơ VPS vừa thay đổi. Kiểm tra lại trước khi xóa.")
         finally:
             app.state.slots.release(owner)
         return {"ok": True}
@@ -621,11 +652,19 @@ def create_app(data_dir=None):
             target = machine["name"] + " → " + destination["name"]
         source_machine = None
         if body.action == "join_fresh":
-            source_machine = store.get("machines", params["source_machine_id"])
-            if source_machine.get("profile_id") and source_machine["profile_id"] != profile["id"]:
-                raise ValueError("VPS nguồn thuộc workspace khác.")
-            if source_machine["id"] == machine["id"] or (source_machine["mode"], source_machine["host"], source_machine["port"]) == (machine["mode"], machine["host"], machine["port"]):
-                raise ValueError("VPS nguồn và VPS đích cần là hai máy khác nhau.")
+            with client(profile) as db:
+                hello = db.admin.command("hello")
+            primary = hello.get("me") if hello.get("isWritablePrimary") else None
+            if not primary or hello.get("setName") != profile["replica_set"]:
+                raise ValueError("Chưa tìm được primary hiện tại của cụm.")
+            sources = [m for m in store.all("machines") if m.get("profile_id") == profile["id"]
+                       and m.get("mongo_endpoint") == primary and m["mode"] == "ssh"]
+            if len(sources) != 1:
+                raise ValueError(f"Cần đúng một hồ sơ SSH cho primary {primary} trong cụm này.")
+            source_machine = sources[0]
+            if source_machine["id"] == machine["id"] or (source_machine["host"], source_machine["port"]) == (machine["host"], machine["port"]):
+                raise ValueError("VPS primary và VPS đích cần là hai máy khác nhau.")
+            params["source_endpoint"] = primary
         notices = []
         ubuntu_info = None
         if body.action == "arbiter_upgrade":
@@ -671,15 +710,16 @@ def create_app(data_dir=None):
         if body.action in {"setup", "provision"}:
             notices.append("Tạo instance, service và keyfile mới. Không ghi đè instance đang có; không tự mở firewall.")
         if body.action == "join_fresh":
-            notices.append("Đọc keyfile từ máy nguồn " + source_machine["name"] + ", cài/cấu hình node mới rồi thêm vào cụm. Không khởi tạo replica set riêng. Chọn Votes và Ưu tiên khi thêm secondary.")
+            notices.append("Đọc keyfile từ primary " + source_machine["name"] + ", cài/cấu hình node mới rồi thêm vào cụm. Không khởi tạo replica set riêng. Chọn Votes và Ưu tiên khi thêm secondary.")
         if body.action == "add_member":
             notices.append("Node phải được cấu hình cùng replSetName/keyfile và truy cập được từ các member. Kiểm tra Votes và Ưu tiên đã chọn.")
         if body.action == "remove_member":
             candidates = [m for m in store.all("machines") if m.get("profile_id") == profile["id"]
                           and m.get("mongo_endpoint") == params["host"]]
-            if len(candidates) == 1:
-                machine = candidates[0]
-            notices.append("Sau khi xác nhận đã gỡ khỏi cụm, Manager thử dừng và tắt tự khởi động service do Manager tạo nếu không còn kết nối vào. Khi xác nhận đã dừng, Manager xóa hồ sơ VPS. Dữ liệu được giữ lại.")
+            if len(candidates) != 1:
+                raise ValueError("Cần lưu đúng một hồ sơ SSH cho node trước khi gỡ.")
+            machine = candidates[0]
+            notices.append("Manager kiểm tra quorum, dừng mongod và tắt tự khởi động trước khi gỡ node. Sau đó xóa hồ sơ VPS. Dữ liệu được giữ lại.")
         if body.action in {"remove_member", "member_options", "step_down"}:
             notices.append("Kiểm tra lại quorum và cấu hình ngay trước khi thực hiện; không force reconfig.")
         if body.action == "step_down":
@@ -693,7 +733,7 @@ def create_app(data_dir=None):
         if body.action in {"drop_database", "drop_user"}:
             notices.append("Thao tác xóa không thể hoàn tác từ giao diện. Kiểm tra bản backup trước khi xác nhận.")
         plan_id = secrets.token_urlsafe(24)
-        display = {k: ("••••••••" if k == "password" else v) for k, v in params.items()}
+        display = {k: ("••••••••" if k == "password" else v) for k, v in params.items() if k not in {"source_endpoint", "source_machine_id"}}
         plan = {"id": plan_id, "action": body.action, "label": LABELS[body.action], "target": target, "params": display,
                 "notices": notices, "confirmation": "" if body.action in READ_ACTIONS else target, "expires_in": 600}
         if install_check and (install_check.get("blocked") or install_check["path"] or install_check["version"]):
@@ -732,6 +772,11 @@ def create_app(data_dir=None):
                 if result is None:
                     return
             else:
+                if job["action"] == "remove_member":
+                    if store.get("machines", plan["machine"]["id"]) != plan["machine"]:
+                        raise ValueError("Hồ sơ VPS đã đổi. Mở lại thao tác trước khi dừng mongod.")
+                    if any(p["id"] != profile["id"] and params["host"] in p["seeds"] for p in store.all("profiles")):
+                        raise ValueError("Endpoint vẫn được một hồ sơ MongoDB khác sử dụng.")
                 result = execute(job["action"], params, profile, plan["machine"], emit)
             if job["action"] in {"create_user", "password", "drop_user"}:
                 kind = "user-passwords:" + profile["id"]
@@ -782,26 +827,11 @@ def create_app(data_dir=None):
                                         {"member_hostnames": {k: v for k, v in names.items() if k != host}},
                                         expected={"member_hostnames": names})
                 machine = plan["machine"]
-                if machine and store.get("machines", machine["id"]) == machine:
-                    try:
-                        if any(p["id"] != profile["id"] and host in p["seeds"] for p in store.all("profiles")):
-                            raise ValueError("Endpoint vẫn được một hồ sơ MongoDB khác sử dụng.")
-                        result["service_cleanup"] = retire_removed_member(profile, machine, host)
-                        emit("Đã dừng service và tắt tự khởi động trên VPS đã gỡ.")
-                    except (RuntimeError, ValueError, OSError, PyMongoError) as exc:
-                        reason = mongo_error(exc) if isinstance(exc, PyMongoError) else str(exc)
-                        emit("Đã gỡ khỏi cụm. Cần kiểm tra service trên VPS: " + reason)
-                        result["service_cleanup"] = {"state": "unverified", "reason": reason}
-                    store.update_fields(SCHEDULES, profile["id"], {"enabled": False, "next_run": None},
-                                        expected={"machine_id": machine["id"]})
-                    if result["service_cleanup"]["state"] == "inactive":
-                        result["machine_deleted"] = store.delete("machines", machine["id"], expected=machine)
-                        if result["machine_deleted"]:
-                            emit("Đã xóa hồ sơ VPS khỏi Manager.")
-                    else:
-                        emit("Giữ hồ sơ SSH để có thể kiểm tra và dừng service.")
-                else:
-                    emit("Chưa có hồ sơ VPS khớp để kiểm tra và dừng service.")
+                store.update_fields(SCHEDULES, profile["id"], {"enabled": False, "next_run": None},
+                                    expected={"machine_id": machine["id"]})
+                result["machine_deleted"] = store.delete("machines", machine["id"], expected=machine)
+                if result["machine_deleted"]:
+                    emit("Đã xóa hồ sơ VPS khỏi Manager.")
             def scrub(value):
                 if isinstance(value, dict):
                     return {k: scrub(v) for k, v in value.items()}

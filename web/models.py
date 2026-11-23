@@ -33,6 +33,25 @@ def endpoint(value):
     return value
 
 
+def public_host(value):
+    value = hostname(value)
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        if value.lower().endswith((".local", ".localhost", ".internal")) or value.lower() == "localhost":
+            raise ValueError("Dùng IP public hoặc DNS public của VPS.")
+        return value
+    if not address.is_global or address.is_multicast or address.is_reserved:
+        raise ValueError("Dùng IP public của VPS.")
+    return value
+
+
+def public_endpoint(value):
+    value = seed_endpoint(value)
+    public_host(value.rsplit(":", 1)[0].strip("[]"))
+    return value
+
+
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
