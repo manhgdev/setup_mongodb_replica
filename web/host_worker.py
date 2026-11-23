@@ -963,6 +963,8 @@ def main(request):
         direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         with direct.open("https://api.ipify.org", timeout=8) as response:
             return {"ip": response.read(64).decode("ascii").strip()}
+    if action == "hostname":
+        return {"hostname": socket.gethostname()}
     if action == "preflight":
         return preflight(p)
     if action == "logs":

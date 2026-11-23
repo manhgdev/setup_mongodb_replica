@@ -23,6 +23,21 @@ class Store:
             db.execute("CREATE TABLE IF NOT EXISTS records (kind TEXT, id TEXT, value TEXT, PRIMARY KEY(kind,id))")
         os.chmod(self.path, 0o600)
 
+    def rename_generated_machines(self):
+        machines = self.all("machines")
+        for profile in self.all("profiles"):
+            group = [m for m in machines if m.get("profile_id") == profile["id"]]
+            used = {m["name"] for m in group}
+            number = 1
+            for machine in group:
+                if machine["name"] != f"{profile['name']} · {machine['host']}":
+                    continue
+                while f"mongo-{number:02}" in used:
+                    number += 1
+                name = f"mongo-{number:02}"
+                self.update_fields("machines", machine["id"], {"name": name}, expected={"name": machine["name"]})
+                used.add(name)
+
     def connect(self):
         return sqlite3.connect(self.path, timeout=10)
 

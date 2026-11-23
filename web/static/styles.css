@@ -31,10 +31,8 @@ dialog{overflow:hidden;max-height:90dvh;width:min(760px,calc(100vw - 28px))}
 .member-label { background: transparent; border: 0; padding: 0; font: inherit; color: inherit; cursor: text; overflow-wrap: anywhere; }
 .member-label:hover, .member-label:focus-visible { text-decoration: underline dotted; }
 .member-name-input { box-sizing: border-box; width: 14ch; max-width: 100%; font: inherit; color: inherit; }
-.language-picker { display: inline-flex; align-items: center; gap: .4rem; font-size: .8rem; }
-.language-picker select { font: inherit; border: 1px solid #dce6df; border-radius: .4rem; background: white; color: #173c2e; padding: .3rem; }
+.language-picker { font-family: inherit; font-size: .8rem; border: 1px solid #dce6df; border-radius: .4rem; background: white; color: #173c2e; padding: .3rem; }
 .login-card .language-picker { align-self: flex-end; justify-self: end; }
-@media(max-width: 760px) { .top-actions .language-picker span { display: none; } }
 .password-control { display: flex; align-items: center; position: relative; width: 100%; }
 .password-control input { width: 100%; padding-right: 2.8rem; }
 .password-control button { position: absolute; right: .25rem; display: grid; place-items: center; width: 2rem; height: 2rem; background: transparent; border: 0; border-radius: .4rem; color: #496653; cursor: pointer; }

@@ -115,9 +115,27 @@ function updateChrome(){
   $('#footer-time').textContent=demo?uiText("Chế độ minh họa"):'127.0.0.1 · Local workspace';
 }
 async function refreshState(){if(!demo)state=await api('/state');updateChrome();}
+function nextMachineName(profileId, reserved=[]){
+  const used=new Set([...machines().filter(m=>m.profile_id===profileId).map(m=>m.name),...reserved]);
+  for(let n=1;;n++){
+    const name='mongo-'+String(n).padStart(2,'0');
+    if(!used.has(name))return name;
+  }
+}
 function memberLabel(member, fallback){
   const key=JSON.stringify(['mongo-manager-member',demo,profile()?.id,member.id,member.host]);
-  if(!demo)fallback=machines().find(m=>m.profile_id===profile()?.id&&m.mongo_endpoint===member.host)?.name||fallback;
+  const cluster=profile();
+  const saved=machines().find(m=>m.profile_id===cluster?.id&&m.mongo_endpoint===member.host);
+  if(saved)fallback=saved.name;
+  else if(cluster){
+    const reserved=[];
+    for(const endpoint of new Set([...cluster.seeds,member.host])){
+      if(machines().some(m=>m.profile_id===cluster.id&&m.mongo_endpoint===endpoint))continue;
+      const name=nextMachineName(cluster.id,reserved);
+      if(endpoint===member.host){fallback=name;break;}
+      reserved.push(name);
+    }
+  }
   const name=localStorage.getItem(key)||fallback;
   return `<button type="button" class="member-label" data-member-key="${esc(key)}" data-fallback="${esc(fallback)}" title="${uiText("Nhấp đúp để đổi tên member")}">${esc(name)}</button>`;
 }
@@ -266,6 +284,13 @@ async function probeProfileForm(){
  output.innerHTML=`<div class="callout">${demo?uiText("Minh họa"):uiText("Đã xác minh")}: ${esc(result.status.replica_set)} · ${result.status.members.length} member · Primary: ${esc(result.status.primary)}.</div>`;
  }catch(error){if(form.isConnected){output.replaceChildren();formError(error);}}
 }
+function hostnameField(input,record){
+  input.required=false;
+  input.dataset.fallback=input.value;
+  input.placeholder=dataLabel('Tự đọc hostname','Detect hostname');
+  input.title=dataLabel('Để trống để dùng hostname của máy chủ','Leave blank to use the server hostname');
+  if(!record || record.auto_name)input.value='';
+}
 function addClusterSSH(record=null){
  const container=$('#cluster-ssh-list');if(!container)return;
  const index=recordContext.sshIndex++;const prefix='cluster_ssh_'+index+'_';
@@ -273,8 +298,9 @@ function addClusterSSH(record=null){
  const host=firstSeed.startsWith('[')?firstSeed.slice(1,firstSeed.indexOf(']')):firstSeed.split(':')[0];
  const row=document.createElement('section');row.className='cluster-ssh-row';row.dataset.recordId=record?.id||'';row.dataset.prefix=prefix;row.dataset.hasPassword=record?.has_ssh_password?'1':'';
  const f=(name,...args)=>field(prefix+name,...args);
- row.innerHTML=`<div class="ssh-row-heading"><strong>${uiText("SSH cho một VPS")}</strong>${button(uiText("Bỏ khỏi lần lưu"),'cluster-ssh-remove','','small')}</div><div class="form-grid">${f('name',uiText("Tên VPS"),record?.name||'','text',uiText("Ví dụ: mongo-01"))}${f('mongo_endpoint',uiText("Endpoint MongoDB trên VPS"),record?.mongo_endpoint||firstSeed,'text',uiText("IP:port của member tương ứng; IP trống port dùng 27017."))}${f('host',uiText("Địa chỉ SSH"),record?.host||host)}${f('port','Port SSH',record?.port||22,'number')}${f('user','User SSH',record?.user||'root')}${f('ssh_auth',uiText("Xác thực SSH"),record?.ssh_auth||'password','select','',false,[{value:'password',label:uiText("Mật khẩu SSH")},{value:'key',label:'SSH key / Agent'}])}${f('ssh_password',uiText("Mật khẩu SSH"),'','password',record?.has_ssh_password?uiText("Để trống để giữ mật khẩu đã lưu."):uiText("Mật khẩu của tài khoản hệ điều hành trên VPS."),true)}${f('identity','SSH private key',record?.identity||'','text',uiText("Để trống để dùng agent."),true)}${f('service','Service MongoDB',record?.service||'mongod','text',uiText("Tên systemd service đang chạy."),true)}</div>`;
+ row.innerHTML=`<div class="ssh-row-heading"><strong>${uiText("SSH cho một VPS")}</strong>${button(uiText("Bỏ khỏi lần lưu"),'cluster-ssh-remove','','small')}</div><div class="form-grid">${f('name',uiText("Tên VPS"),record?.name||nextMachineName(recordContext.id||'',Array.from(container.querySelectorAll('input[name$="_name"]'),el=>el.value||el.dataset.fallback)),'text',dataLabel('Để trống để tự đọc hostname. Có thể nhập tên riêng.','Leave blank to detect the hostname, or enter a custom name.'))}${f('mongo_endpoint',uiText("Endpoint MongoDB trên VPS"),record?.mongo_endpoint||firstSeed,'text',uiText("IP:port của member tương ứng; IP trống port dùng 27017."))}${f('host',uiText("Địa chỉ SSH"),record?.host||host)}${f('port','Port SSH',record?.port||22,'number')}${f('user','User SSH',record?.user||'root')}${f('ssh_auth',uiText("Xác thực SSH"),record?.ssh_auth||'password','select','',false,[{value:'password',label:uiText("Mật khẩu SSH")},{value:'key',label:'SSH key / Agent'}])}${f('ssh_password',uiText("Mật khẩu SSH"),'','password',record?.has_ssh_password?uiText("Để trống để giữ mật khẩu đã lưu."):uiText("Mật khẩu của tài khoản hệ điều hành trên VPS."),true)}${f('identity','SSH private key',record?.identity||'','text',uiText("Để trống để dùng agent."),true)}${f('service','Service MongoDB',record?.service||'mongod','text',uiText("Tên systemd service đang chạy."),true)}</div>`;
  if(record?.has_ssh_password)markSavedPassword(row.querySelector('.password-control input'),'/machines/'+record.id+'/reveal-password');
+ hostnameField(row.querySelector(`[name="${prefix}name"]`),record);
  container.append(row);
  const sync=()=>{
  const password=row.querySelector(`[name="${prefix}ssh_auth"]`).value==='password';
@@ -286,9 +312,9 @@ function clusterSSHData(){
  return [...document.querySelectorAll('.cluster-ssh-row')].map(row=>{
  const value=key=>row.querySelector(`[name="${row.dataset.prefix+key}"]`).value.trim();
  const secret=row.querySelector(`[name="${row.dataset.prefix}ssh_password"]`).value;
- const auth=value('ssh_auth');if(!value('name')||!value('host')||!value('mongo_endpoint'))throw new Error(uiText("SSH: nhập tên VPS, địa chỉ SSH và endpoint MongoDB tương ứng."));
+ const auth=value('ssh_auth');if(!value('host')||!value('mongo_endpoint'))throw new Error(uiText("SSH: nhập tên VPS, địa chỉ SSH và endpoint MongoDB tương ứng."));
  if(auth==='password'&&!secret&&!row.dataset.hasPassword)throw new Error((uiText("Nhập mật khẩu SSH cho VPS")+" ")+value('name')+'.');
- return {record_id:row.dataset.recordId,machine:{name:value('name'),mode:'ssh',host:value('host'),port:Number(value('port')),user:value('user'),ssh_auth:auth,ssh_password:auth==='password'?(secret||null):'',identity:auth==='key'?value('identity'):'',service:value('service'),mongo_endpoint:value('mongo_endpoint')}};
+ return {record_id:row.dataset.recordId,machine:{auto_name:!value('name'),name:value('name')||row.querySelector(`[name="${row.dataset.prefix}name"]`).dataset.fallback,mode:'ssh',host:value('host'),port:Number(value('port')),user:value('user'),ssh_auth:auth,ssh_password:auth==='password'?(secret||null):'',identity:auth==='key'?value('identity'):'',service:value('service'),mongo_endpoint:value('mongo_endpoint')}};
  });
 }
 
@@ -373,9 +399,12 @@ document.addEventListener('submit',async event=>{
  if(event.target.id!=='ssh-bulk-form')return;event.preventDefault();const form=event.target,submit=form.querySelector('button[type="submit"]');submit.disabled=true;
  try{
  const fields=Object.fromEntries(new FormData(form));const chosen=new FormData(form).getAll('targets');if(!chosen.length)throw new Error(uiText("Chọn ít nhất một VPS."));if(chosen.length>50)throw new Error(uiText("Chọn tối đa 50 VPS mỗi lần lưu."));
+ const reserved=new Map();
  const records=chosen.map(index=>{const t=sshBulkTargets[Number(index)],old=t.existing;
  if(fields.ssh_auth==='password'&&!fields.ssh_password&&!old?.has_ssh_password)throw new Error('VPS '+t.endpoint+(" "+uiText("chưa có mật khẩu SSH.")));
- return {record_id:old?.id||'',machine:{name:old?.name||t.profile.name+' · '+t.host,mode:'ssh',host:old?.host||t.host,port:Number(fields.port),user:fields.user,ssh_auth:fields.ssh_auth,ssh_password:fields.ssh_auth==='password'?(fields.ssh_password||null):'',identity:fields.ssh_auth==='key'?fields.identity:'',profile_id:t.profile.id,mongo_endpoint:t.endpoint,service:old?.service||'mongod'}};
+ const names=reserved.get(t.profile.id)||[];
+ const name=old?.name||nextMachineName(t.profile.id,names);names.push(name);reserved.set(t.profile.id,names);
+ return {record_id:old?.id||'',machine:{name,auto_name:old?!!old.auto_name:true,mode:'ssh',host:old?.host||t.host,port:Number(fields.port),user:fields.user,ssh_auth:fields.ssh_auth,ssh_password:fields.ssh_auth==='password'?(fields.ssh_password||null):'',identity:fields.ssh_auth==='key'?fields.identity:'',profile_id:t.profile.id,mongo_endpoint:t.endpoint,service:old?.service||'mongod'}};
  });
  if(demo){toast(uiText("Chế độ minh họa không lưu thông tin SSH."));return;}
  await api('/machines/batch',{method:'POST',body:JSON.stringify(records)});form.elements.ssh_password.value='';$('#modal').close();await refreshState();await render();toast((uiText("Đã lưu SSH cho")+" ")+records.length+' VPS.');
@@ -546,13 +575,13 @@ function showRecord(kind,record=null){
   if(kind==='profiles'){
     fields=field('name',uiText("Tên hiển thị"),record?.name||'','text',uiText("Ví dụ: Production hoặc Staging"),true)+field('seeds','Seed list',record?.seeds.join('\n')||'','textarea',uiText("Nhập IP hoặc hostname của member; bỏ trống port sẽ dùng 27017. Ví dụ: 203.0.113.10 hoặc 203.0.113.10:27018."),true)+field('replica_set',uiText("Tên replica set"),record?.replica_set??'','text',uiText("Để trống để tự nhận diện từ primary hoặc secondary."))+field('auth_db','Auth database',record?.auth_db||'admin')+field('username','Username MongoDB',record?.username||'')+field('password',uiText("Mật khẩu MongoDB"), '', 'password',record?uiText("Để trống để giữ mật khẩu đã lưu."):uiText("Được mã hóa trên máy quản trị."))+field('tls',uiText("Bật TLS"),record?.tls||false,'checkbox','',true)+field('tls_ca',uiText("Đường dẫn CA (nếu dùng)"),record?.tls_ca||'','text',uiText("Đường dẫn trên máy quản trị. Để trống để dùng CA hệ thống."),true);
   }else{
-    fields=field('name',uiText("Tên máy chủ"),record?.name||'','text',uiText("Ví dụ: mongo-01"),true)+field('mode',uiText("Chế độ"),record?.mode||'ssh','select','',false,[{value:'ssh',label:uiText("SSH — VPS từ xa")},{value:'local',label:uiText("Local — máy chạy web")}])+field('host',uiText("Địa chỉ SSH"),record?.host||'','text',uiText("Mật khẩu dùng IP/hostname trực tiếp; key/agent có thể dùng alias SSH."))+field('port','Port SSH',record?.port||22,'number')+field('user','User SSH',record?.user||'root')+field('ssh_auth',uiText("Xác thực SSH"),record?.ssh_auth||'key','select','',true,[{value:'key',label:'SSH key / Agent'},{value:'password',label:uiText("Mật khẩu SSH")}])+field('ssh_password',uiText("Mật khẩu SSH"),'','password',record?.has_ssh_password?uiText("Đã lưu mật khẩu. Để trống để giữ nguyên."):uiText("Mật khẩu được lưu mã hóa trên máy quản trị."),true)+field('identity',uiText("SSH private key (tùy chọn)"),record?.identity||'','text',uiText("Để trống để dùng SSH agent hoặc ~/.ssh/config."),true)+field('mongo_endpoint',uiText("Endpoint MongoDB trên VPS"),record?.mongo_endpoint||'','text',uiText("Ví dụ: 203.0.113.10:27017. Port này khác port SSH."),true)+field('service',uiText("Tên service"),record?.service||'mongod','text',uiText("Service systemd của instance cần quản lý."),true);
+    fields=field('name',uiText("Tên máy chủ"),record?.name||nextMachineName(recordContext.profileId),'text',dataLabel('Để trống để tự đọc hostname. Có thể nhập tên riêng.','Leave blank to detect the hostname, or enter a custom name.'),true)+field('mode',uiText("Chế độ"),record?.mode||'ssh','select','',false,[{value:'ssh',label:uiText("SSH — VPS từ xa")},{value:'local',label:uiText("Local — máy chạy web")}])+field('host',uiText("Địa chỉ SSH"),record?.host||'','text',uiText("Mật khẩu dùng IP/hostname trực tiếp; key/agent có thể dùng alias SSH."))+field('port','Port SSH',record?.port||22,'number')+field('user','User SSH',record?.user||'root')+field('ssh_auth',uiText("Xác thực SSH"),record?.ssh_auth||'key','select','',true,[{value:'key',label:'SSH key / Agent'},{value:'password',label:uiText("Mật khẩu SSH")}])+field('ssh_password',uiText("Mật khẩu SSH"),'','password',record?.has_ssh_password?uiText("Đã lưu mật khẩu. Để trống để giữ nguyên."):uiText("Mật khẩu được lưu mã hóa trên máy quản trị."),true)+field('identity',uiText("SSH private key (tùy chọn)"),record?.identity||'','text',uiText("Để trống để dùng SSH agent hoặc ~/.ssh/config."),true)+field('mongo_endpoint',uiText("Endpoint MongoDB trên VPS"),record?.mongo_endpoint||'','text',uiText("Ví dụ: 203.0.113.10:27017. Port này khác port SSH."),true)+field('service',uiText("Tên service"),record?.service||'mongod','text',uiText("Service systemd của instance cần quản lý."),true);
   }
   modal(record?uiText("Chỉnh sửa hồ sơ"):kind==='profiles'?uiText("Kết nối cụm MongoDB"):uiText("Thêm máy chủ"),`<form id="record-form"><div class="modal-body"><div class="form-grid">${fields}</div>${kind==='profiles'?("<div id=\"probe-result\"></div><details class=\"cluster-ssh\"><summary>"+uiText("SSH cho các VPS trong cụm (tùy chọn)")+"</summary><p>"+uiText("Tài khoản SSH dùng để đọc log, điều khiển service, cài đặt và xử lý trên VPS. Mỗi VPS có thông tin SSH riêng; tài khoản này khác tài khoản MongoDB ở trên. Lưu hồ sơ không tự chạy lệnh trên VPS.")+"</p><div id=\"cluster-ssh-list\"></div>")+button(uiText("Thêm VPS bằng SSH"),'cluster-ssh-add','plus')+' '+button(uiText("Lưu SSH"),'cluster-ssh-save')+("<p>"+uiText("Có thể lưu SSH trước để kiểm tra VPS khi MongoDB chưa kết nối được. Sau đó tiếp nhận cụm khi đã xử lý xong.")+"</p></details>"):''}<div id="form-error"></div></div><div class="modal-footer">${kind==='profiles'?button(uiText("Kiểm tra kết nối"),'profile-probe'):''}${record?button(uiText("Xóa hồ sơ"),'record-delete','trash','danger'):''}${button(uiText("Hủy"),'modal-close')}<button class="button primary" type="submit">${icon('check')}${kind==='profiles'?uiText("Kiểm tra & lưu cụm"):uiText("Lưu hồ sơ")}</button></div></form>`,'',kind==='profiles'?uiText("Tiếp nhận cụm đang chạy: chỉ đọc và kiểm tra kết nối, không cài đặt hay khởi tạo lại."):uiText("Chọn mật khẩu hoặc SSH key/agent. Máy đích cần có trong known_hosts."));
   if(record?.has_password || record?.has_ssh_password){
     markSavedPassword($('#record-form .password-control input'),'/'+kind+'/'+record.id+'/reveal-password');
   }
-  if(kind==='machines'){syncSSHFields();$('#record-form').addEventListener('change',syncSSHFields);}
+  if(kind==='machines'){hostnameField($('#record-form').elements.name,record);syncSSHFields();$('#record-form').addEventListener('change',syncSSHFields);}
   // Anonymous MongoDB connections are valid.
   if(kind==='profiles'){
     const linked=machines().filter(m=>record?.id&&m.profile_id===record.id&&m.mode==='ssh');linked.forEach(addClusterSSH);if(linked.length)$('.cluster-ssh').open=true;
@@ -808,7 +837,7 @@ async function runDiagnostics(){
 async function saveRecord(form){
   let data=Object.fromEntries(new FormData(form));const ctx=recordContext;
   if(ctx.kind==='profiles'){data=profileFormData(form);data.machines=clusterSSHData();}
-  else {data.profile_id=ctx.profileId;data.port=Number(data.port||22);if(!data.ssh_password)data.ssh_password=null;}
+  else {data.name=data.name.trim();data.auto_name=!data.name;data.name||=form.elements.name.dataset.fallback;data.profile_id=ctx.profileId;data.port=Number(data.port||22);if(!data.ssh_password)data.ssh_password=null;}
   if(demo){toast(uiText("Hồ sơ xem thử không được lưu. Chuyển sang dữ liệu thật để kết nối."));$('#modal').close();return;}
   const adopted=ctx.kind==='profiles'?await api('/profiles/adopt',{method:'POST',body:JSON.stringify({...data,record_id:ctx.id||''})}):null;
   const saved=adopted?adopted.profile:await api('/'+ctx.kind+(ctx.id?'/'+ctx.id:''),{method:ctx.id?'PUT':'POST',body:JSON.stringify(data)});
@@ -937,7 +966,8 @@ document.addEventListener('click',async event=>{
       const name=target.closest('tr').querySelector('strong').textContent;
       showRecord('machines');
       const fields=$('#record-form').elements;
-      fields.name.value=name;
+      fields.name.dataset.fallback=name;
+      if(!/^mongo-\d+$/.test(name))fields.name.value=name;
       fields.host.value=host;
       fields.mongo_endpoint.value=endpoint;
       fields.ssh_auth.value='password';

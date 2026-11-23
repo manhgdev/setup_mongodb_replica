@@ -48,6 +48,7 @@ def create_app(data_dir=None):
     @asynccontextmanager
     async def lifespan(app):
         app.state.store = Store(data_dir or os.environ.get("MONGO_MANAGER_DATA", ROOT.parent / ".web-data"))
+        app.state.store.rename_generated_machines()
         app.state.auth = Auth(app.state.store)
         app.state.pool = ThreadPoolExecutor(max_workers=1)
         app.state.admin_lock = threading.Lock()
@@ -315,6 +316,13 @@ def create_app(data_dir=None):
                 raise ValueError("Nhập mật khẩu SSH để dùng xác thực bằng mật khẩu.")
         else:
             value["ssh_password"] = ""
+        if value["auto_name"]:
+            try:
+                detected = host_run(value, "hostname", {}, lambda _: None).get("hostname", "").strip()
+                if detected and len(detected) <= 80 and detected.isprintable():
+                    value["name"] = detected
+            except (OSError, RuntimeError, ValueError):
+                pass  # Keep the suggested name when SSH is unavailable.
         return value
 
     def save_machine(body, record_id=None):
@@ -607,6 +615,11 @@ def create_app(data_dir=None):
                     if job["action"] == "password":
                         store.update_fields("profiles", profile["id"], {"password": params["password"]},
                                             expected={"username": params["username"], "auth_db": params["database"]})
+            if job["action"] == "preflight" and plan["machine"].get("auto_name"):
+                detected = result.get("hostname", "")
+                if detected and len(detected) <= 80 and detected.isprintable():
+                    store.update_fields("machines", plan["machine"]["id"], {"name": detected},
+                                        expected={"auto_name": True, "name": plan["machine"]["name"]})
             if job["action"] == "backup":
                 result["machine_id"] = plan["machine"]["id"]
             if job["action"] == "backups":

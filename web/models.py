@@ -68,6 +68,7 @@ class Profile(StrictModel):
 
 
 class Machine(StrictModel):
+    auto_name: bool = False
     name: str = Field(min_length=1, max_length=80)
     mode: Literal["local", "ssh"] = "ssh"
     host: str = "127.0.0.1"

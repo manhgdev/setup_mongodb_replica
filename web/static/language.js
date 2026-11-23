@@ -484,7 +484,7 @@ const uiText = text => uiLanguage === 'en' ? (englishLabels[text] ?? text) : tex
 document.documentElement.lang = uiLanguage;
 function languagePicker(){
   const label = uiLanguage === 'en' ? 'Language' : 'Ngôn ngữ';
-  return `<label class="language-picker"><span>${label}</span><select data-language aria-label="${label}"><option value="vi" ${uiLanguage==='vi'?'selected':''}>Tiếng Việt</option><option value="en" ${uiLanguage==='en'?'selected':''}>English</option></select></label>`;
+  return `<select class="language-picker" data-language aria-label="${label}"><option value="vi" ${uiLanguage==='vi'?'selected':''}>Tiếng Việt</option><option value="en" ${uiLanguage==='en'?'selected':''}>English</option></select>`;
 }
 // Translate the static shell before app.js fills it with live cluster data.
 for(const element of document.body.querySelectorAll('*')){

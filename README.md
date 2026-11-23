@@ -1,6 +1,6 @@
 # MongoDB Manager
 
-Giao diện web tiếng Việt và tiếng Anh để quản lý MongoDB Community. Từ một máy quản trị, bạn có thể tiếp nhận replica set đang chạy, cài cụm một node trên VPS Ubuntu mới, thêm secondary hoặc arbiter, theo dõi đồng bộ và quản lý backup.
+Giao diện web để quản lý MongoDB Community. Chọn **Tiếng Việt** hoặc **English** ngay tại màn hình đăng nhập hoặc trên thanh phía trên. Từ một máy quản trị, bạn có thể tiếp nhận replica set đang chạy, cài cụm một node trên VPS Ubuntu mới, thêm secondary hoặc arbiter, theo dõi đồng bộ và quản lý backup.
 
 ## Xem trước giao diện
 
@@ -59,6 +59,8 @@ Trên **Replica Set**, **Máy chủ** và **Backup & restore**, các nút dùng 
 Trong **Tổng quan cụm**, hàng nút **Thao tác trong cụm** tự xuống dòng trên màn hình hẹp và có khoảng cách với **Hoạt động gần đây**.
 
 Trong **Máy chủ**, nhấn **Kiểm tra** trên từng dòng để đọc môi trường VPS và xem kết quả trong popup. Trường xác nhận backup chỉ được gửi khi nâng cấp Ubuntu.
+
+Khi thêm máy chủ, để trống tên để Manager đọc hostname qua SSH (hoặc đọc tại máy nếu chọn Local). Nhập tên để dùng tên riêng. Nếu chưa đọc được hostname, Manager giữ tên gợi ý và thử cập nhật lại khi nhấn **Kiểm tra**. Tên gợi ý được đánh số theo từng cụm: `mongo-01`, `mongo-02`, … Khi khởi động, Manager cũng đổi các tên cũ đúng mẫu tự sinh `tên cụm · địa chỉ SSH`. Bạn có thể sửa tên hiển thị trong hồ sơ máy.
 
 ## Chọn đúng thao tác
 
