@@ -585,16 +585,24 @@ def retire_member(p):
         if not own:
             raise ValueError(f"Cổng MongoDB {port} không có tiến trình thuộc {service}. Kiểm tra tên service trong hồ sơ.")
         verify_other_loopback_listeners(service, [row for row in listeners if row not in own])
-        address = own[0].split()[3].rsplit(":", 1)[0].strip("[]")
-        if address in {"0.0.0.0", "*", "::"}:
-            address = "::1" if address == "::" else "127.0.0.1"
-        local = shell_js("""
-const h = new Mongo("mongodb://" + input.host + ":" + input.port +
-    "/?directConnection=true&serverSelectionTimeoutMS=2000").getDB("admin").runCommand({hello: 1});
-print(JSON.stringify({primary: h.isWritablePrimary, process_id: h.topologyVersion?.processId?.toHexString()}));
-""", {"host": '[' + address + ']' if ':' in address else address, "port": p["port"]}, timeout=10)
-        if local.get("primary") or local.get("process_id") != p["process_id"]:
-            raise ValueError("Tiến trình trên VPS không khớp endpoint hoặc vừa lên primary.")
+        if p.get("expected_pid"):
+            if int(pid) != p["expected_pid"] or socket.gethostname() != p["expected_hostname"]:
+                raise ValueError("PID hoặc hostname qua SSH không khớp endpoint MongoDB.")
+        else:
+            address = own[0].split()[3].rsplit(":", 1)[0].strip("[]")
+            if address in {"0.0.0.0", "*", "::"}:
+                address = "::1" if address == "::" else "127.0.0.1"
+            try:
+                local = shell_js("""
+        const h = new Mongo("mongodb://" + input.host + ":" + input.port +
+            "/?directConnection=true&serverSelectionTimeoutMS=2000").getDB("admin").runCommand({hello: 1});
+        print(JSON.stringify({primary: h.isWritablePrimary, process_id: h.topologyVersion?.processId?.toHexString()}));
+        """, {"host": '[' + address + ']' if ':' in address else address, "port": p["port"]}, timeout=10)
+            except (RuntimeError, OSError, ValueError) as exc:
+                raise ValueError("Không đọc được hello tại địa chỉ bind " + address + ":" + port +
+                                 ". Cần tài khoản có quyền serverStatus hoặc mongosh kết nối được đúng instance.") from exc
+            if local.get("primary") or local.get("process_id") != p["process_id"]:
+                raise ValueError("Tiến trình trên VPS không khớp endpoint hoặc vừa lên primary.")
         if not p["member_present"] and run(["ss", "-Hnt", "state", "established", f"sport = :{port}"]):
             raise ValueError("Node đã rời cụm nhưng cổng MongoDB còn kết nối vào.")
     run(["systemctl", "disable", "--now", service], timeout=150)

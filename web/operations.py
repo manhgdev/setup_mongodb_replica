@@ -555,6 +555,7 @@ def stop_member_service(profile, machine, host, member_present):
     if not machine or machine.get("mongo_endpoint") != host:
         raise ValueError("Cần hồ sơ SSH khớp endpoint của node trước khi gỡ.")
     process_id = None
+    identity = {}
     try:
         with client(dict(profile, username="", password=""), direct=host) as target:
             hello = target.admin.command("hello")
@@ -567,8 +568,19 @@ def stop_member_service(profile, machine, host, member_present):
     except AutoReconnect:
         # Allow retry only if the SSH worker confirms that the service and port are idle.
         pass
+    if process_id and not hello.get("arbiterOnly"):
+        try:
+            with client(profile, direct=host) as target:
+                status = target.admin.command("serverStatus")
+                current = target.admin.command("hello")
+            if current.get("isWritablePrimary") or str(current.get("topologyVersion", {}).get("processId")) != process_id:
+                raise ValueError("Endpoint vừa đổi tiến trình hoặc lên Primary. Kiểm tra lại trước khi gỡ.")
+            if status.get("process") == "mongod" and isinstance(status.get("pid"), int) and status.get("host"):
+                identity = {"expected_pid": status["pid"], "expected_hostname": status["host"]}
+        except PyMongoError:
+            pass  # Accounts without serverStatus permission use the local hello check.
     return host_run(machine, "retire_member", {"port": int(host.rsplit(":", 1)[1]),
-                    "process_id": process_id, "member_present": member_present}, lambda _: None)
+                    "process_id": process_id, "member_present": member_present, **identity}, lambda _: None)
 
 
 def execute(action, p, profile, machine, emit):
