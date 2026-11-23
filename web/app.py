@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pymongo.errors import OperationFailure, PyMongoError
 
 from .models import Action, Apply, Machine, Profile, ProfileProbe, ProfileAdopt, AttachedMachine, DocumentPage, DocumentWrite
-from .operations import (HOST_ACTIONS, LABELS, PROFILE_ACTIONS, READ_ACTIONS, execute,
+from .operations import (HOST_ACTIONS, LABELS, PROFILE_ACTIONS, READ_ACTIONS, execute, arbiter_upgrade_target,
                          client, discover, host_run, mongo_error, read_documents, write_document, query, redact, snapshot, validate_params)
 from . import ubuntu
 from .store import Store
@@ -306,10 +306,16 @@ def create_app(data_dir=None):
         saved = app.state.store.save_many(records)
         return {"profile": public_profile(saved[0]), "machines": [public_machine(m) for m in saved[1:]], "status": status}
 
+    def busy(message):
+        active = next((job for job in reversed(app.state.store.all("jobs"))
+                       if job["status"] in {"queued", "running"}), None)
+        headers = {"X-Active-Job": active["id"]} if active else {}
+        return HTTPException(409, message, headers=headers)
+
     @app.delete("/api/profiles/{record_id}")
     def delete_profile(record_id: str):
         if app.state.lock.locked():
-            raise HTTPException(409, "Chờ tác vụ hiện tại hoàn tất.")
+            raise busy("Chờ tác vụ hiện tại hoàn tất.")
         app.state.store.delete("profiles", record_id)
         return {"ok": True}
 
@@ -453,7 +459,7 @@ def create_app(data_dir=None):
     @app.delete("/api/machines/{record_id}")
     def delete_machine(record_id: str):
         if app.state.lock.locked():
-            raise HTTPException(409, "Chờ tác vụ hiện tại hoàn tất.")
+            raise busy("Chờ tác vụ hiện tại hoàn tất.")
         app.state.store.delete("machines", record_id)
         return {"ok": True}
 
@@ -499,7 +505,7 @@ def create_app(data_dir=None):
         if machine.get("profile_id") != record_id:
             raise HTTPException(404, "Máy lưu backup không thuộc cụm đang mở.")
         if not app.state.lock.acquire(blocking=False):
-            raise HTTPException(409, "Chờ tác vụ đang chạy hoàn tất rồi xóa backup.")
+            raise busy("Chờ tác vụ đang chạy hoàn tất rồi xóa backup.")
         try:
             return host_run(machine, "delete_backup", {"backup_id": backup_id}, lambda _: None)
         except (RuntimeError, OSError) as exc:
@@ -586,6 +592,16 @@ def create_app(data_dir=None):
                 raise ValueError("VPS nguồn và VPS đích cần là hai máy khác nhau.")
         notices = []
         ubuntu_info = None
+        if body.action == "arbiter_upgrade":
+            node = arbiter_upgrade_target(profile, machine)
+            if not node["current"].startswith("8.0."):
+                raise ValueError("Kiểm tra lại phiên bản hiện tại của arbiter.")
+            try:
+                host_run(machine, "arbiter_check", dict(node, version=params["version"]), lambda _: None)
+            except (RuntimeError, OSError) as exc:
+                raise ValueError(redact(str(exc), machine.get("ssh_password") or "")) from exc
+            notices.append(f'{machine["mongo_endpoint"]} · {node["current"]} → {params["version"]}. '
+                           "Manager tải gói trước rồi tạm dừng và khởi động lại dịch vụ arbiter. Giữ Ubuntu và FCV hiện tại.")
         if body.action == "ubuntu_upgrade":
             profile = store.get("profiles", machine["profile_id"]) if machine.get("profile_id") else None
             try:
@@ -767,6 +783,8 @@ def create_app(data_dir=None):
             raise HTTPException(409, "Bản xem trước đã hết hạn. Tạo lại trước khi chạy.")
         if plan["public"].get("install_blocked"):
             raise ValueError(plan["public"]["install_blocked"])
+        if plan["public"]["action"] == "arbiter_upgrade" and app.state.store.get("machines", plan["machine"]["id"]) != plan["machine"]:
+            raise HTTPException(409, "Hồ sơ VPS đã thay đổi. Kiểm tra lại.")
         if plan["public"]["action"] == "ubuntu_upgrade":
             info = plan["public"]["ubuntu"]
             if info.get("blocked") or not info["path"] or (info["version"] and not body.backup_confirmed):
@@ -782,7 +800,7 @@ def create_app(data_dir=None):
                     raise HTTPException(409, 'Kết nối cụm đã đổi sau khi xem trước. Tạo lại kế hoạch thao tác.')
             plan['profile']['seeds'] = latest['seeds']
         if not app.state.lock.acquire(blocking=False):
-            raise HTTPException(409, "Đang có tác vụ chạy. Chờ hoàn tất trước khi thực hiện thao tác khác.")
+            raise busy("Đang có tác vụ chạy. Chờ hoàn tất trước khi thực hiện thao tác khác.")
         if app.state.plans.pop(body.plan_id, None) is None:
             app.state.lock.release()
             raise HTTPException(409, "Kế hoạch đã được thực hiện.")
@@ -801,7 +819,7 @@ def create_app(data_dir=None):
         ctx = store.get("ubuntu-jobs", job_id)
         plan = ctx["plan"]
         if not app.state.lock.acquire(blocking=False):
-            raise HTTPException(409, "Đang có tác vụ chạy.")
+            raise busy("Đang có tác vụ chạy.")
         try:
             if store.get("jobs", job_id)["status"] != "failed":
                 raise HTTPException(409, "Tác vụ đã được kiểm tra lại.")

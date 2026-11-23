@@ -576,3 +576,30 @@ def test_member_rename_is_scoped_and_updates_workspace_machine(api):
     record = api.app.state.store.get("machines", saved["id"])
     assert record["auto_name"] is False
     assert record["ssh_password"] == "fixture-secret"
+
+
+def test_busy_submission_identifies_running_job(api):
+    from threading import Event
+    entered, finish = Event(), Event()
+
+    def slow_check(action, params, profile, machine, emit):
+        emit("checking host")
+        entered.set()
+        assert finish.wait(5)
+        return {}
+
+    m = machine(api)
+    request = {"action": "preflight", "machine_id": m["id"]}
+    first, second = [api.post("/api/plans", json=request).json()["id"] for _ in range(2)]
+    with patch("web.app.execute", side_effect=slow_check):
+        try:
+            active = api.post("/api/jobs", json={"plan_id": first}).json()["id"]
+            assert entered.wait(2)
+            busy = api.post("/api/jobs", json={"plan_id": second})
+            assert busy.status_code == 409
+            assert busy.headers["X-Active-Job"] == active
+            log = api.get("/api/jobs/" + active).json()
+            assert log["status"] == "running" and log["events"][-1]["message"] == "checking host"
+        finally:
+            finish.set()
+        assert wait_job(api, active)["status"] == "succeeded"

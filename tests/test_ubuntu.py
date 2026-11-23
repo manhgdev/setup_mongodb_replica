@@ -193,3 +193,36 @@ def test_read_only_compatibility_without_primary(tmp_path, monkeypatch):
         direct.assert_called_once_with(profile, direct=machine["mongo_endpoint"])
         assert inspect.call_args.args[1:3] == ("ubuntu_compatibility", {"series": "9.0", "live_version": "9.0.8"})
         assert store.all("jobs") == []
+
+
+def test_resolute_reports_mongodb_upgrade_on_same_ubuntu(monkeypatch):
+    monkeypatch.setattr(worker, "preflight", lambda _: dict(os="Ubuntu 26.04.1", architecture="amd64",
+        hostname="arbiter", codename="resolute", tools={"systemctl": False}, version="db version v8.0.38",
+        service="mongod", service_state="active", services=["mongod"]))
+    monkeypatch.setattr(worker.shutil, "which", lambda _: None)
+    monkeypatch.setattr(worker, "ubuntu_architecture", lambda: "amd64")
+    monkeypatch.setattr(worker, "linux_info", lambda: {"ID": "ubuntu"})
+    packages = Mock(return_value="9.0.8")
+    monkeypatch.setattr(worker, "package_version", packages)
+    report = worker.ubuntu_compatibility({"service": "mongod", "series": "9.0", "live_version": "8.0.38"})
+    assert (report["status"], report["version"], report["package"]) == ("mongo_upgrade", "8.0.38", "9.0.8")
+    assert report["target"] == "26.04" and report["path"] == []
+    packages.assert_called_once_with("9.0", "resolute", "amd64")
+
+
+@pytest.mark.parametrize("quorum_lost", [False, True])
+def test_arbiter_upgrade_rechecks_before_install(monkeypatch, quorum_lost):
+    from web import operations
+    old = dict(current="8.0.38", process_id="process", port=27017)
+    probe = Mock(side_effect=[old, ValueError("quorum") if quorum_lost else old, dict(old, current="9.0.8")])
+    remote = Mock()
+    monkeypatch.setattr(operations, "arbiter_upgrade_target", probe)
+    monkeypatch.setattr(operations, "host_run", remote)
+    args = ("arbiter_upgrade", {"version": "9.0.8"}, {}, {"mongo_endpoint": "arbiter:27017"}, Mock())
+    if quorum_lost:
+        with pytest.raises(ValueError, match="quorum"):
+            operations.execute(*args)
+        assert [c.args[1] for c in remote.call_args_list] == ["arbiter_packages"]
+    else:
+        assert operations.execute(*args)["role"] == "ARBITER"
+        assert [c.args[1] for c in remote.call_args_list] == ["arbiter_packages", "arbiter_install"]

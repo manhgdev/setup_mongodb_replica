@@ -134,11 +134,13 @@ Hồ sơ quản trị mặc định nằm trong `.web-data/`. Khi sao lưu hoặ
 
 ## Nâng Ubuntu từ giao diện
 
-Mở **Phiên bản & nâng cấp** và chọn VPS cần kiểm tra. Bảng tự đọc Ubuntu, kiến trúc CPU, phiên bản MongoDB, trạng thái dịch vụ và vai trò tại endpoint. Dòng **Gói trong kho chính thức** cho biết phiên bản đã đối chiếu cho kiến trúc và Ubuntu đích. Với arbiter, Manager có thể đọc vai trò qua `hello` và phiên bản qua `buildInfo` khi tài khoản cụm không xác thực được trên node này. Ubuntu 26.04 chạy MongoDB 8.0 sẽ hiện cảnh báo về cặp phiên bản thực tế. [Bảng hỗ trợ MongoDB Community](https://www.mongodb.com/docs/community-platform-support/). Bấm **Kiểm tra lại** để cập nhật kết quả. Đây là thao tác chỉ đọc.
+Mở **Phiên bản & nâng cấp** và chọn VPS cần kiểm tra. Bảng tự đọc Ubuntu, kiến trúc CPU, phiên bản MongoDB, trạng thái dịch vụ và vai trò tại endpoint. Dòng **Gói trong kho chính thức** cho biết phiên bản đã đối chiếu cho kiến trúc và Ubuntu đích. Với arbiter, Manager có thể đọc vai trò qua `hello` và phiên bản qua `buildInfo` khi tài khoản cụm không xác thực được trên node này. Nếu VPS đã dùng Ubuntu 26.04 và còn chạy MongoDB 8.0, Manager giữ nguyên đích Ubuntu và tra gói MongoDB 9.0 cho đúng kiến trúc CPU. Bảng hiện riêng phiên bản đang chạy và gói có trong kho. Với arbiter, bấm **Nâng MongoDB lên … → Thực hiện**. Manager kiểm tra quorum, FCV 8.0, phiên bản, tiến trình và gói trên đúng VPS, tải trước gói, nâng binary rồi kiểm tra arbiter quay lại cụm. Theo dõi từng bước trong **Tác vụ**. Ubuntu và FCV giữ nguyên. Xem dòng **Dịch vụ** để biết mongod đang chạy hay đã dừng. [Bảng hỗ trợ MongoDB Community](https://www.mongodb.com/docs/community-platform-support/). Bấm **Kiểm tra lại** để cập nhật kết quả. Đây là thao tác chỉ đọc.
 
 ![Bảng tương thích Ubuntu và MongoDB theo từng VPS](previews/ubuntu-compatibility.jpg)
 
-Để lập kế hoạch nâng, vào **Phiên bản & nâng cấp → Quản lý Ubuntu**, hoặc chọn **Kiểm tra Ubuntu** trong popup **Cài MongoDB**. Chọn VPS và nhánh MongoDB. Mặc định ứng dụng giữ bản Ubuntu đã tương thích hoặc tìm bản LTS gần nhất có đủ gói chính thức. Có thể chọn đích cụ thể để lên LTS mới hơn.
+Khi kết quả là **Cần nâng Ubuntu**, nhấn **Nâng Ubuntu lên …** ngay cạnh cảnh báo. Manager kiểm tra lại đúng VPS, nhánh MongoDB và bản LTS đích, rồi mở popup với lộ trình. Nhấn **Nâng Ubuntu** để bắt đầu và theo dõi tiến độ trong **Tác vụ**.
+
+Để tự chọn đích khác, vào **Phiên bản & nâng cấp → Quản lý Ubuntu**, hoặc chọn **Kiểm tra Ubuntu** trong popup **Cài MongoDB**. Chọn VPS và nhánh MongoDB. Mặc định ứng dụng giữ bản Ubuntu đã tương thích hoặc tìm bản LTS gần nhất có đủ gói chính thức. Có thể chọn đích cụ thể để lên LTS mới hơn.
 
 ![Xem trước nâng Ubuntu trên VPS](previews/ubuntu-upgrade.jpg)
 
@@ -153,6 +155,8 @@ Kiểm chứng ngày 23/11/2026 trên VM ARM64 có snapshot. Máy trống nâng 
 Mỗi lần sửa dự án, cập nhật README này trong cùng thay đổi. Nếu thay đổi ảnh hưởng đến cách sử dụng, sửa trực tiếp hướng dẫn tương ứng. Với bản sửa nội bộ, ghi ngắn gọn nội dung và cách kiểm tra ở mục dưới. Đặt ảnh giao diện mới trong `previews/`.
 
 ### Thay đổi gần đây
+
+- Khi bấm thực hiện trong lúc một tác vụ khác đang chạy, Manager mở nhật ký của tác vụ đang giữ hàng đợi. Popup cập nhật mỗi 2,5 giây và cho phép cuộn lên đọc các dòng cũ. Thao tác vừa bấm cần được thực hiện lại sau khi tác vụ hiện tại kết thúc.
 
 - Khi chọn primary, ứng dụng chờ secondary áp dụng tới mốc oplog lấy từ primary trước khi yêu cầu bầu. Primary cũ nhường vai trò bằng step-down có kiểm tra đồng bộ. Secondary khác vẫn bỏ phiếu trong thời gian tạm hoãn ứng cử.
 

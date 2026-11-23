@@ -167,6 +167,9 @@ def release_path(current, series, arch, exact, requested, lookup):
     order = list(LTS)
     if current not in order:
         raise ValueError("Cần Ubuntu LTS có đường nâng đã biết. Bản hỗ trợ: " + ", ".join(LTS[c] for c in SUPPORTED[series]))
+    if current == "resolute" and series == "8.0" and requested in ("auto", current):
+        raise ValueError("Máy đã dùng Ubuntu 26.04. Không cần đường nâng Ubuntu. "
+                         "MongoDB Community trên bản này dùng nhánh 9.0 từ 9.0.4.")
     failures = []
     for target in order[order.index(current):]:
         if target not in SUPPORTED[series] or requested not in ("auto", target):
@@ -211,14 +214,15 @@ def ubuntu_compatibility(p):
         if not version and (host["mongodb_detected"] or processes):
             raise ValueError("Đã phát hiện MongoDB nhưng chưa xác minh được phiên bản.")
         if host["codename"] == "resolute" and series == "8.0":
-            result.update(status="unsupported",
-                          reason=f"Ubuntu 26.04 nằm ngoài phạm vi hỗ trợ của MongoDB Community {version or series}. "
-                                 "Trên Ubuntu 26.04, nhánh 9.0 được hỗ trợ từ 9.0.4.")
+            package = package_version("9.0", "resolute", result["arch"])
+            result.update(status="mongo_upgrade" if version else "change_series",
+                          package=package, target=LTS["resolute"],
+                          reason=f"Giữ Ubuntu 26.04. Kho MongoDB có gói Community {package} cho {result['arch']}.")
             return result
         def lookup(branch, codename, arch, exact):
             result["package"] = package_version(branch, codename, arch, exact)
         target, path = release_path(host["codename"], series, result["arch"], version, "auto", lookup)
-        result.update(status="upgrade" if path else "compatible", target=LTS[target], path=[LTS[c] for c in path])
+        result.update(status="upgrade" if path else "compatible", target=LTS[target], target_codename=target, path=[LTS[c] for c in path])
     except ValueError as exc:
         result.update(status="unsupported", package="", reason=str(exc))
     except RuntimeError as exc:
@@ -959,9 +963,53 @@ def restore(p):
     return {"restored": True, "backup_id": p["backup_id"], "message": "mongorestore hoàn tất. Kiểm tra dữ liệu ứng dụng trên cụm đích."}
 
 
+def arbiter_packages(action, p):
+    service = p["service"]
+    if linux_info().get("VERSION_CODENAME") != "resolute" or not re.fullmatch(r"9\.0\.\d+", p["version"]):
+        raise ValueError("Cần Ubuntu 26.04 và gói MongoDB 9.0.")
+    pid = run(["systemctl", "show", "-p", "MainPID", "--value", service])
+    listeners = run(["ss", "-Hlnpt", f"sport = :{int(p['port'])}"])
+    if not pid.isdigit() or run(["pgrep", "-x", "mongod"]).split() != [pid] or f'"mongod",pid={pid},' not in listeners:
+        raise ValueError("Cổng endpoint và service phải thuộc cùng một instance mongod duy nhất.")
+    process_id = run(["mongosh", "--quiet", "--host", "127.0.0.1", "--port", str(p["port"]), "--eval",
+                      "db.hello().topologyVersion.processId.toHexString()"])
+    if process_id != p["process_id"]:
+        raise ValueError("Instance trên kết nối SSH khác arbiter của endpoint.")
+    packages = []
+    for name in MONGO_PACKAGES:
+        status = run(["dpkg-query", "-W", "-f=${db:Status-Abbrev} ${Version}", name], check=False).split()
+        if status and status[0] == "hi":
+            raise ValueError("Gói MongoDB đang được hold: " + name)
+        if status and status[0] == "ii":
+            if status[-1] != p["current"]:
+                raise ValueError("Phiên bản gói đã cài khác phiên bản mongod đang chạy.")
+            packages.append(name)
+    if "mongodb-org-server" not in packages or run(["dpkg", "--audit"]):
+        raise ValueError("Cần mongodb-org-server do apt quản lý và trạng thái dpkg hoàn chỉnh.")
+    args = ["apt-get", "-y", "--no-remove", "-o", "Dpkg::Options::=--force-confold"]
+    pinned = [name + "=" + p["version"] for name in packages]
+    if action in {"arbiter_check", "arbiter_packages"}:
+        arch = ubuntu_architecture()
+        package_version("9.0", "resolute", arch, p["version"])
+        if action == "arbiter_check":
+            return {"service": service, "packages": packages}
+        configure_mongo_repo("9.0", "resolute", arch)
+        run(["apt-get", "update"], timeout=600)
+        run([*args, "--download-only", "install", *pinned], timeout=1200)
+    else:
+        run(["systemctl", "stop", service])
+        try:
+            run([*args, "--no-download", "install", *pinned], timeout=1200)
+        finally:
+            run(["systemctl", "start", service])
+    return {"service": service}
+
+
 def main(request):
     p = request["params"]
     action = request["action"]
+    if action in {"arbiter_check", "arbiter_packages", "arbiter_install"}:
+        return arbiter_packages(action, p)
     if action.startswith("ubuntu_"):
         return ubuntu_action(action, p)
     if action == "public_address":

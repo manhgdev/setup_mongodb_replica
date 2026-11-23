@@ -256,7 +256,7 @@ def query(profile, section, database="", collection=""):
 
 def host_run(machine, action, params, emit):
     worker = Path(__file__).with_name("host_worker.py")
-    elevated = action in {"ubuntu_start", "ubuntu_finalize", "ubuntu_status", "ubuntu_precheck", "ubuntu_restore_service", "install", "setup", "provision", "prepare_member", "read_keyfile", "service", "backup", "backups", "restore", "preview_backup", "delete_backup", "logs"}
+    elevated = action in {"arbiter_check", "arbiter_packages", "arbiter_install", "ubuntu_start", "ubuntu_finalize", "ubuntu_status", "ubuntu_precheck", "ubuntu_restore_service", "install", "setup", "provision", "prepare_member", "read_keyfile", "service", "backup", "backups", "restore", "preview_backup", "delete_backup", "logs"}
     params = dict(params, service=machine["service"])
     payload = {"action": action, "params": params}
     if machine["mode"] == "local":
@@ -328,15 +328,15 @@ def host_run(machine, action, params, emit):
 
 
 LABELS = {
-    "ubuntu_upgrade": "Kiểm tra và nâng Ubuntu",
+    "arbiter_upgrade": "Nâng MongoDB trên arbiter", "ubuntu_upgrade": "Kiểm tra và nâng Ubuntu",
     "preflight": "Kiểm tra môi trường", "logs": "Đọc nhật ký", "install": "Cài MongoDB", "setup": "Tạo replica set một node",
     "service": "Điều khiển dịch vụ", "add_member": "Thêm thành viên", "remove_member": "Gỡ thành viên",
     "member_options": "Sửa cấu hình thành viên", "step_down": "Step down Primary", "create_user": "Tạo user", "password": "Đổi mật khẩu",
     "drop_user": "Xóa user", "write_concern": "Đặt write concern", "backup": "Tạo backup", "backups": "Liệt kê backup",
     "sync_backup": "Đồng bộ bản mới từ nguồn", "restore": "Restore backup", "drop_database": "Xóa database", "upgrade_check": "Kiểm tra nâng cấp 9.0",
     "provision": "Cài và tạo cụm mới", "join_fresh": "Kiểm tra VPS và thêm member"}
-HOST_ACTIONS = {"ubuntu_upgrade", "preflight", "logs", "install", "setup", "provision", "join_fresh", "service", "backup", "backups", "restore", "sync_backup"}
-PROFILE_ACTIONS = set(LABELS) - HOST_ACTIONS | {"backup", "restore", "sync_backup", "join_fresh"}
+HOST_ACTIONS = {"arbiter_upgrade", "ubuntu_upgrade", "preflight", "logs", "install", "setup", "provision", "join_fresh", "service", "backup", "backups", "restore", "sync_backup"}
+PROFILE_ACTIONS = set(LABELS) - HOST_ACTIONS | {"arbiter_upgrade", "backup", "restore", "sync_backup", "join_fresh"}
 READ_ACTIONS = {"preflight", "logs", "backups", "upgrade_check"}
 
 
@@ -369,6 +369,7 @@ def validate_params(action, params, machine=None):
         "member_options": ["host", "priority", "votes", "hidden"], "create_user": ["username", "password", "database", "role"],
         "password": ["username", "password", "database"], "drop_user": ["username", "database"],
         "write_concern": ["w"], "backup": ["database", "databases", "collection", "collections", "application_only"], "restore": ["backup_id", "drop", "destination_id", "destination_machine_id"], "drop_database": ["database"]}
+    allowed["arbiter_upgrade"] = ["version"]
     allowed["ubuntu_upgrade"] = ["series", "target"]
     allowed["sync_backup"] = allowed["backup"] + ["destination_id", "drop"]
     allowed["provision"] = allowed["setup"] + ["series"]
@@ -376,6 +377,8 @@ def validate_params(action, params, machine=None):
     if action not in allowed or set(params) - set(allowed[action]):
         raise ValueError("Tác vụ hoặc tham số không hợp lệ.")
     p = copy.deepcopy(params)
+    if action == "arbiter_upgrade" and not re.fullmatch(r"9\.0\.\d+", str(p.get("version", ""))):
+        raise ValueError("Chọn gói MongoDB 9.0 trong kết quả kiểm tra.")
     required = {"install": ["series"], "setup": allowed["setup"], "service": ["operation"], "add_member": ["host"], "remove_member": ["host"],
                 "member_options": ["host", "priority", "votes", "hidden"], "create_user": allowed["create_user"], "password": allowed["password"],
                 "drop_user": allowed["drop_user"], "write_concern": ["w"], "restore": ["backup_id"], "drop_database": ["database"]}
@@ -502,7 +505,55 @@ def check_quorum(cfg, states):
         raise ValueError("Cấu hình này không còn đủ quorum hoặc node có thể làm primary.")
 
 
+def arbiter_upgrade_target(profile, machine):
+    endpoint = machine.get("mongo_endpoint")
+    if not endpoint or machine.get("profile_id") != profile["id"]:
+        raise ValueError("Cần hồ sơ VPS liên kết đúng cụm và endpoint của arbiter.")
+    with client(profile) as db:
+        cfg, states = healthy_config(db)
+        member = next((m for m in cfg["members"] if m["host"] == endpoint and m.get("arbiterOnly")), None)
+        if not member or states.get(member["_id"], {}).get("state") != 7:
+            raise ValueError("Endpoint đã chọn phải là arbiter đang hoạt động trong cấu hình cụm.")
+        peers = {i: m for i, m in states.items() if i != member["_id"] and m.get("state") in (1, 2, 7)}
+        check_quorum(cfg, peers)
+        fcv = db.admin.command({"getParameter": 1, "featureCompatibilityVersion": 1})["featureCompatibilityVersion"]
+        if fcv != {"version": "8.0"}:
+            raise ValueError("Cụm cần FCV 8.0 ổn định trước khi nâng binary.")
+    with client(dict(profile, username="", password=""), direct=endpoint) as db:
+        hello = db.admin.command("hello")
+        if not hello.get("arbiterOnly") or hello.get("setName") != cfg["_id"]:
+            raise ValueError("Endpoint trực tiếp không khớp arbiter trong cụm.")
+        return dict(process_id=str(hello["topologyVersion"]["processId"]), port=int(endpoint.rsplit(":", 1)[1]),
+                    current=db.admin.command("buildInfo")["version"])
+
+
+def upgrade_arbiter(p, profile, machine, emit):
+    target = arbiter_upgrade_target(profile, machine)
+    if target["current"] != p["version"]:
+        if not target["current"].startswith("8.0."):
+            raise ValueError("Tác vụ dành cho arbiter đang chạy MongoDB 8.0.")
+        params = dict(target, version=p["version"])
+        emit("Kiểm tra instance và tải trước các gói MongoDB.")
+        host_run(machine, "arbiter_packages", params, emit)
+        if arbiter_upgrade_target(profile, machine) != target:
+            raise ValueError("Arbiter đã đổi trong khi tải gói. Vui lòng kiểm tra lại.")
+        emit("Đã kiểm tra lại quorum. Dừng dịch vụ, cài gói và khởi động arbiter.")
+        host_run(machine, "arbiter_install", params, emit)
+    emit("Chờ replica set nhận lại arbiter và xác minh phiên bản trực tiếp.")
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        try:
+            if arbiter_upgrade_target(profile, machine)["current"] == p["version"]:
+                return dict(endpoint=machine["mongo_endpoint"], role="ARBITER", version=p["version"])
+        except (ValueError, PyMongoError):
+            pass
+        time.sleep(2)
+    raise ValueError("Chưa xác minh được phiên bản và vai trò sau khi nâng. Kiểm tra nhật ký dịch vụ.")
+
+
 def execute(action, p, profile, machine, emit):
+    if action == "arbiter_upgrade":
+        return upgrade_arbiter(p, profile, machine, emit)
     if action == "join_fresh":
         emit('Bước 1/6: Kiểm tra SSH và môi trường VPS đích…')
         environment = host_run(machine, 'preflight', {}, emit)

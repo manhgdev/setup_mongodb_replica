@@ -275,7 +275,7 @@ const englishLabels = {
   "Giữ FCV cũ trong thời gian kiểm tra. Nâng FCV bằng bước riêng sau đó.": "Keep the current FCV while testing. Upgrade FCV separately afterward.",
   "Phạm vi tự động hóa": "Upgrade automation",
   "Xem kết quả kiểm tra": "View check results",
-  "Web hỗ trợ kiểm tra điều kiện nâng cấp. Thay binary và nâng FCV thực hiện theo runbook; chưa tự chạy từ giao diện.": "The app checks upgrade prerequisites. Follow the runbook to replace binaries and raise FCV.",
+  "Arbiter 8.0 trên Ubuntu 26.04 có thể nâng binary ngay trong bảng trên. Với node chứa dữ liệu và bước nâng FCV, xem quy trình nâng cụm.": "Upgrade an 8.0 arbiter on Ubuntu 26.04 directly from the host report. For data-bearing members and FCV, follow the replica set upgrade procedure.",
   "Mở hướng dẫn MongoDB chính thức ↗": "Open the official MongoDB guide ↗",
   "Theo dõi tiến độ, kết quả và những thao tác cần kiểm tra.": "Track progress, results and jobs that need attention.",
   "TÁC VỤ": "JOB",
