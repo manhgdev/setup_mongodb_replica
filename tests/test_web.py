@@ -560,3 +560,19 @@ def test_delete_backup_only_on_selected_host(api, tmp_path, monkeypatch):
     assert api.delete(path+keys[0]).json() == {"deleted":keys[0]}
     assert not (tmp_path / keys[0]).exists()
     assert (tmp_path / keys[1] / "manifest.json").exists()
+
+
+def test_member_rename_is_scoped_and_updates_workspace_machine(api):
+    p = profile(api)
+    saved = api.post("/api/machines", json={"name": "mongo-01", "mode": "ssh", "host": "example.test",
+                     "profile_id": p["id"], "ssh_auth": "password", "ssh_password": "fixture-secret"}).json()
+    route = f'/api/profiles/{p["id"]}/machines/{saved["id"]}/name'
+    assert api.patch(route.replace(p["id"], "other"), json={"name": "Other"}).status_code == 404
+    assert api.patch(route, json={"name": " "}).status_code == 422
+    response = api.patch(route, json={"name": " Shop VPS "})
+    response.raise_for_status()
+    assert "ssh_password" not in response.json()
+    assert api.get("/api/state").json()["machines"][0]["name"] == "Shop VPS"
+    record = api.app.state.store.get("machines", saved["id"])
+    assert record["auto_name"] is False
+    assert record["ssh_password"] == "fixture-secret"

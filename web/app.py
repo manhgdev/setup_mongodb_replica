@@ -32,6 +32,11 @@ from .backup_schedule import BackupScheduler, KIND as SCHEDULES, ScheduleInput
 ROOT = Path(__file__).resolve().parent
 
 
+class MachineName(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    name: str = Field(min_length=1, max_length=80)
+
+
 class Login(BaseModel):
     model_config = ConfigDict(extra='forbid')
     username: str = Field(min_length=1, max_length=80)
@@ -348,6 +353,14 @@ def create_app(data_dir=None):
     @app.put("/api/machines/{record_id}")
     def edit_machine(record_id: str, body: Machine):
         return save_machine(body, record_id)
+
+    @app.patch("/api/profiles/{profile_id}/machines/{machine_id}/name")
+    def rename_machine(profile_id: str, machine_id: str, body: MachineName):
+        machine = app.state.store.update_fields("machines", machine_id, {"name": body.name, "auto_name": False},
+                                                expected={"profile_id": profile_id})
+        if machine is None:
+            raise HTTPException(404, "Không tìm thấy máy trong cụm đang mở.")
+        return public_machine(machine)
 
     @app.get("/api/machines/{record_id}/compatibility")
     def machine_compatibility(record_id: str, series: str = Query("9.0", pattern=r"^(8|9)\.0$")):

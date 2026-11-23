@@ -109,6 +109,6 @@ def test_password_ssh_rejects_wrong_password(ssh_server):
 def test_password_ssh_rejects_unknown_host(ssh_server):
     machine, seen = ssh_server
     with patch.object(paramiko.SSHClient, 'load_system_host_keys', lambda *args: None):
-        with pytest.raises(RuntimeError, match='known_hosts'):
+        with pytest.raises(RuntimeError, match=r'known_hosts.*SHA256:'):
             run_password(machine, 'true', {}, lambda _: None)
     assert 'password' not in seen

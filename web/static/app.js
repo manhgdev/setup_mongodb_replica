@@ -83,8 +83,14 @@ const jobBadge = j => badge(statusNames[j.status]||j.status, j.status==='succeed
 let csrfToken='';
 async function api(path, options={}) {
   const response = await fetch('/api'+path,{...options,headers:{'X-MongoDB-Manager':'1','Content-Type':'application/json',...(csrfToken?{'X-CSRF-Token':csrfToken}:{}),...options.headers}});
-  const data = await response.json();
   if(response.status===401&&path!=='/auth/login')showLogin(uiText("Phiên đăng nhập đã hết hạn. Đăng nhập lại để tiếp tục."));
+  let data;
+  try { data=await response.json(); }
+  catch(error){
+    if(!(error instanceof SyntaxError))throw error;
+    const message=dataLabel('API trả về nội dung không hợp lệ. Kiểm tra đường dẫn /api trên máy chủ web.','Invalid API response. Check the web server route for /api.');
+    throw Object.assign(new Error(message+' (HTTP '+response.status+')'),{invalidResponse:true,status:response.status});
+  }
   if(!response.ok) throw new Error(typeof data.detail==='string'?data.detail:Array.isArray(data.detail)?data.detail.map(x=>x.msg).join('; '):uiText("Yêu cầu thất bại."));
   return data;
 }
@@ -136,8 +142,8 @@ function memberLabel(member, fallback){
       reserved.push(name);
     }
   }
-  const name=localStorage.getItem(key)||fallback;
-  return `<button type="button" class="member-label" data-member-key="${esc(key)}" data-fallback="${esc(fallback)}" title="${uiText("Nhấp đúp để đổi tên member")}">${esc(name)}</button>`;
+  const name=saved?.name||localStorage.getItem(key)||fallback;
+  return `<button type="button" class="member-label" data-machine-id="${esc(saved?.id)}" data-member-key="${esc(key)}" data-fallback="${esc(fallback)}" title="${uiText("Nhấp đúp để đổi tên member")}">${esc(name)}</button>`;
 }
 function renameMember(event){
   const label=event.target.closest('.member-label');
@@ -145,23 +151,36 @@ function renameMember(event){
   const input=document.createElement('input');
   input.className='member-name-input';
   input.setAttribute('aria-label',uiText("Tên hiển thị của member"));
+  input.maxLength=80;
   input.value=label.textContent;
   label.replaceWith(input);
   input.focus();
   input.select();
-  function finish(save,restoreFocus){
+  async function finish(save,restoreFocus){
     if(!input.isConnected)return;
     const key=label.dataset.memberKey;
     const name=input.value.trim();
     input.removeEventListener('blur',onBlur);
-    input.replaceWith(label);
-    if(save){
-      if(name)localStorage.setItem(key,name);
-      else localStorage.removeItem(key);
-      for(const item of document.querySelectorAll('.member-label')){
-        if(item.dataset.memberKey===key)item.textContent=name||item.dataset.fallback;
+    input.disabled=true;
+    try{
+      if(save && name!==label.textContent){
+        const machine=machines().find(m=>m.id===label.dataset.machineId);
+        if(machine){
+          if(name){
+            if(!demo)await api('/profiles/'+machine.profile_id+'/machines/'+machine.id+'/name',{method:'PATCH',body:JSON.stringify({name})});
+            machine.name=name;
+            machine.auto_name=false;
+          }
+          localStorage.removeItem(key);
+        }else if(name)localStorage.setItem(key,name);
+        else localStorage.removeItem(key);
+        input.replaceWith(label);
+        for(const item of document.querySelectorAll('.member-label')){
+          if(item.dataset.memberKey===key)item.textContent=machine?.name||name||item.dataset.fallback;
+        }
       }
-    }
+    }catch(error){toast(error.message,true);}
+    if(input.isConnected)input.replaceWith(label);
     if(restoreFocus)label.focus();
   }
   const onBlur=()=>finish(true,false);
@@ -329,6 +348,24 @@ function selectedArchiveHost(){
 }
 const deletedDemoBackups=new Set();
 let catalogLoading=false,catalogError='';
+async function readBackupCatalog(pid,machineId,id){
+  try{return await api('/profiles/'+pid+'/machines/'+machineId+'/backups');}
+  catch(error){
+    if(!error.invalidResponse||[401,403].includes(error.status)||id!==renderId)throw error;
+  }
+  // Some proxies return their own HTML page for slow SSH requests.
+  const post=(path,body)=>api(path,{method:'POST',body:JSON.stringify(body)});
+  const plan=await post('/plans',{action:'backups',profile_id:pid,machine_id:machineId});
+  if(id!==renderId)return [];
+  let job=await post('/jobs',{plan_id:plan.id,confirmation:plan.confirmation});
+  while(['queued','running'].includes(job.status)){
+    await new Promise(resolve=>setTimeout(resolve,1000));
+    if(id!==renderId)return [];
+    job=await api('/jobs/'+job.id);
+  }
+  if(job.status!=='succeeded')throw new Error(job.error||uiText("Yêu cầu thất bại."));
+  return job.result;
+}
 async function loadArchiveCatalog(id){
   const host=selectedArchiveHost(),pid=profile()?.id;
   backupItems=[];backupListedHost=host;catalogError='';catalogLoading=!!host;
@@ -336,7 +373,7 @@ async function loadArchiveCatalog(id){
   if(!host)return;
   try{
     const items=demo?[{id:'a'.repeat(32),time:new Date().toISOString(),machine_id:host.id,source:profile().name,source_id:pid,database:'application',size:2048}]:
-      await api('/profiles/'+pid+'/machines/'+host.id+'/backups');
+      await readBackupCatalog(pid,host.id,id);
     if(id!==renderId||currentRoute!=='backup')return;
     backupItems=demo?items.filter(b=>!deletedDemoBackups.has(host.id+'/'+b.id)):items;
   }catch(e){
@@ -793,7 +830,7 @@ function showPreview(plan){
     for(const m of currentStatus?.members||[]){
       if(m.state==='SECONDARY'&&m.health===1&&m.votes===1&&m.priority>0){
         const key=JSON.stringify(['mongo-manager-member',demo,actionContext.profileId,m.id,m.host]);
-        const name=localStorage.getItem(key)||machines().find(v=>v.profile_id===actionContext.profileId&&v.mongo_endpoint===m.host)?.name;
+        const name=machines().find(v=>v.profile_id===actionContext.profileId&&v.mongo_endpoint===m.host)?.name||localStorage.getItem(key);
         options.push({value:m.host,label:name?name+' · '+m.host:m.host});
       }
     }
