@@ -6,7 +6,6 @@ import fcntl
 import os
 import socket
 import json
-import select
 import time
 from pathlib import Path
 
@@ -120,12 +119,14 @@ def run_password(machine, command, payload, emit):
         while True:
             if time.monotonic() - started > 7500:
                 raise TimeoutError("Tác vụ quá thời gian; kiểm tra máy đích trước khi thử lại.")
-            if channel.recv_ready():
+            stdout_ready = channel.recv_ready()
+            stderr_ready = channel.recv_stderr_ready()
+            if stdout_ready:
                 buffer += decoder.decode(channel.recv(65536))
                 while "\n" in buffer:
                     line, buffer = buffer.split("\n", 1)
                     consume(line)
-            if channel.recv_stderr_ready():
+            if stderr_ready:
                 stderr = channel.recv_stderr(65536)
                 if b"sudo" in stderr or b"password is required" in stderr:
                     error = "Đã kết nối SSH. Tác vụ hệ thống cần root hoặc quyền sudo -n không hỏi mật khẩu."
@@ -138,7 +139,9 @@ def run_password(machine, command, payload, emit):
                 return result
             if not transport.is_active():
                 raise RuntimeError("Mất kết nối SSH. Kiểm tra trạng thái máy đích trước khi chạy lại.")
-            select.select([channel], [], [], 0.2)
+            # Paramiko exposes an artificial pipe via fileno(), which can exceed select() limits.
+            if not stdout_ready and not stderr_ready:
+                time.sleep(0.05)
     except paramiko.AuthenticationException:
         raise RuntimeError("Đăng nhập SSH thất bại. Kiểm tra user, mật khẩu và quyền đăng nhập bằng mật khẩu trên VPS.") from None
     except paramiko.BadHostKeyException as exc:

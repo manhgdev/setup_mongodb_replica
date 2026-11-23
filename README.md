@@ -160,6 +160,8 @@ Mỗi lần sửa dự án, cập nhật README này trong cùng thay đổi. N�
 
 ### Thay đổi gần đây
 
+- Sửa lỗi `filedescriptor out of range in select()` khi đọc backup và chạy tác vụ qua SSH bằng mật khẩu.
+
 - Khi hai tác vụ cần cùng VPS hoặc cùng sửa replica set, Manager mở nhật ký của tác vụ đang giữ tài nguyên đó. Kiểm tra VPS khác vẫn chạy song song. Popup cập nhật mỗi 2,5 giây và cho phép cuộn lên đọc các dòng cũ. Thao tác vừa bấm cần được thực hiện lại sau khi tác vụ hiện tại kết thúc.
 
 - Khi chọn primary, ứng dụng chờ secondary áp dụng tới mốc oplog lấy từ primary trước khi yêu cầu bầu. Primary cũ nhường vai trò bằng step-down có kiểm tra đồng bộ. Secondary khác vẫn bỏ phiếu trong thời gian tạm hoãn ứng cử.

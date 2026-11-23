@@ -86,7 +86,11 @@ def ssh_server(tmp_path):
     assert done.is_set()
 
 
-def test_password_ssh_real_protocol(ssh_server):
+def test_password_ssh_real_protocol(ssh_server, monkeypatch):
+    def high_descriptor(_):
+        return 65536
+
+    monkeypatch.setattr(paramiko.Channel, "fileno", high_descriptor)
     machine, seen = ssh_server
     events = []
     result = host_run(machine, 'preflight', {}, events.append)
