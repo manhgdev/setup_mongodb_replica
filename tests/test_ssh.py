@@ -95,6 +95,8 @@ def test_password_ssh_real_protocol(ssh_server):
     assert seen['password'] == machine['ssh_password']
     assert machine['ssh_password'] not in seen['command']
     assert 'sudo' not in seen['command']
+    assert len(seen['command']) < 1024
+    assert 'def main(request)' in seen['payload'].pop('_worker')
     assert seen['payload'] == {'action': 'preflight', 'params': {'service': 'mongod'}}
 
 

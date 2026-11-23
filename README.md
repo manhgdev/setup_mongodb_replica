@@ -2,6 +2,19 @@
 
 Giao diện web tiếng Việt và tiếng Anh để quản lý MongoDB Community. Từ một máy quản trị, bạn có thể tiếp nhận replica set đang chạy, cài cụm một node trên VPS Ubuntu mới, thêm secondary hoặc arbiter, theo dõi đồng bộ và quản lý backup.
 
+## Xem trước giao diện
+
+![Tổng quan cụm MongoDB với sơ đồ replica set](previews/web-preview.jpg)
+
+<details>
+<summary>Xem màn hình kết nối cụm và cấu hình SSH</summary>
+
+![Các lựa chọn tiếp nhận cụm hoặc cài đặt VPS mới](previews/onboarding-preview.jpg)
+
+![Cấu hình SSH cho các máy chủ trong cụm](previews/cluster-ssh-preview.jpg)
+
+</details>
+
 ## Chạy từ mã nguồn
 
 Cần Python 3.10 trở lên với `venv` và pip. Mở terminal tại thư mục dự án và chạy:
@@ -35,6 +48,12 @@ Trong **Dữ liệu**, nhấn F5 sẽ mở lại database, collection, bộ lọ
 
 Khi thêm lại member qua SSH, Manager kiểm tra service đã lưu của VPS trước khi cấp phát instance mới. Nếu service đang chạy đúng cổng, nhánh phiên bản, replica set và keyfile, Manager dùng lại service dù tên instance nhập trong form khác. Nếu member đã hoạt động đúng vai trò, nhấn thêm lại giữ nguyên cấu hình bầu cử.
 
+Trên **Replica Set**, **Máy chủ** và **Backup & restore**, các nút dùng chung màu theo chức năng. Thêm secondary màu xanh lá, sửa màu xanh dương, cấu hình màu tím, chuyển primary màu hổ phách, gỡ member màu đỏ.
+
+Trong **Tổng quan cụm**, hàng nút **Thao tác trong cụm** tự xuống dòng trên màn hình hẹp và có khoảng cách với **Hoạt động gần đây**.
+
+Trong **Máy chủ**, nhấn **Kiểm tra** trên từng dòng để đọc môi trường VPS và xem kết quả trong popup. Trường xác nhận backup chỉ được gửi khi nâng cấp Ubuntu.
+
 ## Chọn đúng thao tác
 
 Mỗi trang hiển thị trực tiếp tên chức năng ở đầu trang. Chọn cụm một lần ở thanh bên. Các tác vụ trong workspace tự dùng cụm đang mở, kể cả backup, restore và thay đổi thành viên. Máy chủ mới được lưu vào workspace đang mở. Danh sách máy, lịch sử tác vụ và cấu hình SSH của workspace được lọc theo cụm. Nếu muốn cấu hình SSH cho nhiều cụm, mở **Các cụm MongoDB → SSH cho tất cả các cụm**. Màn hình xác nhận hiển thị đích trước khi chạy.
@@ -56,7 +75,7 @@ Trong **Máy chủ của bạn**, VPS thuộc replica set đứng trước, VPS 
 Trong workspace nguồn, chọn **Backup & restore**. Máy thực thi lưu archive tại `/var/backups/mongodb-manager` và cần có MongoDB Database Tools. Máy này phải kết nối được tới các cụm dùng trong tác vụ.
 
 - **Tạo backup** mặc định chọn tất cả database ứng dụng, bỏ qua admin, local và config. Có thể chọn toàn cụm, đánh dấu một hoặc nhiều database, hoặc chọn **Chọn collection trong database** rồi đánh dấu một hay nhiều collection theo tên. Trong **Dữ liệu**, nút **Backup collection** mở form với collection đang xem được chọn sẵn. Replica set toàn cụm có oplog. Các database được chọn được dump tuần tự, nên khi cần dữ liệu nhất quán giữa chúng hãy tạm dừng ghi hoặc dùng bản toàn replica set.
-- Mở **Backup & restore** để tự đọc danh sách từ máy lưu trữ. Đổi **Máy lưu backup** nếu cần. Giao diện nhớ máy đã chọn theo từng workspace, kể cả sau F5. Mỗi bản hiển thị thời gian, ID backup đầy đủ, nguồn, phạm vi và dung lượng. Các nút Xem dữ liệu, Backup lại, Restore và Xóa nằm cùng hàng. Để xóa vĩnh viễn một bản trên máy lưu, nhấn **Xóa** cạnh Restore, kiểm tra tên máy và ID trong popup rồi nhấn **Xóa backup**. Dữ liệu MongoDB đang chạy và các bản backup khác vẫn được giữ. Trên màn hình hẹp, cuộn ngang trong bảng để xem các nút. Nếu danh sách rỗng, giao diện hiển thị tên máy, thư mục và nút tạo backup. Bản mới nhất đứng đầu. **Backup lại** tạo một bản mới cùng phạm vi từ nguồn đang mở và giữ các bản trước.
+- Mở **Backup & restore** để tự đọc danh sách từ máy lưu trữ. Đổi **Máy lưu backup** nếu cần. Giao diện nhớ máy đã chọn theo từng workspace, kể cả sau F5. Mỗi bản hiển thị thời gian, ID backup đầy đủ, nguồn, phạm vi và dung lượng. Các nút nằm cùng hàng: **Xem dữ liệu** màu xanh dương, **Backup lại** xanh lá, **Restore** vàng hổ phách và **Xóa** đỏ. Để xóa vĩnh viễn một bản trên máy lưu, nhấn **Xóa** cạnh Restore, kiểm tra tên máy và ID trong popup rồi nhấn **Xóa backup**. Dữ liệu MongoDB đang chạy và các bản backup khác vẫn được giữ. Trên màn hình hẹp, cuộn ngang trong bảng để xem các nút. Nếu danh sách rỗng, giao diện hiển thị tên máy, thư mục và nút tạo backup. Bản mới nhất đứng đầu. **Backup lại** tạo một bản mới cùng phạm vi từ nguồn đang mở và giữ các bản trước.
 - Trong **Các bản backup → Lịch backup**, chọn máy lưu, phạm vi và tần suất, rồi nhấn **Lưu và bật lịch**. Mỗi workspace có một lịch, mặc định tắt. Có thể chọn mỗi giờ, hằng ngày, hằng tuần hoặc nhập cron 5 trường theo giờ Việt Nam (UTC+7). Ví dụ `0 2 * * *` chạy lúc 02:00 mỗi ngày. Trang hiển thị lần chạy kế tiếp. Mở lại cùng nút để sửa hoặc **Tạm dừng lịch**.
 - Lịch được lưu trên máy quản trị và chạy khi dịch vụ MongoDB Manager hoạt động, kể cả khi đóng tab. Khi máy quản trị khởi động lại hoặc tác vụ khác đang bận, các kỳ đã lỡ được gộp thành một lần chạy khi rảnh. Mỗi lần chạy tạo một mục **Backup định kỳ** trong lịch sử tác vụ, kèm kết quả hoặc lỗi. Tạm dừng lịch có hiệu lực với các lần chạy tiếp theo.
 - **Xem dữ liệu** mở trực tiếp nội dung đã sao lưu trên máy lưu trữ. Nhập một phần tên database hoặc collection vào ô tìm bên trái rồi chọn collection. Khi chọn xong, ô tìm được xóa để có thể nhấn ngay sang collection khác. Với bản sao một phần, nhóm **Từ bản backup khác** liệt kê thêm các collection cùng cụm nguồn trên máy lưu đang chọn. Collection có trong bản đang mở luôn dùng bản đó. Với collection bổ sung, giao diện dùng bản gần nhất có chứa collection và hiển thị thời điểm của bản đang đọc ở tiêu đề popup. Bảng bên phải hiển thị tối đa 25 document mỗi trang và 12 trường đầu để xem nhanh. Cuộn trong bảng theo hai chiều, dùng **Trước / Sau** để chuyển trang. Nhấn một dòng để đọc tất cả các trường, mở object hoặc array, hoặc xem **Extended JSON**. Nút **← Danh sách** quay lại đúng dòng đang đọc. Với bản toàn replica set, phần xem trước đọc dữ liệu dump trước bước replay oplog. Các collection hệ thống chứa thông tin nội bộ được ẩn.
@@ -100,6 +119,18 @@ Nhãn vai trò dùng chung màu trên sơ đồ và các bảng: PRIMARY xanh l�
 | [WEB_VALIDATION.md](WEB_VALIDATION.md) | Các lần kiểm chứng thực tế và phạm vi đã thử |
 
 Hồ sơ quản trị mặc định nằm trong `.web-data/`. Khi sao lưu hoặc chuyển ứng dụng sang máy khác, giữ cả cơ sở dữ liệu và khóa mã hóa của thư mục này.
+
+## Nâng Ubuntu từ giao diện
+
+Vào **Phiên bản & nâng cấp → Quản lý Ubuntu**, hoặc chọn **Kiểm tra Ubuntu** trong popup **Cài MongoDB**. Chọn VPS và nhánh MongoDB. Mặc định ứng dụng giữ bản Ubuntu đã tương thích hoặc tìm bản LTS gần nhất có đủ gói chính thức. Có thể chọn đích cụ thể để lên LTS mới hơn.
+
+![Xem trước nâng Ubuntu trên VPS](previews/ubuntu-upgrade.jpg)
+
+Bản xem trước hiển thị hệ điều hành, kiến trúc, phiên bản MongoDB và các chặng nâng. Với máy có dữ liệu, gắn đúng hồ sơ, endpoint và service, chuẩn bị bản sao lưu có thể phục hồi rồi xác nhận trong popup. Máy cần systemd, quyền root hoặc sudo không hỏi mật khẩu, update-manager-core, chính sách nâng LTS và tối thiểu 5 GiB trống trên phân vùng gốc. Trình nâng Ubuntu kiểm tra thêm dung lượng thực tế cần cho từng chặng.
+
+Manager dùng hàng đợi tác vụ hiện có để thực hiện lần lượt từng máy. Mỗi chặng chạy trên VPS, có thể reboot sau khi cập nhật gói và sau khi nâng bản phát hành. Mở **Tác vụ** để theo dõi hoặc xem lại sau khi khởi động Manager. Nếu nâng bị gián đoạn, xem đường dẫn log của chặng trên VPS rồi bấm **Kiểm tra lại**. Khi hệ điều hành đã nâng xong và bước cài gói MongoDB bị lỗi, Manager có thể tiếp tục từ bước cài gói sau khi xác nhận. Khi máy mới đã sẵn sàng, bấm **Cài MongoDB** trong kết quả để tiếp tục với đúng máy và nhánh đã chọn.
+
+Kiểm chứng ngày 23/11/2026 trên VM ARM64 có snapshot. Máy trống nâng từ Ubuntu 24.04.5 lên 26.04.1, sau đó cài MongoDB 9.0.8 từ giao diện và trả lời ping. Một replica một node trở lại PRIMARY với cùng phiên bản MongoDB và đọc được document đã ghi trước khi nâng. Kiểm thử riêng trên replica set ba node kiểm tra quorum và bàn giao primary.
 
 ## Cập nhật tài liệu
 

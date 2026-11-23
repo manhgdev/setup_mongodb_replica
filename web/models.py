@@ -112,6 +112,7 @@ class Action(StrictModel):
 
 
 class Apply(StrictModel):
+    backup_confirmed: bool = Field(default=False, strict=True)
     plan_id: str
     confirmation: str = ""
 

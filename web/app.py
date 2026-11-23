@@ -24,6 +24,7 @@ from pymongo.errors import PyMongoError
 from .models import Action, Apply, Machine, Profile, ProfileProbe, ProfileAdopt, AttachedMachine, DocumentPage, DocumentWrite
 from .operations import (HOST_ACTIONS, LABELS, PROFILE_ACTIONS, READ_ACTIONS, execute,
                          client, discover, host_run, mongo_error, read_documents, write_document, query, redact, snapshot, validate_params)
+from . import ubuntu
 from .store import Store
 from .auth import Auth, SESSION_AGE
 from .backup_schedule import BackupScheduler, KIND as SCHEDULES, ScheduleInput
@@ -45,8 +46,14 @@ def create_app(data_dir=None):
         app.state.pool = ThreadPoolExecutor(max_workers=1)
         app.state.lock = threading.Lock()
         app.state.plans = {}
+        app.state.stop = threading.Event()
         for job in app.state.store.all("jobs"):
             if job["status"] in {"queued", "running"}:
+                if job.get("action") == "ubuntu_upgrade":
+                    ctx = app.state.store.get("ubuntu-jobs", job["id"])
+                    if app.state.lock.acquire(blocking=False):
+                        app.state.pool.submit(run_job, ctx["plan"], job)
+                        continue
                 job.update(status="interrupted", finished_at=now(), error="Ứng dụng đã dừng giữa tác vụ. Kiểm tra máy đích trước khi chạy lại.")
                 app.state.store.save("jobs", job, job["id"])
         scheduler = BackupScheduler(app.state.store, app.state.lock, dispatch_scheduled)
@@ -55,6 +62,7 @@ def create_app(data_dir=None):
         try:
             yield
         finally:
+            app.state.stop.set()
             scheduler.stop.set()
             scheduler.thread.join()
             app.state.pool.shutdown(wait=True)
@@ -449,7 +457,36 @@ def create_app(data_dir=None):
             if source_machine["id"] == machine["id"] or (source_machine["mode"], source_machine["host"], source_machine["port"]) == (machine["mode"], machine["host"], machine["port"]):
                 raise ValueError("VPS nguồn và VPS đích cần là hai máy khác nhau.")
         notices = []
+        ubuntu_info = None
+        if body.action == "ubuntu_upgrade":
+            profile = store.get("profiles", machine["profile_id"]) if machine.get("profile_id") else None
+            try:
+                ubuntu_info = host_run(machine, "ubuntu_assess", params, lambda _: None)
+                i = ubuntu_info
+                route = [i["current"], *i["path"]] if i.get("current") else []
+                i["route"] = " → ".join(ubuntu.LTS[c] for c in route)
+                if i["path"]:
+                    try:
+                        ubuntu.host_run(machine, "ubuntu_precheck", {"stage": i["path"][0]}, lambda _: None)
+                        role, _ = ubuntu.mongo_state(machine, profile, i)
+                    except (ValueError, RuntimeError, OSError, PyMongoError) as exc:
+                        i["blocked"] = mongo_error(exc) if isinstance(exc, PyMongoError) else redact(str(exc), machine.get("ssh_password") or "")
+                        notices.append(i["blocked"])
+                    else:
+                        notices.extend(["Kho MongoDB có bộ gói phù hợp với bản LTS đích và kiến trúc của máy.",
+                                        role, "Mỗi chặng cập nhật gói, nâng hệ điều hành và khởi động lại."])
+                elif i.get("blocked"):
+                    notices.append(i["blocked"])
+                else:
+                    notices.append("Bản Ubuntu hiện tại đã có gói phù hợp.")
+            except (RuntimeError, OSError, PyMongoError) as exc:
+                raise ValueError(redact(str(exc), machine.get("ssh_password") or "")) from exc
+        install_check = None
         if body.action == "install":
+            try:
+                install_check = host_run(machine, "ubuntu_assess", dict(series=params["series"], target="auto"), lambda _: None)
+            except (RuntimeError, OSError) as exc:
+                raise ValueError(redact(str(exc), machine.get("ssh_password") or "")) from exc
             notices.append("Chỉ cài khi chưa có mongod. Package chính thức được kiểm tra theo Ubuntu và kiến trúc.")
         if body.action in {"setup", "provision"}:
             notices.append("Tạo instance, service và keyfile mới. Không ghi đè instance đang có; không tự mở firewall.")
@@ -473,11 +510,15 @@ def create_app(data_dir=None):
         display = {k: ("••••••••" if k == "password" else v) for k, v in params.items()}
         plan = {"id": plan_id, "action": body.action, "label": LABELS[body.action], "target": target, "params": display,
                 "notices": notices, "confirmation": "" if body.action in READ_ACTIONS else target, "expires_in": 600}
+        if install_check and (install_check.get("blocked") or install_check["path"] or install_check["version"]):
+            plan["install_blocked"] = install_check.get("blocked") or ("Máy đã có mongod." if install_check["version"] else "Ubuntu hiện tại chưa có bộ gói phù hợp.")
+        if ubuntu_info:
+            plan["ubuntu"] = {k: v for k, v in ubuntu_info.items() if k not in {"pid", "hostname", "machine_token"}}
         current = time.monotonic()
         app.state.plans = {k: v for k, v in app.state.plans.items() if v["expires"] > current}
         if len(app.state.plans) >= 100:
             raise HTTPException(429, "Có quá nhiều bản xem trước; hãy chờ hết hạn.")
-        app.state.plans[plan_id] = {"public": plan, "destination": destination, "params": params, "profile": profile, "machine": machine, "source_machine": source_machine, "expires": current + 600}
+        app.state.plans[plan_id] = {"public": plan, "ubuntu_info": ubuntu_info, "destination": destination, "params": params, "profile": profile, "machine": machine, "source_machine": source_machine, "expires": current + 600}
         return plan
 
     def run_job(plan, job):
@@ -487,8 +528,10 @@ def create_app(data_dir=None):
             job["events"].append({"time": now(), "message": redact(message, *secret_values)})
             store.save("jobs", job, job["id"])
         try:
-            job.update(status="running", started_at=now())
-            emit("Bắt đầu " + job["label"].lower() + ".")
+            job.update(status="running", error=None)
+            resumed = bool(job.get("started_at"))
+            job.setdefault("started_at", now())
+            emit(("Tiếp tục theo dõi " if resumed else "Bắt đầu ") + job["label"].lower() + ".")
             params = dict(plan["params"])
             if plan.get("source_machine"):
                 params["_source_machine"] = plan["source_machine"]
@@ -497,7 +540,13 @@ def create_app(data_dir=None):
                 params["_destination"] = plan["destination"]
             if job["action"] == "restore" and plan.get("destination"):
                 profile = plan["destination"]
-            result = execute(job["action"], params, profile, plan["machine"], emit)
+            if job.get("action") == "ubuntu_upgrade":
+                ctx = store.get("ubuntu-jobs", job["id"])
+                result = ubuntu.advance(store, job, plan["machine"], profile, ctx, app.state.stop, emit)
+                if result is None:
+                    return
+            else:
+                result = execute(job["action"], params, profile, plan["machine"], emit)
             if job["action"] in {"create_user", "password", "drop_user"}:
                 kind = "user-passwords:" + profile["id"]
                 key = user_key(params["database"], params["username"])
@@ -547,8 +596,11 @@ def create_app(data_dir=None):
             emit("Tác vụ dừng: " + job["error"])
         finally:
             try:
-                job["finished_at"] = now()
+                if job["status"] != "running":
+                    job["finished_at"] = now()
                 store.save("jobs", job, job["id"])
+                if job.get("action") == "ubuntu_upgrade" and job["status"] == "succeeded":
+                    store.delete("ubuntu-jobs", job["id"])
             finally:
                 app.state.lock.release()
 
@@ -557,6 +609,9 @@ def create_app(data_dir=None):
         job = {"id": uuid4().hex, "machine_id": (plan["machine"] or {}).get("id", ""), "profile_id": (plan["profile"] or {}).get("id") or (plan["machine"] or {}).get("profile_id", ""), "action": public["action"], "label": public["label"], "target": public["target"],
                "status": "queued", "created_at": now(), "events": [], "result": None, "error": None}
         records = [("jobs", job, job["id"])]
+        if public["action"] == "ubuntu_upgrade":
+            records.append(("ubuntu-jobs", {"params": plan["params"], "info": plan["ubuntu_info"], "plan": plan}, job["id"]))
+            job["series"] = plan["params"]["series"]
         if schedule:
             job["scheduled"] = True
             records.append((SCHEDULES, schedule, schedule["id"]))
@@ -577,6 +632,14 @@ def create_app(data_dir=None):
         plan = app.state.plans.get(body.plan_id)
         if not plan or plan["expires"] < time.monotonic():
             raise HTTPException(409, "Bản xem trước đã hết hạn. Tạo lại trước khi chạy.")
+        if plan["public"].get("install_blocked"):
+            raise ValueError(plan["public"]["install_blocked"])
+        if plan["public"]["action"] == "ubuntu_upgrade":
+            info = plan["public"]["ubuntu"]
+            if info.get("blocked") or not info["path"] or (info["version"] and not body.backup_confirmed):
+                raise ValueError("Cần có chặng nâng và xác nhận bản sao lưu cho máy đang chạy MongoDB.")
+            if app.state.store.get("machines", plan["machine"]["id"]) != plan["machine"]:
+                raise HTTPException(409, "Cấu hình máy đã đổi. Kiểm tra lại.")
         if body.confirmation != plan["public"]["confirmation"]:
             raise ValueError("Tên xác nhận chưa khớp máy/cụm đích.")
         if plan['profile']:
@@ -587,9 +650,43 @@ def create_app(data_dir=None):
             plan['profile']['seeds'] = latest['seeds']
         if not app.state.lock.acquire(blocking=False):
             raise HTTPException(409, "Đang có tác vụ chạy. Chờ hoàn tất trước khi thực hiện thao tác khác.")
-        app.state.plans.pop(body.plan_id)
+        if app.state.plans.pop(body.plan_id, None) is None:
+            app.state.lock.release()
+            raise HTTPException(409, "Kế hoạch đã được thực hiện.")
         try:
             return enqueue(plan)
+        except Exception:
+            app.state.lock.release()
+            raise
+
+    @app.post("/api/jobs/{job_id}/verify-ubuntu", status_code=202)
+    def verify_ubuntu(job_id: str):
+        store = app.state.store
+        job = store.get("jobs", job_id)
+        if job.get("action") != "ubuntu_upgrade" or job["status"] != "failed":
+            raise HTTPException(409, "Chỉ kiểm tra lại tác vụ nâng Ubuntu đã dừng.")
+        ctx = store.get("ubuntu-jobs", job_id)
+        plan = ctx["plan"]
+        if not app.state.lock.acquire(blocking=False):
+            raise HTTPException(409, "Đang có tác vụ chạy.")
+        try:
+            if store.get("jobs", job_id)["status"] != "failed":
+                raise HTTPException(409, "Tác vụ đã được kiểm tra lại.")
+            index = ctx.get("index", 0)
+            args = {"job_id": job_id, "stage": ctx["info"]["path"][index]}
+            state = host_run(plan["machine"], "ubuntu_status", args, lambda _: None)
+            if state["phase"] == "failed" and state.get("can_finalize") and state.get("current") == args["stage"]:
+                ctx["retry_finalize"] = True
+            elif state["phase"] not in {"reboot", "prepare-reboot"} or not state["rebooted"]:
+                raise ValueError("Chặng này chưa hoàn tất reboot. Xem log trên VPS rồi kiểm tra lại kế hoạch.")
+            ctx.pop("verify_until", None)
+            ctx.pop("ready_until", None)
+            ctx.pop("launch_error", None)
+            job.update(status="queued", error=None)
+            job.pop("finished_at", None)
+            store.save_many([("ubuntu-jobs", ctx, job_id), ("jobs", job, job_id)])
+            app.state.pool.submit(run_job, plan, job)
+            return job
         except Exception:
             app.state.lock.release()
             raise

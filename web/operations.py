@@ -255,31 +255,38 @@ def query(profile, section, database="", collection=""):
 
 
 def host_run(machine, action, params, emit):
-    worker = Path(__file__).with_name("host_worker.py").read_text()
-    elevated = action in {"install", "setup", "provision", "prepare_member", "read_keyfile", "service", "backup", "backups", "restore", "preview_backup", "delete_backup", "logs"}
+    worker = Path(__file__).with_name("host_worker.py")
+    elevated = action in {"ubuntu_start", "ubuntu_finalize", "ubuntu_status", "ubuntu_precheck", "ubuntu_restore_service", "install", "setup", "provision", "prepare_member", "read_keyfile", "service", "backup", "backups", "restore", "preview_backup", "delete_backup", "logs"}
     params = dict(params, service=machine["service"])
-    if machine["mode"] == "ssh" and machine.get("ssh_auth") == "password":
-        from .ssh_transport import run_password
-        remote = ["python3", "-u", "-c", worker]
-        if elevated and machine["user"] != "root":
-            remote = ["sudo", "-n", *remote]
-        return run_password(machine, shlex.join(remote), {"action": action, "params": params}, emit)
+    payload = {"action": action, "params": params}
     if machine["mode"] == "local":
-        cmd = [sys.executable, "-u", "-c", worker]
+        cmd = [sys.executable, "-u", str(worker)]
         if elevated and os.geteuid() != 0:
             cmd = ["sudo", "-n", *cmd]
     else:
         cmd = ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-p", str(machine["port"])]
         if machine.get("identity"):
             cmd += ["-i", str(Path(machine["identity"]).expanduser())]
-        remote = ["python3", "-u", "-c", worker]
+        # Send source through stdin. SSH multiplexers impose a small command-size limit.
+        payload["_worker"] = worker.read_text()
+        loader = ("import json,sys; request=json.load(sys.stdin); scope={'__name__':'host_worker'}; "
+                  "exec(compile(request.pop('_worker'),'host_worker.py','exec'),scope); scope['serve'](request)")
+        remote = ["python3", "-u", "-c", loader]
         if elevated and machine["user"] != "root":
             remote = ["sudo", "-n", *remote]
+        if machine.get("ssh_auth") == "password":
+            from .ssh_transport import run_password
+            return run_password(machine, shlex.join(remote), payload, emit)
         cmd += [machine["user"] + "@" + machine["host"], shlex.join(remote)]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     # Payload includes secrets, sent only through stdin (SSH encrypts transport).
-    proc.stdin.write(json.dumps({"action": action, "params": params}))
-    proc.stdin.close()
+    try:
+        with proc.stdin:
+            proc.stdin.write(json.dumps(payload))
+    except BrokenPipeError:
+        # A failed SSH connection can close stdin before the source upload finishes.
+        # Drain stderr below to report the host-key, authentication or sudo error.
+        pass
     result = None
     error = None
     selector = selectors.DefaultSelector()
@@ -321,13 +328,14 @@ def host_run(machine, action, params, emit):
 
 
 LABELS = {
+    "ubuntu_upgrade": "Kiểm tra và nâng Ubuntu",
     "preflight": "Kiểm tra môi trường", "logs": "Đọc nhật ký", "install": "Cài MongoDB", "setup": "Tạo replica set một node",
     "service": "Điều khiển dịch vụ", "add_member": "Thêm thành viên", "remove_member": "Gỡ thành viên",
     "member_options": "Sửa cấu hình thành viên", "step_down": "Step down Primary", "create_user": "Tạo user", "password": "Đổi mật khẩu",
     "drop_user": "Xóa user", "write_concern": "Đặt write concern", "backup": "Tạo backup", "backups": "Liệt kê backup",
     "sync_backup": "Đồng bộ bản mới từ nguồn", "restore": "Restore backup", "drop_database": "Xóa database", "upgrade_check": "Kiểm tra nâng cấp 9.0",
     "provision": "Cài và tạo cụm mới", "join_fresh": "Kiểm tra VPS và thêm member"}
-HOST_ACTIONS = {"preflight", "logs", "install", "setup", "provision", "join_fresh", "service", "backup", "backups", "restore", "sync_backup"}
+HOST_ACTIONS = {"ubuntu_upgrade", "preflight", "logs", "install", "setup", "provision", "join_fresh", "service", "backup", "backups", "restore", "sync_backup"}
 PROFILE_ACTIONS = set(LABELS) - HOST_ACTIONS | {"backup", "restore", "sync_backup", "join_fresh"}
 READ_ACTIONS = {"preflight", "logs", "backups", "upgrade_check"}
 
@@ -361,6 +369,7 @@ def validate_params(action, params, machine=None):
         "member_options": ["host", "priority", "votes", "hidden"], "create_user": ["username", "password", "database", "role"],
         "password": ["username", "password", "database"], "drop_user": ["username", "database"],
         "write_concern": ["w"], "backup": ["database", "databases", "collection", "collections", "application_only"], "restore": ["backup_id", "drop", "destination_id", "destination_machine_id"], "drop_database": ["database"]}
+    allowed["ubuntu_upgrade"] = ["series", "target"]
     allowed["sync_backup"] = allowed["backup"] + ["destination_id", "drop"]
     allowed["provision"] = allowed["setup"] + ["series"]
     allowed["join_fresh"] = ["instance", "port", "advertise", "bind_ip", "source_machine_id", "source_endpoint", "arbiter", "mode", "target_keyfile", "votes", "priority"]
@@ -371,6 +380,8 @@ def validate_params(action, params, machine=None):
                 "member_options": ["host", "priority", "votes", "hidden"], "create_user": allowed["create_user"], "password": allowed["password"],
                 "drop_user": allowed["drop_user"], "write_concern": ["w"], "restore": ["backup_id"], "drop_database": ["database"]}
     required.update(provision=allowed["provision"], join_fresh=["instance", "port", "bind_ip", "source_machine_id", "source_endpoint"])
+    if action == "ubuntu_upgrade" and (p.get("series") not in ("8.0", "9.0") or p.get("target") not in ("auto", "focal", "jammy", "noble", "resolute")):
+        raise ValueError("Chọn nhánh MongoDB và bản Ubuntu đích hợp lệ.")
     if action == 'join_fresh':
         p.setdefault('arbiter', False)
         p.setdefault('mode', 'prepare')

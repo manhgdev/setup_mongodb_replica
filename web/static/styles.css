@@ -78,8 +78,6 @@ span.vote-label { cursor: default; }
 
 td.row-number { width: 1%; font-variant-numeric: tabular-nums; }
 
-.button.change-primary { background: #e0f2e7; color: #195d3e; border-color: #99c8ac; }
-.button.change-primary:hover { background: #d0eada; border-color: #69a581; }
 
 
 .data-explorer { background:white; border:1px solid #dce6df; border-radius:12px; overflow:hidden; }
@@ -208,5 +206,19 @@ td .password-control input[readonly] { min-width:9rem; padding-block:7px; border
 }
 
 .archive-actions { display:inline-flex; flex-wrap:nowrap; align-items:center; gap:6px; white-space:nowrap; }
+.button[data-tone="info"] { --ink-action:#185788; --fill-action:#eaf4ff; }
+.button[data-tone="create"] { --ink-action:#166044; --fill-action:#e6f5ed; }
+.button[data-tone="warning"] { --ink-action:#85500d; --fill-action:#fff2d9; }
+.button[data-tone="remove"] { --ink-action:#9e3035; --fill-action:#ffeded; }
+.button[data-tone="configure"] { --ink-action:#61428a; --fill-action:#f3edfb; }
 .archive-actions .button { flex:none; margin:0; }
+.button[data-tone] {
+  color:var(--ink-action); background:var(--fill-action);
+  border-color:color-mix(in srgb,var(--ink-action) 30%,var(--fill-action));
+}
+.button[data-tone]:hover { background:color-mix(in srgb,var(--ink-action) 10%,var(--fill-action)); border-color:var(--ink-action); }
+.button[data-tone]:focus-visible { outline:2px solid var(--ink-action); outline-offset:2px; }
 .archive-id { display:inline-block; max-width:18ch; overflow-wrap:anywhere; user-select:all; }
+
+.cluster-actions { gap:10px; }
+.cluster-actions + .panel { margin-block-start:20px; }

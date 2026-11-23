@@ -114,7 +114,8 @@ Wizard này dành cho keyfile không TLS, data directory mới. Node đã đư�
 
 ## Máy thực thi và kết nối
 
-- Cài đặt/setup dành cho Ubuntu 22.04, 24.04, 26.04 dùng systemd. Ubuntu 26.04 chọn 9.0, tối thiểu 9.0.4. Installer kiểm tra package thực có trên repository chính thức theo kiến trúc trước khi cài; từ chối cài đè khi đã có mongod.
+- Cài đặt/setup dành cho Ubuntu LTS dùng systemd. Nhánh 8.0 kiểm tra gói cho 20.04, 22.04 và 24.04. Nhánh 9.0 kiểm tra gói cho 22.04, 24.04 và 26.04. Ubuntu 26.04 chọn 9.0, tối thiểu 9.0.4. Installer kiểm tra package thực có trên repository chính thức theo kiến trúc trước khi cài; từ chối cài đè khi đã có mongod.
+- Chọn **Phiên bản & nâng cấp → Quản lý Ubuntu** để xem đường nâng theo từng chặng LTS. Với máy đang chạy MongoDB, kiểm tra bản sao lưu và xác nhận thời gian gián đoạn. Xem log và mở lại tác vụ trong **Lịch sử tác vụ** sau reboot.
 - Máy SSH cần `python3`, mật khẩu SSH hoặc key/agent, host key đã có trong `known_hosts`; thao tác hệ thống cần root hoặc `sudo -n`. Chọn phương thức trong hồ sơ máy: **Mật khẩu SSH** hoặc **SSH key / Agent**. Mật khẩu SSH được lưu mã hóa, không trả lại trên API/giao diện và không đưa vào dòng lệnh. Khi sửa hồ sơ, để trống mật khẩu để giữ nguyên; chuyển sang key/agent sẽ xóa mật khẩu SSH đã lưu. Xác thực mật khẩu dùng IP/hostname trực tiếp, không áp dụng alias/ProxyJump từ `~/.ssh/config`. Nếu VPS chưa có trong known_hosts, kết nối một lần bằng `ssh -p PORT USER@HOST` và xác minh fingerprint trước. Với tài khoản không phải root, tác vụ hệ thống vẫn cần `sudo -n`; mật khẩu SSH không được tự dùng làm mật khẩu sudo.
 - Máy chạy web cần kết nối được tới mọi địa chỉ node MongoDB quảng bá. Máy SSH dùng cho dump/restore cũng cần kết nối được tới cụm.
 - Tài khoản MongoDB cần quyền tương ứng: giám sát, quản lý cụm/user, backup/restore. Tạo backup/restore còn cần đọc `buildInfo` và FCV.

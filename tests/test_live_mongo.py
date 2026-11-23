@@ -221,3 +221,25 @@ def test_adopt_existing_secondary_and_expand_real_replica(live_cluster):
     users = api.get('/api/profiles/' + profile['id'] + '/query/users')
     assert any(u['user'] == 'afterElection' for u in users.json())
     assert root.application.events.find_one({'_id': 'preserved'})['value'] == 'real-data'
+
+
+def test_ubuntu_maintenance_handoff(live_cluster):
+    from web.ubuntu import mongo_state
+
+    _, root, hosts, password = live_cluster
+    config = root.admin.command('replSetGetConfig')['config']
+    current = root.admin.command('hello')['me']
+    status = root.admin.command('serverStatus')
+    info = {'version': status['version'], 'hostname': status['host'].split(':')[0], 'pid': status['pid']}
+    profile = dict(seeds=hosts, replica_set='managerLiveTest', username='managerAdmin', auth_db='admin', password=password)
+    machine = dict(mongo_endpoint=current)
+    with pytest.raises(ValueError, match='quorum'):
+        mongo_state(machine, profile, info, handoff=True)
+    config['members'].append({'_id': 2, 'host': hosts[2]})
+    config['version'] += 1
+    root.admin.command({'replSetReconfig': config})
+    wait_for(lambda: sum(m['state'] == 2 for m in root.admin.command('replSetGetStatus')['members']) == 2)
+    wait_for(lambda: not any(m.get('newlyAdded') for m in root.admin.command('replSetGetConfig')['config']['members']))
+    mongo_state(machine, profile, info, handoff=True)
+    assert root.admin.command('hello')['me'] != current
+    assert root.application.events.find_one({'_id': 'preserved'})['value'] == 'real-data'
