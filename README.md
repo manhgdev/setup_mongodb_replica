@@ -60,6 +60,8 @@ Trong **Tổng quan cụm**, hàng nút **Thao tác trong cụm** tự xuống d
 
 Trong **Máy chủ**, nhấn **Kiểm tra** trên từng dòng để đọc môi trường VPS và xem kết quả trong popup. Trường xác nhận backup chỉ được gửi khi nâng cấp Ubuntu.
 
+Khi bấm **Kiểm tra & lưu cụm** lần đầu, Manager tự đọc hostname của các member đang online. Hồ sơ SSH có tên tự động dùng hostname qua SSH. Với member chưa khai báo SSH, Manager thử đọc hostname qua MongoDB bằng tài khoản của cụm. Nếu chưa đọc được tên, giao diện dùng tên gợi ý.
+
 Trong **Máy chủ**, bấm **Lấy tên từ VPS** cạnh **Đổi primary** để cập nhật tên tất cả VPS có hồ sơ SSH trong workspace đang mở. Manager đọc hostname của từng VPS qua SSH và lưu làm tên hiển thị. Nếu SSH lỗi, tên cũ được giữ lại.
 
 Khi thêm máy chủ, để trống tên để Manager đọc hostname qua SSH (hoặc đọc tại máy nếu chọn Local). Nhập tên để dùng tên riêng. Nếu chưa đọc được hostname, Manager giữ tên gợi ý và thử cập nhật lại khi nhấn **Kiểm tra**. Tên gợi ý được đánh số theo từng cụm: `mongo-01`, `mongo-02`, … Khi khởi động, Manager cũng đổi các tên cũ đúng mẫu tự sinh `tên cụm · địa chỉ SSH`. Bạn có thể sửa tên hiển thị trong hồ sơ máy.

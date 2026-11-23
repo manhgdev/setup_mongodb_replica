@@ -141,6 +141,7 @@ function memberLabel(member, fallback){
   const cluster=profile();
   const saved=machines().find(m=>m.profile_id===cluster?.id&&m.mongo_endpoint===member.host);
   if(saved)fallback=saved.name;
+  else if(cluster?.member_hostnames?.[member.host])fallback=cluster.member_hostnames[member.host];
   else if(cluster){
     const reserved=[];
     for(const endpoint of new Set([...cluster.seeds,member.host])){
@@ -282,7 +283,7 @@ function machinePage(){
  const discovered=[];
  for(const member of members){
    if(linked.some(m=>m.mongo_endpoint===member.host))continue;
-   const label=member.id!=null?memberLabel(member,'Member '+member.id):esc(member.host);
+   const label=member.id!=null?memberLabel(member,'Member '+member.id):esc(profile()?.member_hostnames?.[member.host]||member.host);
    discovered.push(`<tr data-node="${esc(member.host)}" tabindex="-1"><td class="row-number">${discovered.length+1}</td><td><strong>${label}</strong><small class="mongo-address">${esc(member.host)}</small>${member.state?memberBadge(member.state):''}</td><td>${uiText("Chưa cấu hình SSH")}</td><td>—</td><td><div class="actions">${electionActions(member)}${button(uiText("Cấu hình SSH"),'member-ssh','','small',`data-host="${esc(member.host)}"`)}${removeAction(member)}</div></td></tr>`);
  }
  const headers=[uiText("STT"),uiText("MÁY CHỦ"),uiText("KẾT NỐI"),'SERVICE',uiText("THAO TÁC")];

@@ -263,6 +263,8 @@ def create_app(data_dir=None):
         value = body.model_dump()
         if record_id:
             previous = app.state.store.get("profiles", record_id)
+            if "member_hostnames" in previous:
+                value["member_hostnames"] = {h: n for h, n in previous["member_hostnames"].items() if h in value["seeds"]}
             if value["password"] is None:
                 value["password"] = previous.get("password", "")
         value["password"] = value["password"] or ""
@@ -308,6 +310,26 @@ def create_app(data_dir=None):
             prepared = prepare_machine(machine, attached.record_id or None)
             prepared['profile_id'] = profile_id
             records.append(('machines', prepared, attached.record_id or None))
+        previous_names = app.state.store.get("profiles", profile_id).get("member_hostnames", {}) if body.record_id else {}
+        names = {host: name for host, name in previous_names.items() if host in value["seeds"]}
+        attached_hosts = {record["mongo_endpoint"] for _, record, _ in records[1:]}
+        pending = [m["host"] for m in status.get("members", []) if m.get("host") in value["seeds"]
+                   and m["host"] not in names and m["host"] not in attached_hosts and m.get("health", 1) == 1]
+
+        def detect(host):
+            try:
+                with client(value, direct=host) as db:
+                    name = db.admin.command("hostInfo").get("system", {}).get("hostname", "")
+                    if isinstance(name, str) and name.strip() and name.isprintable() and len(name) <= 80:
+                        return host, name.strip()
+            except PyMongoError:
+                pass
+            return host, ""
+
+        if pending:
+            with ThreadPoolExecutor(max_workers=min(8, len(pending))) as pool:
+                names.update((host, name) for host, name in pool.map(detect, pending) if name)
+        value["member_hostnames"] = names
         saved = app.state.store.save_many(records)
         return {"profile": public_profile(saved[0]), "machines": [public_machine(m) for m in saved[1:]], "status": status}
 
