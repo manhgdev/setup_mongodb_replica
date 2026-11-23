@@ -257,6 +257,8 @@ function activityList(list){return `<div class="activity">${list.map(j=>`<div cl
 function clustersPage(){
  return heading(uiText("Các cụm MongoDB"),uiText("Thêm, sửa kết nối hoặc xóa hồ sơ cụm khỏi ứng dụng."),button(uiText("SSH cho tất cả các cụm"),'ssh-bulk')+button(uiText("Thêm cụm"),'profile-new','plus','primary'))+onboardingCards()+panel(uiText("Danh sách cụm"),profiles().length?table([uiText("TÊN CỤM"),'REPLICA SET','SEED / MEMBER',uiText("THAO TÁC")],profiles().map(p=>`<tr><td><strong>${esc(p.name)}</strong></td><td>${esc(p.replica_set||'Standalone')}</td><td class="mono">${p.seeds.map(esc).join('<br>')}</td><td><div class="actions">${button(uiText("Mở"),'profile-open','','small',`data-id="${esc(p.id)}"`)}${button(uiText("Sửa"),'profile-edit','','small',`data-id="${esc(p.id)}"`)}${button(uiText("Xóa"),'profile-delete','trash','small danger',`data-id="${esc(p.id)}"`)}</div></td></tr>`)):empty(uiText("Chưa có cụm"),uiText("Bấm Thêm cụm rồi nhập seed và tài khoản MongoDB.")))+`<div class="callout neutral">${uiText("Xóa hồ sơ chỉ bỏ kết nối khỏi ứng dụng. Dữ liệu, user MongoDB và replica set trên VPS vẫn giữ nguyên.")}</div>`;
 }
+const hostnameBatches=new Set();
+function workspaceSSHHosts(){return machines().filter(m=>m.mode==='ssh'&&(m.profile_id||'')===(profile()?.id||''));}
 function machinePage(){
  let html=heading(uiText("Máy chủ"),uiText("Quản lý kết nối SSH, cài đặt và dịch vụ trên từng máy."),button(uiText("Thêm máy chủ"),'machine-new','plus')+(profile()?button(uiText("Thêm Secondary"),'node-add','plus','primary')+button(uiText("Thêm Arbiter"),'add-arbiter','plus'):''));
  if(!profile())html+=onboardingCards();
@@ -275,7 +277,7 @@ function machinePage(){
    ?button(uiText("Gỡ"),'member-remove','trash','small danger',`data-host="${esc(member.host)}"`):'';
  const rows=linked.map((m,index)=>{
    const member=memberByHost.get(m.mongo_endpoint);
-   return `<tr data-node="${esc(m.mongo_endpoint)}" tabindex="-1"><td class="row-number">${index+1}</td><td><div class="host-cell"><span class="server-icon">${icon('server')}</span><div><strong>${member?.id!=null?memberLabel(member,m.name):esc(m.name)}</strong>${m.mongo_endpoint?`<small class="mongo-address">${esc(m.mongo_endpoint)}</small>`:''}${member?.state?memberBadge(member.state):''}</div></div></td><td>${badge(m.mode==='ssh'?'SSH':'LOCAL','dark')} ${m.mode==='ssh'?`<span class="mono ssh-address">${esc(m.user)}@${esc(m.host.includes(':')?'['+m.host+']':m.host)}:${esc(m.port)}</span>`:''}</td><td class="mono">${esc(m.service)}<small>${esc(profiles().find(p=>p.id===m.profile_id)?.name||uiText("Chưa liên kết cụm"))}</small></td><td><div class="actions">${electionActions(member)}${!member&&profile()&&currentStatus&&m.mode==='ssh'?button(uiText("Thêm làm Secondary"),'join-fresh','plus','small',`data-id="${esc(m.id)}"`):''}${button(uiText("Kiểm tra"),'preflight','pulse','small',`data-id="${esc(m.id)}"`)}${button(uiText("Dịch vụ"),'service','','small',`data-id="${esc(m.id)}"`)}${m.mode==='ssh'?button(dataLabel('Lấy tên từ VPS','Use VPS hostname'),'machine-hostname','refresh','small',`data-id="${esc(m.id)}"`):''}${button(uiText("Sửa"),'machine-edit','','small',`data-id="${esc(m.id)}"`)}${button(uiText("Xoá"),'machine-delete','trash','small danger',`data-id="${esc(m.id)}"`)}${removeAction(member)}</div></td></tr>`;
+   return `<tr data-node="${esc(m.mongo_endpoint)}" tabindex="-1"><td class="row-number">${index+1}</td><td><div class="host-cell"><span class="server-icon">${icon('server')}</span><div><strong>${member?.id!=null?memberLabel(member,m.name):esc(m.name)}</strong>${m.mongo_endpoint?`<small class="mongo-address">${esc(m.mongo_endpoint)}</small>`:''}${member?.state?memberBadge(member.state):''}</div></div></td><td>${badge(m.mode==='ssh'?'SSH':'LOCAL','dark')} ${m.mode==='ssh'?`<span class="mono ssh-address">${esc(m.user)}@${esc(m.host.includes(':')?'['+m.host+']':m.host)}:${esc(m.port)}</span>`:''}</td><td class="mono">${esc(m.service)}<small>${esc(profiles().find(p=>p.id===m.profile_id)?.name||uiText("Chưa liên kết cụm"))}</small></td><td><div class="actions">${electionActions(member)}${!member&&profile()&&currentStatus&&m.mode==='ssh'?button(uiText("Thêm làm Secondary"),'join-fresh','plus','small',`data-id="${esc(m.id)}"`):''}${button(uiText("Kiểm tra"),'preflight','pulse','small',`data-id="${esc(m.id)}"`)}${button(uiText("Dịch vụ"),'service','','small',`data-id="${esc(m.id)}"`)}${button(uiText("Sửa"),'machine-edit','','small',`data-id="${esc(m.id)}"`)}${button(uiText("Xoá"),'machine-delete','trash','small danger',`data-id="${esc(m.id)}"`)}${removeAction(member)}</div></td></tr>`;
  });
  const discovered=[];
  for(const member of members){
@@ -284,7 +286,10 @@ function machinePage(){
    discovered.push(`<tr data-node="${esc(member.host)}" tabindex="-1"><td class="row-number">${discovered.length+1}</td><td><strong>${label}</strong><small class="mongo-address">${esc(member.host)}</small>${member.state?memberBadge(member.state):''}</td><td>${uiText("Chưa cấu hình SSH")}</td><td>—</td><td><div class="actions">${electionActions(member)}${button(uiText("Cấu hình SSH"),'member-ssh','','small',`data-host="${esc(member.host)}"`)}${removeAction(member)}</div></td></tr>`);
  }
  const headers=[uiText("STT"),uiText("MÁY CHỦ"),uiText("KẾT NỐI"),'SERVICE',uiText("THAO TÁC")];
- html+=panel(uiText("Máy chủ của bạn"),rows.length?table(headers,rows):empty(uiText("Thêm máy chủ đầu tiên"),uiText("Kết nối bằng mật khẩu SSH, key/agent hoặc chọn Local."),'machine-new',uiText("Thêm máy chủ"),'server'), '', members.some(m=>m.state==='PRIMARY')?button(uiText("Đổi primary"),'step-down','','small change-primary'):'');
+ const fetching=hostnameBatches.has(profile()?.id||'');
+ const hostnameAction=workspaceSSHHosts().length?button(fetching?dataLabel('Đang lấy tên…','Reading hostnames…'):dataLabel('Lấy tên từ VPS','Get VPS hostnames'),'machine-hostname','refresh','small',fetching?'disabled':''):'';
+ const primaryAction=members.some(m=>m.state==='PRIMARY')?button(uiText("Đổi primary"),'step-down','','small change-primary'):'';
+ html+=panel(uiText("Máy chủ của bạn"),rows.length?table(headers,rows):empty(uiText("Thêm máy chủ đầu tiên"),uiText("Kết nối bằng mật khẩu SSH, key/agent hoặc chọn Local."),'machine-new',uiText("Thêm máy chủ"),'server'), '', `<div class="actions">${hostnameAction}${primaryAction}</div>`);
  if(discovered.length)html+=panel(uiText("Thành viên chưa lưu hồ sơ máy"),table(headers,discovered));
 
  if(!profile())html+=`<div class="cards">${feature(uiText("Cài MongoDB Server"),uiText("Kiểm tra repository và cài package Community 8.0 hoặc 9.0 đúng phiên bản Ubuntu."),'server','install',uiText("Cài package"))}${feature(uiText("Tạo replica set"),uiText("Tạo instance mới với service riêng, keyfile và tài khoản quản trị."),'cluster','setup',uiText("Bắt đầu setup"))}${feature(uiText("Xem nhật ký dịch vụ"),uiText("Đọc 100 dòng journal gần nhất của service đã cấu hình."),'terminal','logs',uiText("Mở nhật ký"))}</div>`;
@@ -1113,14 +1118,23 @@ document.addEventListener('click',async event=>{
     if(act==='node-ssh-new'){pendingJoin=true;showRecord('machines');return;}
     if(act==='machine-hostname'){
       if(demo){toast(dataLabel('Chọn một VPS thật để đọc hostname qua SSH.','Select a real VPS to read its SSH hostname.'));return;}
+      const pid=profile()?.id||'',hosts=workspaceSSHHosts();
+      if(hostnameBatches.has(pid)||!hosts.length)return;
+      hostnameBatches.add(pid);
       target.disabled=true;
-      target.textContent=dataLabel('Đang lấy tên…','Reading hostname…');
+      target.textContent=dataLabel('Đang lấy tên…','Reading hostnames…');
+      let results;
       try{
-        const saved=await api('/machines/'+target.dataset.id+'/hostname',{method:'POST'});
-        await refreshState();
-        if(currentRoute==='machines')await render();
-        toast(dataLabel('Đã lấy tên từ VPS','VPS hostname saved')+' · '+saved.name);
-      }finally{if(target.isConnected)target.textContent=dataLabel('Lấy tên từ VPS','Use VPS hostname');}
+        results=await Promise.allSettled(hosts.map(m=>api('/machines/'+m.id+'/hostname',{method:'POST'})));
+      }finally{hostnameBatches.delete(pid);}
+      await refreshState();
+      if(currentRoute==='machines'&&(profile()?.id||'')===pid&&!demo){
+        await render();
+        const failures=results.flatMap((r,i)=>r.status==='rejected'?[hosts[i].host+' · '+r.reason.message]:[]);
+        const summary=dataLabel('Đã cập nhật tên','Hostnames updated')+` · ${hosts.length-failures.length}/${hosts.length} VPS`;
+        if(failures.length)modal(summary,`<div class="modal-body">${failures.map(errorBox).join('')}</div>`,button(uiText('Đóng'),'modal-close'));
+        else toast(summary);
+      }
       return;
     }
     if(act==='machine-edit'){showRecord('machines',machines().find(m=>m.id===target.dataset.id));return;}
