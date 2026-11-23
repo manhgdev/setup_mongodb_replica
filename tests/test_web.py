@@ -649,7 +649,7 @@ def test_independent_hosts_run_concurrently_and_conflict_points_to_owner(api):
             assert wait_job(api, job)["status"] == "succeeded"
 
 
-def test_remove_member_retires_only_matching_machine_and_clears_workspace(api):
+def test_remove_member_retires_node_and_preserves_machine_profile(api):
     p = profile(api)
     host = "example.test:27017"
     api.app.state.store.update_fields("profiles", p["id"], {
@@ -672,9 +672,9 @@ def test_remove_member_retires_only_matching_machine_and_clears_workspace(api):
     store = api.app.state.store
     assert store.get("profiles", p["id"])["seeds"] == p["seeds"]
     assert store.get("profiles", p["id"])["member_hostnames"] == {}
-    assert job["result"]["machine_deleted"]
-    with pytest.raises(KeyError):
-        store.get("machines", m["id"])
+    saved = store.get("machines", m["id"])
+    assert saved["profile_id"] == p["id"]
+    assert saved["mongo_endpoint"] == host
 
 
 @pytest.mark.parametrize("address", ["10.0.0.221", "192.168.0.5", "100.64.0.1", "127.0.0.1", "[fd00::1]"])

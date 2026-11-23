@@ -719,7 +719,7 @@ def create_app(data_dir=None):
             if len(candidates) != 1:
                 raise ValueError("Cần lưu đúng một hồ sơ SSH cho node trước khi gỡ.")
             machine = candidates[0]
-            notices.append("Manager kiểm tra quorum, dừng mongod và tắt tự khởi động trước khi gỡ node. Sau đó xóa hồ sơ VPS. Dữ liệu được giữ lại.")
+            notices.append("Manager kiểm tra quorum, dừng mongod và tắt tự khởi động trước khi gỡ node. Hồ sơ SSH và dữ liệu được giữ để có thể thêm lại VPS.")
         if body.action in {"remove_member", "member_options", "step_down"}:
             notices.append("Kiểm tra lại quorum và cấu hình ngay trước khi thực hiện; không force reconfig.")
         if body.action == "step_down":
@@ -829,9 +829,7 @@ def create_app(data_dir=None):
                 machine = plan["machine"]
                 store.update_fields(SCHEDULES, profile["id"], {"enabled": False, "next_run": None},
                                     expected={"machine_id": machine["id"]})
-                result["machine_deleted"] = store.delete("machines", machine["id"], expected=machine)
-                if result["machine_deleted"]:
-                    emit("Đã xóa hồ sơ VPS khỏi Manager.")
+                emit("Đã gỡ thành viên. Hồ sơ VPS vẫn ở trong danh sách Máy chủ.")
             def scrub(value):
                 if isinstance(value, dict):
                     return {k: scrub(v) for k, v in value.items()}
