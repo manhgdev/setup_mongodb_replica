@@ -210,6 +210,11 @@ def ubuntu_compatibility(p):
             raise ValueError("Bộ cài chưa hỗ trợ nhánh MongoDB " + series)
         if not version and (host["mongodb_detected"] or processes):
             raise ValueError("Đã phát hiện MongoDB nhưng chưa xác minh được phiên bản.")
+        if host["codename"] == "resolute" and series == "8.0":
+            result.update(status="unsupported",
+                          reason=f"Ubuntu 26.04 nằm ngoài phạm vi hỗ trợ của MongoDB Community {version or series}. "
+                                 "Trên Ubuntu 26.04, nhánh 9.0 được hỗ trợ từ 9.0.4.")
+            return result
         def lookup(branch, codename, arch, exact):
             result["package"] = package_version(branch, codename, arch, exact)
         target, path = release_path(host["codename"], series, result["arch"], version, "auto", lookup)

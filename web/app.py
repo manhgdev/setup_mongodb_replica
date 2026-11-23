@@ -19,7 +19,7 @@ from fastapi import Query, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pymongo.errors import PyMongoError
+from pymongo.errors import OperationFailure, PyMongoError
 
 from .models import Action, Apply, Machine, Profile, ProfileProbe, ProfileAdopt, AttachedMachine, DocumentPage, DocumentWrite
 from .operations import (HOST_ACTIONS, LABELS, PROFILE_ACTIONS, READ_ACTIONS, execute,
@@ -313,6 +313,12 @@ def create_app(data_dir=None):
         app.state.store.delete("profiles", record_id)
         return {"ok": True}
 
+    def read_hostname(machine):
+        name = host_run(machine, "hostname", {}, lambda _: None).get("hostname", "").strip()
+        if not name or len(name) > 80 or not name.isprintable():
+            raise ValueError("Hostname VPS trả về không hợp lệ.")
+        return name
+
     def prepare_machine(body, record_id=None):
         value = body.model_dump()
         if value["profile_id"]:
@@ -327,9 +333,7 @@ def create_app(data_dir=None):
             value["ssh_password"] = ""
         if value["auto_name"]:
             try:
-                detected = host_run(value, "hostname", {}, lambda _: None).get("hostname", "").strip()
-                if detected and len(detected) <= 80 and detected.isprintable():
-                    value["name"] = detected
+                value["name"] = read_hostname(value)
             except (OSError, RuntimeError, ValueError):
                 pass  # Keep the suggested name when SSH is unavailable.
         return value
@@ -388,12 +392,26 @@ def create_app(data_dir=None):
             raise HTTPException(404, "Không tìm thấy máy trong cụm đang mở.")
         return public_machine(machine)
 
+    @app.post("/api/machines/{record_id}/hostname")
+    def use_machine_hostname(record_id: str):
+        store = app.state.store
+        machine = store.get("machines", record_id)
+        try:
+            name = read_hostname(machine)
+        except (RuntimeError, OSError) as exc:
+            raise HTTPException(502, redact(str(exc), machine.get("ssh_password") or "")) from exc
+        saved = store.update_fields("machines", record_id, {"name": name, "auto_name": True}, expected=machine)
+        if saved is None:
+            raise HTTPException(409, "Hồ sơ máy đã thay đổi. Kiểm tra lại trước khi lấy tên.")
+        return public_machine(saved)
+
     @app.get("/api/machines/{record_id}/compatibility")
     def machine_compatibility(record_id: str, series: str = Query("9.0", pattern=r"^(8|9)\.0$")):
         store = app.state.store
         machine = store.get("machines", record_id)
         endpoint = machine.get("mongo_endpoint")
         version, role, live_pid = "", "", None
+        endpoint_error = ""
         if endpoint and machine.get("profile_id"):
             profile = store.get("profiles", machine["profile_id"])
             try:
@@ -408,15 +426,28 @@ def create_app(data_dir=None):
                     else:
                         role = "mongos" if hello.get("msg") == "isdbgrid" else "standalone"
                     live_pid = db.admin.command("serverStatus")["pid"]
-            except PyMongoError:
-                pass
+            except PyMongoError as exc:
+                endpoint_error = mongo_error(exc)
+                if isinstance(exc, OperationFailure) and exc.code == 18:
+                    # Arbiters do not replicate the cluster's user collection.
+                    try:
+                        with client(dict(profile, username="", password=""), direct=endpoint) as probe:
+                            hello = probe.admin.command("hello")
+                            if hello.get("arbiterOnly") and (not profile.get("replica_set") or
+                                                            hello.get("setName") == profile["replica_set"]):
+                                role = "ARBITER"
+                                version = probe.admin.command("buildInfo").get("version", "")
+                                endpoint_error = "" if version else "Arbiter chưa cung cấp phiên bản qua buildInfo."
+                    except PyMongoError as probe_error:
+                        if role == "ARBITER":
+                            endpoint_error = mongo_error(probe_error)
         try:
             result = host_run(machine, "ubuntu_compatibility", {"series": series, "live_version": version}, lambda _: None)
         except (RuntimeError, OSError) as exc:
             raise ValueError(redact(str(exc), machine.get("ssh_password") or "")) from exc
         if live_pid and str(live_pid) != result["pid"]:
             result.update(status="unknown", reason="Endpoint và dịch vụ đã chọn có PID khác nhau.")
-        return dict(result, endpoint=endpoint, live=bool(version), role=role,
+        return dict(result, endpoint=endpoint, endpoint_error=endpoint_error, live=bool(version), role=role,
                     pid_match=str(live_pid) == result["pid"] if live_pid else None)
 
     @app.delete("/api/machines/{record_id}")

@@ -60,6 +60,8 @@ Trong **Tổng quan cụm**, hàng nút **Thao tác trong cụm** tự xuống d
 
 Trong **Máy chủ**, nhấn **Kiểm tra** trên từng dòng để đọc môi trường VPS và xem kết quả trong popup. Trường xác nhận backup chỉ được gửi khi nâng cấp Ubuntu.
 
+Trong **Máy chủ**, bấm **Lấy tên từ VPS** ở dòng SSH cần cập nhật. Manager đọc hostname bằng kết nối đã lưu, thay tên hiển thị hiện tại và dùng hostname này trong workspace. Nếu SSH lỗi, tên cũ được giữ lại.
+
 Khi thêm máy chủ, để trống tên để Manager đọc hostname qua SSH (hoặc đọc tại máy nếu chọn Local). Nhập tên để dùng tên riêng. Nếu chưa đọc được hostname, Manager giữ tên gợi ý và thử cập nhật lại khi nhấn **Kiểm tra**. Tên gợi ý được đánh số theo từng cụm: `mongo-01`, `mongo-02`, … Khi khởi động, Manager cũng đổi các tên cũ đúng mẫu tự sinh `tên cụm · địa chỉ SSH`. Bạn có thể sửa tên hiển thị trong hồ sơ máy.
 
 Khi dùng mật khẩu SSH, Manager tin cậy khóa VPS ở lần kết nối đầu tiên và tự lưu vào `~/.ssh/known_hosts` theo địa chỉ và cổng. Tài khoản chạy Manager cần có quyền ghi thư mục này. Những lần sau, nếu khóa thay đổi, Manager dừng trước khi gửi mật khẩu. Có thể đối chiếu fingerprint qua console VPS trước lần kết nối đầu bằng **Máy chủ → Sửa → Xác minh khóa SSH**.
@@ -132,7 +134,7 @@ Hồ sơ quản trị mặc định nằm trong `.web-data/`. Khi sao lưu hoặ
 
 ## Nâng Ubuntu từ giao diện
 
-Mở **Phiên bản & nâng cấp** và chọn VPS cần kiểm tra. Bảng tự đọc Ubuntu, kiến trúc CPU, phiên bản MongoDB, trạng thái dịch vụ và vai trò tại endpoint. Dòng **Gói trong kho chính thức** cho biết phiên bản đã đối chiếu cho kiến trúc và Ubuntu đích. Bấm **Kiểm tra lại** để cập nhật kết quả. Đây là thao tác chỉ đọc.
+Mở **Phiên bản & nâng cấp** và chọn VPS cần kiểm tra. Bảng tự đọc Ubuntu, kiến trúc CPU, phiên bản MongoDB, trạng thái dịch vụ và vai trò tại endpoint. Dòng **Gói trong kho chính thức** cho biết phiên bản đã đối chiếu cho kiến trúc và Ubuntu đích. Với arbiter, Manager có thể đọc vai trò qua `hello` và phiên bản qua `buildInfo` khi tài khoản cụm không xác thực được trên node này. Ubuntu 26.04 chạy MongoDB 8.0 sẽ hiện cảnh báo về cặp phiên bản thực tế. [Bảng hỗ trợ MongoDB Community](https://www.mongodb.com/docs/community-platform-support/). Bấm **Kiểm tra lại** để cập nhật kết quả. Đây là thao tác chỉ đọc.
 
 ![Bảng tương thích Ubuntu và MongoDB theo từng VPS](previews/ubuntu-compatibility.jpg)
 

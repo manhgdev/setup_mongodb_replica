@@ -63,7 +63,7 @@ const memberTones = new Map([
 ]);
 const memberBadge = state => badge(state,memberTones.get(state)||'');
 const actionColors = {
-  'backup-preview':'info', 'member-edit':'info', 'machine-edit':'info', preflight:'info',
+  'backup-preview':'info', 'member-edit':'info', 'machine-edit':'info', 'machine-hostname':'info', preflight:'info',
   'prepared-node':'info', 'backup-repeat':'create', 'backup-new':'create', 'node-add':'create',
   'join-fresh':'create', 'add-member':'create', 'add-arbiter':'configure', 'write-concern':'configure',
   'step-down':'warning', restore:'warning', 'backup-delete':'remove',
@@ -267,7 +267,7 @@ function machinePage(){
    ?button(uiText("Gỡ"),'member-remove','trash','small danger',`data-host="${esc(member.host)}"`):'';
  const rows=linked.map((m,index)=>{
    const member=memberByHost.get(m.mongo_endpoint);
-   return `<tr data-node="${esc(m.mongo_endpoint)}" tabindex="-1"><td class="row-number">${index+1}</td><td><div class="host-cell"><span class="server-icon">${icon('server')}</span><div><strong>${member?.id!=null?memberLabel(member,m.name):esc(m.name)}</strong>${m.mongo_endpoint?`<small class="mongo-address">${esc(m.mongo_endpoint)}</small>`:''}${member?.state?memberBadge(member.state):''}</div></div></td><td>${badge(m.mode==='ssh'?'SSH':'LOCAL','dark')} ${m.mode==='ssh'?`<span class="mono ssh-address">${esc(m.user)}@${esc(m.host.includes(':')?'['+m.host+']':m.host)}:${esc(m.port)}</span>`:''}</td><td class="mono">${esc(m.service)}<small>${esc(profiles().find(p=>p.id===m.profile_id)?.name||uiText("Chưa liên kết cụm"))}</small></td><td><div class="actions">${electionActions(member)}${!member&&profile()&&currentStatus&&m.mode==='ssh'?button(uiText("Thêm làm Secondary"),'join-fresh','plus','small',`data-id="${esc(m.id)}"`):''}${button(uiText("Kiểm tra"),'preflight','pulse','small',`data-id="${esc(m.id)}"`)}${button(uiText("Dịch vụ"),'service','','small',`data-id="${esc(m.id)}"`)}${button(uiText("Sửa"),'machine-edit','','small',`data-id="${esc(m.id)}"`)}${button(uiText("Xoá"),'machine-delete','trash','small danger',`data-id="${esc(m.id)}"`)}${removeAction(member)}</div></td></tr>`;
+   return `<tr data-node="${esc(m.mongo_endpoint)}" tabindex="-1"><td class="row-number">${index+1}</td><td><div class="host-cell"><span class="server-icon">${icon('server')}</span><div><strong>${member?.id!=null?memberLabel(member,m.name):esc(m.name)}</strong>${m.mongo_endpoint?`<small class="mongo-address">${esc(m.mongo_endpoint)}</small>`:''}${member?.state?memberBadge(member.state):''}</div></div></td><td>${badge(m.mode==='ssh'?'SSH':'LOCAL','dark')} ${m.mode==='ssh'?`<span class="mono ssh-address">${esc(m.user)}@${esc(m.host.includes(':')?'['+m.host+']':m.host)}:${esc(m.port)}</span>`:''}</td><td class="mono">${esc(m.service)}<small>${esc(profiles().find(p=>p.id===m.profile_id)?.name||uiText("Chưa liên kết cụm"))}</small></td><td><div class="actions">${electionActions(member)}${!member&&profile()&&currentStatus&&m.mode==='ssh'?button(uiText("Thêm làm Secondary"),'join-fresh','plus','small',`data-id="${esc(m.id)}"`):''}${button(uiText("Kiểm tra"),'preflight','pulse','small',`data-id="${esc(m.id)}"`)}${button(uiText("Dịch vụ"),'service','','small',`data-id="${esc(m.id)}"`)}${m.mode==='ssh'?button(dataLabel('Lấy tên từ VPS','Use VPS hostname'),'machine-hostname','refresh','small',`data-id="${esc(m.id)}"`):''}${button(uiText("Sửa"),'machine-edit','','small',`data-id="${esc(m.id)}"`)}${button(uiText("Xoá"),'machine-delete','trash','small danger',`data-id="${esc(m.id)}"`)}${removeAction(member)}</div></td></tr>`;
  });
  const discovered=[];
  for(const member of members){
@@ -466,11 +466,11 @@ function hostCompatibilityPanel(){
 }
 function compatibilityReport(r,series){
   const t=dataLabel;
-  const statuses={compatible:t('Ubuntu hiện tại phù hợp','Current Ubuntu is compatible'),upgrade:t('Cần nâng Ubuntu','Ubuntu upgrade required'),unsupported:t('Chưa có cấu hình phù hợp','No compatible configuration'),unknown:t('Chưa xác minh được','Verification incomplete')};
+  const statuses={compatible:t('Ubuntu hiện tại phù hợp','Current Ubuntu is compatible'),upgrade:t('Cần nâng Ubuntu','Ubuntu upgrade required'),unsupported:t('Cấu hình chưa được hỗ trợ','Unsupported configuration'),unknown:t('Chưa xác minh được','Verification incomplete')};
   const role=({uninitialized:t('Replica set chưa khởi tạo','Replica set uninitialized'),other:t('Vai trò khác','Other member role')})[r.role]||r.role||t('Chưa xác minh','Unverified');
   const notes=[];
   if(r.processes>1)notes.push(t(`Có ${r.processes} tiến trình mongod trên máy. Trình nâng Ubuntu tự động yêu cầu một instance duy nhất.`,`This host has ${r.processes} mongod processes. Automated Ubuntu upgrades require a single instance.`));
-  if(r.endpoint&&!r.live)notes.push(t('Chưa đọc được phiên bản trực tiếp từ endpoint.','The endpoint version could not be verified directly.'));
+  if(r.endpoint&&!r.live)notes.push(r.endpoint_error||t('Chưa đọc được phiên bản trực tiếp từ endpoint.','The endpoint version could not be verified directly.'));
   const rows=[
     ['Ubuntu',r.os,r.hostname], [t('Kiến trúc CPU','CPU architecture'),r.arch,r.current],
     ['MongoDB',r.version||r.series,r.live?t('Đọc trực tiếp từ endpoint','Reported by the endpoint'):r.version?t('Đọc từ mongod trên máy','Reported by host binary'):t('Nhánh dự định cài','Planned series')],
@@ -1046,6 +1046,18 @@ document.addEventListener('click',async event=>{
     if(act==='prepared-node'){openAction('add_member');return;}
     if(act==='add-arbiter'){showNodeAdd(true);return;}
     if(act==='node-ssh-new'){pendingJoin=true;showRecord('machines');return;}
+    if(act==='machine-hostname'){
+      if(demo){toast(dataLabel('Chọn một VPS thật để đọc hostname qua SSH.','Select a real VPS to read its SSH hostname.'));return;}
+      target.disabled=true;
+      target.textContent=dataLabel('Đang lấy tên…','Reading hostname…');
+      try{
+        const saved=await api('/machines/'+target.dataset.id+'/hostname',{method:'POST'});
+        await refreshState();
+        if(currentRoute==='machines')await render();
+        toast(dataLabel('Đã lấy tên từ VPS','VPS hostname saved')+' · '+saved.name);
+      }finally{if(target.isConnected)target.textContent=dataLabel('Lấy tên từ VPS','Use VPS hostname');}
+      return;
+    }
     if(act==='machine-edit'){showRecord('machines',machines().find(m=>m.id===target.dataset.id));return;}
     if(act==='record-delete'||act==='profile-delete'||act==='machine-delete'){
       const ctx=act==='profile-delete'?{kind:'profiles',id:target.dataset.id||profile()?.id}:act==='machine-delete'?{kind:'machines',id:target.dataset.id}:recordContext;
