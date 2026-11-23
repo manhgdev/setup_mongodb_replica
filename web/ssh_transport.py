@@ -2,6 +2,8 @@
 import base64
 import codecs
 import hashlib
+import fcntl
+import os
 import socket
 import json
 import select
@@ -16,11 +18,52 @@ def fingerprint(key):
     return "SHA256:" + base64.b64encode(digest).decode().rstrip("=")
 
 
+def probe_host_key(machine):
+    """Negotiate SSH without authenticating or sending the saved password."""
+    try:
+        with socket.create_connection((machine["host"], machine["port"]), timeout=10) as sock:
+            with paramiko.Transport(sock) as transport:
+                transport.start_client(timeout=15)
+                return transport.get_remote_server_key()
+    except (OSError, EOFError, paramiko.SSHException) as exc:
+        raise ValueError("Không đọc được khóa SSH. Kiểm tra địa chỉ, cổng SSH và kết nối VPS.") from exc
+
+
+def enroll_host_key(machine, expected):
+    key = probe_host_key(machine)
+    if fingerprint(key) != expected:
+        raise ValueError("Fingerprint đã đổi. Đọc lại khóa và đối chiếu với console VPS.")
+    host = machine["host"] if machine["port"] == 22 else f'[{machine["host"]}]:{machine["port"]}'
+    folder = Path.home() / ".ssh"
+    folder.mkdir(mode=0o700, exist_ok=True)
+    path = folder / "known_hosts"
+    with os.fdopen(os.open(path, os.O_CREAT | os.O_RDWR | os.O_APPEND, 0o600), "a+b") as output:
+        fcntl.flock(output, fcntl.LOCK_EX)
+        system = Path("/etc/ssh/ssh_known_hosts")
+        already_known = False
+        for source in (path, system):
+            if source.is_file():
+                entries = paramiko.HostKeys(str(source)).lookup(host)
+                if entries:
+                    if entries.get(key.get_name()) != key:
+                        raise ValueError("Máy đã có khóa SSH khác. Đối chiếu với console VPS trước khi thay khóa.")
+                    already_known = True
+        if already_known:
+            return
+        output.seek(0, os.SEEK_END)
+        if output.tell():
+            output.seek(-1, os.SEEK_END)
+            if output.read(1) != b"\n":
+                output.write(b"\n")
+        output.write(f"{host} {key.get_name()} {key.get_base64()}\n".encode())
+        output.flush()
+
+
 class RequireKnownKey(paramiko.MissingHostKeyPolicy):
     def missing_host_key(self, client, hostname, key):
         raise RuntimeError(f"Chưa có khóa của {hostname} trong known_hosts của tài khoản chạy Manager. "
                            f"Khóa VPS gửi là {key.get_name()} {fingerprint(key)}. "
-                           "Đối chiếu với fingerprint từ console VPS rồi kết nối bằng lệnh ssh trên máy quản trị để lưu khóa.")
+                           "Mở Máy chủ → Sửa → Xác minh khóa SSH để đối chiếu với console VPS và lưu khóa.")
 
 
 def run_password(machine, command, payload, emit):

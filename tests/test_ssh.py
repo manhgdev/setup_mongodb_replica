@@ -112,3 +112,24 @@ def test_password_ssh_rejects_unknown_host(ssh_server):
         with pytest.raises(RuntimeError, match=r'known_hosts.*SHA256:'):
             run_password(machine, 'true', {}, lambda _: None)
     assert 'password' not in seen
+
+
+def test_enroll_verified_host_key(tmp_path, monkeypatch):
+    from web.ssh_transport import enroll_host_key, fingerprint
+    key = paramiko.RSAKey.generate(2048)
+    machine = {'host': 'example.test', 'port': 2202}
+    monkeypatch.setenv('HOME', str(tmp_path))
+    monkeypatch.setattr('web.ssh_transport.probe_host_key', lambda _: key)
+    path = tmp_path / '.ssh' / 'known_hosts'
+    with pytest.raises(ValueError, match='Fingerprint'):
+        enroll_host_key(machine, 'SHA256:different')
+    assert not path.exists()
+    enroll_host_key(machine, fingerprint(key))
+    saved = path.read_bytes()
+    assert paramiko.HostKeys(str(path)).check('[example.test]:2202', key)
+    enroll_host_key(machine, fingerprint(key))
+    assert path.read_bytes() == saved
+    key = paramiko.RSAKey.generate(2048)
+    with pytest.raises(ValueError, match='khóa SSH khác'):
+        enroll_host_key(machine, fingerprint(key))
+    assert path.read_bytes() == saved

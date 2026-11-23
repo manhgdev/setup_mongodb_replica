@@ -32,6 +32,10 @@ from .backup_schedule import BackupScheduler, KIND as SCHEDULES, ScheduleInput
 ROOT = Path(__file__).resolve().parent
 
 
+class HostFingerprint(BaseModel):
+    fingerprint: str = Field(pattern=r"^SHA256:[A-Za-z0-9+/]{43}$")
+
+
 class MachineName(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     name: str = Field(min_length=1, max_length=80)
@@ -353,6 +357,28 @@ def create_app(data_dir=None):
     @app.put("/api/machines/{record_id}")
     def edit_machine(record_id: str, body: Machine):
         return save_machine(body, record_id)
+
+    def password_machine(machine_id):
+        machine = app.state.store.get("machines", machine_id)
+        if machine["mode"] != "ssh" or machine.get("ssh_auth") != "password":
+            raise ValueError("Chọn VPS dùng mật khẩu SSH.")
+        return machine
+
+    @app.get("/api/machines/{machine_id}/ssh-key")
+    def inspect_ssh_key(machine_id: str):
+        from .ssh_transport import probe_host_key, fingerprint
+        machine = password_machine(machine_id)
+        key = probe_host_key(machine)
+        return {"host": machine["host"], "port": machine["port"], "algorithm": key.get_name(), "fingerprint": fingerprint(key)}
+
+    @app.post("/api/machines/{machine_id}/ssh-key")
+    def save_ssh_key(machine_id: str, body: HostFingerprint):
+        from .ssh_transport import enroll_host_key
+        try:
+            enroll_host_key(password_machine(machine_id), body.fingerprint)
+        except OSError as exc:
+            raise HTTPException(500, "Kiểm tra quyền đọc và ghi ~/.ssh/known_hosts của tài khoản chạy Manager.") from exc
+        return {"saved": True}
 
     @app.patch("/api/profiles/{profile_id}/machines/{machine_id}/name")
     def rename_machine(profile_id: str, machine_id: str, body: MachineName):

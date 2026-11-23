@@ -62,7 +62,7 @@ Trong **Máy chủ**, nhấn **Kiểm tra** trên từng dòng để đọc môi
 
 Khi thêm máy chủ, để trống tên để Manager đọc hostname qua SSH (hoặc đọc tại máy nếu chọn Local). Nhập tên để dùng tên riêng. Nếu chưa đọc được hostname, Manager giữ tên gợi ý và thử cập nhật lại khi nhấn **Kiểm tra**. Tên gợi ý được đánh số theo từng cụm: `mongo-01`, `mongo-02`, … Khi khởi động, Manager cũng đổi các tên cũ đúng mẫu tự sinh `tên cụm · địa chỉ SSH`. Bạn có thể sửa tên hiển thị trong hồ sơ máy.
 
-Khi dùng mật khẩu SSH, Manager đối chiếu khóa VPS với `known_hosts` của tài khoản chạy dịch vụ. Nếu khóa chưa được lưu, popup hiển thị fingerprint SHA256 để so sánh với console VPS trước khi chấp nhận qua lệnh SSH trên máy quản trị.
+Khi dùng mật khẩu SSH, Manager đối chiếu khóa VPS với `known_hosts` của tài khoản chạy dịch vụ. Nếu thiếu khóa, nhấn **Xác minh khóa SSH** trong popup kiểm tra hoặc vào **Máy chủ → Sửa → Xác minh khóa SSH**. So sánh fingerprint SHA256 với khóa cùng loại trong console VPS rồi nhấn **Khớp, lưu khóa**. Manager đọc lại khóa, lưu theo đúng host và cổng rồi chạy lại **Kiểm tra**. Nếu gặp lỗi thiếu khóa khi mở **Backup & restore**, nhấn **Xác minh khóa SSH** ngay dưới lỗi. Sau khi lưu, bảng tự tải lại danh sách của đúng VPS đang chọn.
 
 ## Chọn đúng thao tác
 
@@ -132,7 +132,7 @@ Hồ sơ quản trị mặc định nằm trong `.web-data/`. Khi sao lưu hoặ
 
 ## Nâng Ubuntu từ giao diện
 
-Trong **Máy chủ**, bấm **Tương thích** ở dòng VPS cần xem, hoặc mở **Phiên bản & nâng cấp** và chọn máy. Bảng tự đọc Ubuntu, kiến trúc CPU, phiên bản MongoDB, trạng thái dịch vụ và vai trò tại endpoint. Dòng **Gói trong kho chính thức** cho biết phiên bản đã đối chiếu cho kiến trúc và Ubuntu đích. Bấm **Kiểm tra lại** để cập nhật kết quả. Đây là thao tác chỉ đọc.
+Mở **Phiên bản & nâng cấp** và chọn VPS cần kiểm tra. Bảng tự đọc Ubuntu, kiến trúc CPU, phiên bản MongoDB, trạng thái dịch vụ và vai trò tại endpoint. Dòng **Gói trong kho chính thức** cho biết phiên bản đã đối chiếu cho kiến trúc và Ubuntu đích. Bấm **Kiểm tra lại** để cập nhật kết quả. Đây là thao tác chỉ đọc.
 
 ![Bảng tương thích Ubuntu và MongoDB theo từng VPS](previews/ubuntu-compatibility.jpg)
 
