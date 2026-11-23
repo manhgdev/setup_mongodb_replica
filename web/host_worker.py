@@ -192,6 +192,35 @@ def ubuntu_architecture():
     return arch
 
 
+def ubuntu_compatibility(p):
+    host = preflight(p)
+    pid = run(["systemctl", "show", "-p", "MainPID", "--value", p["service"]], check=False) if host["tools"]["systemctl"] else ""
+    processes = run(["pgrep", "-x", "mongod"], check=False).split() if shutil.which("pgrep") else []
+    binary = re.search(r"db version v(\d+\.\d+\.\d+)\b", host["version"])
+    version = p.get("live_version") or (binary[1] if binary else "")
+    series = version.rsplit(".", 1)[0] if version else p["series"]
+    result = dict(os=host["os"], arch=host["architecture"], hostname=host["hostname"], current=host["codename"],
+                  version=version, series=series, service=host["service"], service_state=host["service_state"],
+                  services=host["services"], processes=len(processes), pid=pid, path=[], target="", package="")
+    try:
+        if linux_info().get("ID") != "ubuntu":
+            raise ValueError("Máy đã chọn cần chạy Ubuntu.")
+        result["arch"] = ubuntu_architecture()
+        if series not in SUPPORTED:
+            raise ValueError("Bộ cài chưa hỗ trợ nhánh MongoDB " + series)
+        if not version and (host["mongodb_detected"] or processes):
+            raise ValueError("Đã phát hiện MongoDB nhưng chưa xác minh được phiên bản.")
+        def lookup(branch, codename, arch, exact):
+            result["package"] = package_version(branch, codename, arch, exact)
+        target, path = release_path(host["codename"], series, result["arch"], version, "auto", lookup)
+        result.update(status="upgrade" if path else "compatible", target=LTS[target], path=[LTS[c] for c in path])
+    except ValueError as exc:
+        result.update(status="unsupported", package="", reason=str(exc))
+    except RuntimeError as exc:
+        result.update(status="unknown", package="", reason=str(exc))
+    return result
+
+
 def ubuntu_inspect(p):
     info = linux_info()
     if info.get("ID") != "ubuntu":
@@ -288,6 +317,8 @@ systemctl reboot
 
 
 def ubuntu_action(action, p):
+    if action == "ubuntu_compatibility":
+        return ubuntu_compatibility(p)
     if action == "ubuntu_restore_service":
         token = hashlib.sha256(Path("/etc/machine-id").read_bytes()).hexdigest()
         if token != p["machine_token"] or linux_info().get("VERSION_CODENAME") != p["current"]:

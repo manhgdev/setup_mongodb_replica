@@ -230,7 +230,7 @@ function machinePage(){
    ?button(uiText("Gỡ"),'member-remove','trash','small danger',`data-host="${esc(member.host)}"`):'';
  const rows=linked.map((m,index)=>{
    const member=memberByHost.get(m.mongo_endpoint);
-   return `<tr data-node="${esc(m.mongo_endpoint)}" tabindex="-1"><td class="row-number">${index+1}</td><td><div class="host-cell"><span class="server-icon">${icon('server')}</span><div><strong>${member?.id!=null?memberLabel(member,m.name):esc(m.name)}</strong>${m.mongo_endpoint?`<small class="mongo-address">${esc(m.mongo_endpoint)}</small>`:''}${member?.state?memberBadge(member.state):''}</div></div></td><td>${badge(m.mode==='ssh'?'SSH':'LOCAL','dark')} ${m.mode==='ssh'?`<span class="mono ssh-address">${esc(m.user)}@${esc(m.host.includes(':')?'['+m.host+']':m.host)}:${esc(m.port)}</span>`:''}</td><td class="mono">${esc(m.service)}<small>${esc(profiles().find(p=>p.id===m.profile_id)?.name||uiText("Chưa liên kết cụm"))}</small></td><td><div class="actions">${electionActions(member)}${!member&&profile()&&currentStatus&&m.mode==='ssh'?button(uiText("Thêm làm Secondary"),'join-fresh','plus','small',`data-id="${esc(m.id)}"`):''}${button(uiText("Kiểm tra"),'preflight','pulse','small',`data-id="${esc(m.id)}"`)}${button(uiText("Dịch vụ"),'service','','small',`data-id="${esc(m.id)}"`)}${button(uiText("Sửa"),'machine-edit','','small',`data-id="${esc(m.id)}"`)}${button(uiText("Xoá"),'machine-delete','trash','small danger',`data-id="${esc(m.id)}"`)}${removeAction(member)}</div></td></tr>`;
+   return `<tr data-node="${esc(m.mongo_endpoint)}" tabindex="-1"><td class="row-number">${index+1}</td><td><div class="host-cell"><span class="server-icon">${icon('server')}</span><div><strong>${member?.id!=null?memberLabel(member,m.name):esc(m.name)}</strong>${m.mongo_endpoint?`<small class="mongo-address">${esc(m.mongo_endpoint)}</small>`:''}${member?.state?memberBadge(member.state):''}</div></div></td><td>${badge(m.mode==='ssh'?'SSH':'LOCAL','dark')} ${m.mode==='ssh'?`<span class="mono ssh-address">${esc(m.user)}@${esc(m.host.includes(':')?'['+m.host+']':m.host)}:${esc(m.port)}</span>`:''}</td><td class="mono">${esc(m.service)}<small>${esc(profiles().find(p=>p.id===m.profile_id)?.name||uiText("Chưa liên kết cụm"))}</small></td><td><div class="actions">${electionActions(member)}${!member&&profile()&&currentStatus&&m.mode==='ssh'?button(uiText("Thêm làm Secondary"),'join-fresh','plus','small',`data-id="${esc(m.id)}"`):''}<a class="button small" href="#upgrade?machine=${encodeURIComponent(m.id)}">${dataLabel("Tương thích","Compatibility")}</a>${button(uiText("Kiểm tra"),'preflight','pulse','small',`data-id="${esc(m.id)}"`)}${button(uiText("Dịch vụ"),'service','','small',`data-id="${esc(m.id)}"`)}${button(uiText("Sửa"),'machine-edit','','small',`data-id="${esc(m.id)}"`)}${button(uiText("Xoá"),'machine-delete','trash','small danger',`data-id="${esc(m.id)}"`)}${removeAction(member)}</div></td></tr>`;
  });
  const discovered=[];
  for(const member of members){
@@ -383,14 +383,68 @@ document.addEventListener('submit',async event=>{
 });
 function settingsPage(){const p=profile();return heading(uiText("Cấu hình workspace"),uiText("Thông tin kết nối và các thiết lập của cụm đang chọn."),button(uiText("Chỉnh kết nối"),'profile-edit','settings','primary'))+sshSettingsPanel()+panel(uiText("Hồ sơ MongoDB"),p?`<div class="panel-body">${[[uiText("Tên cụm"),p.name],['Seed list',p.seeds.join(', ')],['Replica set',p.replica_set||'Standalone'],['Username',p.username||uiText("Không dùng")],['Auth database',p.auth_db],['TLS',p.tls?uiText("Bật"):uiText("Tắt")]].map(([k,v])=>`<div class="key-value"><span>${k}</span><strong>${esc(v)}</strong></div>`).join('')}<div class="section-title"></div><div class="actions">${button(uiText("Chỉnh kết nối"),'profile-edit','settings','primary')}${button(uiText("Chuỗi kết nối"),'connection','external')}${button(uiText("Xóa hồ sơ"),'profile-delete','trash','danger')}</div></div>`:empty(uiText("Chưa chọn cụm"),uiText("Tạo hồ sơ kết nối trước khi cấu hình.")))+`<div class="callout neutral">${uiText("Hồ sơ và mật khẩu được mã hóa trên máy quản trị. Khóa mã hóa nằm cùng thư mục dữ liệu, chỉ tài khoản hệ điều hành hiện tại có quyền đọc. SSH hỗ trợ mật khẩu hoặc key/agent của tài khoản chạy ứng dụng.")}</div>`;}
 function diagnosticsPage(){return heading(uiText("Chẩn đoán"),uiText("Kiểm tra kết nối MongoDB và môi trường máy chủ."),button(uiText("Kiểm tra kết nối"),'diagnose','pulse','primary'))+`<div class="cards">${feature(uiText("Kết nối các node"),uiText("Kết nối trực tiếp từng seed, xác thực và đọc vai trò từ máy quản trị."),'cluster','diagnose',uiText("Chạy chẩn đoán"))}${feature(uiText("Môi trường VPS"),uiText("Kiểm tra Ubuntu, CPU, kernel, đĩa, package và service qua SSH."),'server','preflight',uiText("Kiểm tra máy"))}${feature(uiText("Nhật ký MongoDB"),uiText("Xem journal của service để xác định lỗi startup, quyền hoặc port."),'terminal','logs',uiText("Đọc nhật ký"))}</div><div class="section-title"><h2>${uiText("Kết quả kiểm tra")}</h2></div><div id="query-result">${empty(uiText("Sẵn sàng kiểm tra"),uiText("Chọn một phép kiểm tra phía trên. Các bước chẩn đoán chỉ đọc thông tin."),'','','pulse')}</div>`;}
-function upgradePage(){return heading(uiText("Phiên bản & nâng cấp"),uiText("Kiểm tra tương thích trước khi thay đổi phiên bản MongoDB."),button(uiText("Kiểm tra điều kiện"),'upgrade-check','pulse','primary'))+`${panel('Ubuntu', '', dataLabel('Kiểm tra Ubuntu trên VPS, chọn bản LTS tương thích và theo dõi từng lần khởi động lại.','Inspect the host, choose a compatible Ubuntu LTS and track each reboot.'),button(dataLabel('Quản lý Ubuntu','Manage Ubuntu'),'ubuntu-open','server','primary'))}<div class="metrics">${metric(uiText("Phiên bản hiện tại"),esc(currentStatus?.version||'—'),uiText("Đọc từ cụm đang chọn"),'db')}${metric('FCV',esc(currentStatus?.fcv||'—'),'Feature Compatibility Version','shield')}${metric(uiText("Nhánh hỗ trợ"),'8.0 / 9.0',uiText("Package Community chính thức"),'arrow')}${metric('Ubuntu 26.04','≥ 9.0.4',uiText("Kiểm tra package trước khi cài"),'server')}</div><div class="layout-two">${panel(uiText("Quy trình nâng 8.0 → 9.0"),`<div class="panel-body"><ol class="step-list"><li><strong>${uiText("Kiểm tra và backup")}</strong>${uiText("Xác minh driver, FCV và sức khỏe tất cả member. Restore thử trước khi thay phiên bản.")}</li><li><strong>${uiText("Nâng secondary tuần tự")}</strong>${uiText("Đợi từng member quay lại SECONDARY rồi mới chuyển sang node tiếp theo.")}</li><li><strong>${uiText("Chuyển primary")}</strong>${uiText("Step down, chờ primary mới rồi nâng node còn lại.")}</li><li><strong>${uiText("Kiểm chứng ứng dụng")}</strong>${uiText("Giữ FCV cũ trong thời gian kiểm tra. Nâng FCV bằng bước riêng sau đó.")}</li></ol></div>`)}${panel(uiText("Phạm vi tự động hóa"),`<div class="panel-body"><div class="callout">${uiText("Web hỗ trợ kiểm tra điều kiện nâng cấp. Thay binary và nâng FCV thực hiện theo runbook; chưa tự chạy từ giao diện.")}</div><p class="help-links"><a href="https://www.mongodb.com/docs/manual/release-notes/9.0-upgrade-from-8.0-replica-set/" target="_blank" rel="noopener noreferrer">${uiText("Mở hướng dẫn MongoDB chính thức ↗")}</a></p>${button(uiText("Xem kết quả kiểm tra"),'upgrade-check','pulse')}</div>`)}</div>`;}
+function hostCompatibilityPanel(){
+  const hosts=machines().filter(m=>(m.profile_id||'')===(profile()?.id||''));
+  if(!hosts.length)return panel('Ubuntu',empty(dataLabel('Chưa có máy để kiểm tra','No hosts to inspect'),'', 'machine-new',uiText('Thêm máy')));
+  const requested=new URLSearchParams(location.hash.split('?')[1]).get('machine');
+  const host=hosts.find(m=>m.id===requested)||hosts[0];
+  const options=hosts.map(m=>({value:m.id,label:m.name+' · '+(m.host||'Local')}));
+  const selector=field('compatibility_host',dataLabel('Máy cần kiểm tra','Host to inspect'),host.id,'select','',false,options);
+  return panel(dataLabel('Ubuntu và MongoDB trên máy','Ubuntu and MongoDB on this host'),
+    `<div class="panel-body host-compatibility"><div class="actions">${selector}${button(dataLabel('Kiểm tra lại','Check again'),'compatibility-refresh','pulse')}</div><div id="compatibility-report" aria-live="polite"></div></div>`,
+    dataLabel('Đọc phiên bản trên máy và đối chiếu gói từ kho MongoDB chính thức.','Read host versions and check packages in the official MongoDB repository.'),
+    button(dataLabel('Quản lý Ubuntu','Manage Ubuntu'),'ubuntu-open','server'));
+}
+function compatibilityReport(r,series){
+  const t=dataLabel;
+  const statuses={compatible:t('Ubuntu hiện tại phù hợp','Current Ubuntu is compatible'),upgrade:t('Cần nâng Ubuntu','Ubuntu upgrade required'),unsupported:t('Chưa có cấu hình phù hợp','No compatible configuration'),unknown:t('Chưa xác minh được','Verification incomplete')};
+  const role=({uninitialized:t('Replica set chưa khởi tạo','Replica set uninitialized'),other:t('Vai trò khác','Other member role')})[r.role]||r.role||t('Chưa xác minh','Unverified');
+  const notes=[];
+  if(r.processes>1)notes.push(t(`Có ${r.processes} tiến trình mongod trên máy. Trình nâng Ubuntu tự động yêu cầu một instance duy nhất.`,`This host has ${r.processes} mongod processes. Automated Ubuntu upgrades require a single instance.`));
+  if(r.endpoint&&!r.live)notes.push(t('Chưa đọc được phiên bản trực tiếp từ endpoint.','The endpoint version could not be verified directly.'));
+  const rows=[
+    ['Ubuntu',r.os,r.hostname], [t('Kiến trúc CPU','CPU architecture'),r.arch,r.current],
+    ['MongoDB',r.version||r.series,r.live?t('Đọc trực tiếp từ endpoint','Reported by the endpoint'):r.version?t('Đọc từ mongod trên máy','Reported by host binary'):t('Nhánh dự định cài','Planned series')],
+    [t('Gói trong kho chính thức','Official repository package'),r.package||'—',r.target?'Ubuntu '+r.target:''],
+    [t('Dịch vụ','Service'),r.service,r.service_state], [t('Vai trò MongoDB','MongoDB role'),role,r.endpoint||'—']
+  ];
+  const planned=!r.version?field('compatibility_series',t('Nhánh MongoDB dự định cài','Planned MongoDB series'),series,'select','',false,['9.0','8.0']):'';
+  return planned+`<div class="compatibility-outcome">${badge(statuses[r.status],r.status==='compatible'?'success':'warn')}<span>${esc(r.reason||(r.path.length?r.path.join(' → '):t('Giữ nguyên phiên bản Ubuntu.','Keep the current Ubuntu release.')))}</span></div>`+
+    table([t('Hạng mục','Item'),t('Kết quả','Result'),t('Chi tiết','Details')],rows.map(row=>'<tr>'+row.map(cell=>'<td>'+esc(cell||'—')+'</td>').join('')+'</tr>'))+
+    notes.map(note=>`<div class="callout">${esc(note)}</div>`).join('');
+}
+async function loadCompatibility(){
+  const output=$('#compatibility-report'),selector=$('[name="compatibility_host"]');
+  if(!output||!selector)return;
+  const id=selector.value;
+  const series=output.dataset.series||'9.0';
+  const pending=document.createElement('div');
+  pending.className='loading';
+  pending.textContent=dataLabel('Đang đọc Ubuntu, MongoDB và kho gói…','Checking Ubuntu, MongoDB and the package repository…');
+  output.replaceChildren(pending);
+  try{
+    const m=machines().find(host=>host.id===id);
+    const result=demo?{os:'Ubuntu 26.04 LTS',arch:'arm64',current:'resolute',hostname:m.name,version:'9.0.4',series:'9.0',package:'9.0.4',target:'26.04',status:'compatible',path:[],live:true,role:demoStatus.members.find(node=>node.host===m.mongo_endpoint)?.state,service:m.service,service_state:'active',endpoint:m.mongo_endpoint,processes:1}:await api('/machines/'+encodeURIComponent(id)+'/compatibility?series='+encodeURIComponent(series));
+    if(pending.isConnected)output.innerHTML=compatibilityReport(result,series);
+  }catch(error){if(pending.isConnected)output.innerHTML=errorBox(error.message);}
+}
+
+function upgradePage(){return heading(uiText("Phiên bản & nâng cấp"),uiText("Kiểm tra tương thích trước khi thay đổi phiên bản MongoDB."),button(uiText("Kiểm tra điều kiện"),'upgrade-check','pulse','primary'))+`${hostCompatibilityPanel()}<div class="layout-two">${panel(uiText("Quy trình nâng 8.0 → 9.0"),`<div class="panel-body"><ol class="step-list"><li><strong>${uiText("Kiểm tra và backup")}</strong>${uiText("Xác minh driver, FCV và sức khỏe tất cả member. Restore thử trước khi thay phiên bản.")}</li><li><strong>${uiText("Nâng secondary tuần tự")}</strong>${uiText("Đợi từng member quay lại SECONDARY rồi mới chuyển sang node tiếp theo.")}</li><li><strong>${uiText("Chuyển primary")}</strong>${uiText("Step down, chờ primary mới rồi nâng node còn lại.")}</li><li><strong>${uiText("Kiểm chứng ứng dụng")}</strong>${uiText("Giữ FCV cũ trong thời gian kiểm tra. Nâng FCV bằng bước riêng sau đó.")}</li></ol></div>`)}${panel(uiText("Phạm vi tự động hóa"),`<div class="panel-body"><div class="callout">${uiText("Web hỗ trợ kiểm tra điều kiện nâng cấp. Thay binary và nâng FCV thực hiện theo runbook; chưa tự chạy từ giao diện.")}</div><p class="help-links"><a href="https://www.mongodb.com/docs/manual/tutorial/install-mongodb-on-ubuntu/" target="_blank" rel="noopener noreferrer">${dataLabel('Cài MongoDB Community trên Ubuntu ↗','Install MongoDB Community on Ubuntu ↗')}</a></p><p class="help-links"><a href="https://www.mongodb.com/docs/manual/release-notes/9.0-upgrade-from-8.0-replica-set/" target="_blank" rel="noopener noreferrer">${uiText("Mở hướng dẫn MongoDB chính thức ↗")}</a></p>${button(uiText("Xem kết quả kiểm tra"),'upgrade-check','pulse')}</div>`)}</div>`;}
 function jobsPage(){return heading(uiText("Lịch sử tác vụ"),uiText("Theo dõi tiến độ, kết quả và những thao tác cần kiểm tra."),button(uiText("Làm mới"),'refresh','refresh'))+panel(uiText("Tác vụ"),jobs().length?table([uiText("TÁC VỤ"),uiText("ĐÍCH"),uiText("THỜI GIAN"),uiText("TRẠNG THÁI"),''],jobs().map(j=>`<tr><td><strong>${esc(j.label)}</strong></td><td>${esc(j.target)}</td><td>${formatDate(j.created_at)}</td><td>${jobBadge(j)}</td><td>${button(uiText("Chi tiết"),'job-open','','small',`data-id="${esc(j.id)}"`)}</td></tr>`)):empty(uiText("Chưa có tác vụ"),uiText("Các thao tác thực hiện từ web sẽ xuất hiện tại đây."),'','','clock'));}
 async function render(){
   documentTailObserver?.disconnect();
   const id=++renderId; currentRoute=location.hash.slice(1).split('?')[0]||'overview';
+  if(currentRoute==='upgrade'){
+    const requested=new URLSearchParams(location.hash.split('?')[1]).get('machine');
+    const linked=machines().find(m=>m.id===requested);
+    if(linked?.profile_id&&linked.profile_id!==selected){
+      selected=linked.profile_id;currentStatus=null;
+      if(!demo)localStorage.setItem('mongo-manager-profile',selected);
+    }
+  }
   if(!nav.some(n=>n[0]===currentRoute))currentRoute='overview';
   updateChrome();document.body.classList.remove('nav-open');syncSidebarToggle();
-  const needsStatus=['overview','machines','replica','upgrade'].includes(currentRoute);
+  const needsStatus=['overview','machines','replica'].includes(currentRoute);
   if(demo){currentStatus=profile()?structuredClone(demoStatus):null;statusError='';}
   else if(needsStatus&&profile()){
     $('#content').innerHTML=heading(nav.find(n=>n[0]===currentRoute)[1],uiText("Đang đọc dữ liệu từ MongoDB…"))+("<div class=\"loading\"><span class=\"spinner\"></span>"+uiText("Đang kết nối cụm")+"</div>");
@@ -402,6 +456,7 @@ async function render(){
   if(currentRoute==='backup'){await loadArchiveCatalog(id);return;}
   if(pages[currentRoute]){
     $('#content').innerHTML=pages[currentRoute]();
+    if(currentRoute==='upgrade')loadCompatibility();
     if(currentRoute==='machines'){
       const endpoint=new URLSearchParams(location.hash.split('?')[1]).get('member');
       const row=Array.from(document.querySelectorAll('tr[data-node]')).find(r=>r.dataset.node===endpoint);
@@ -813,7 +868,8 @@ document.addEventListener('click',async event=>{
   const target=event.target.closest('[data-act]');if(!target)return;
   const act=target.dataset.act;
   try{
-    if(act==='ubuntu-open'){openAction('ubuntu_upgrade');return;}
+    if(act==='compatibility-refresh'){await loadCompatibility();return;}
+    if(act==='ubuntu-open'){openAction('ubuntu_upgrade',{machine_id:$('[name="compatibility_host"]')?.value,series:$('#compatibility-report')?.dataset.series||'9.0'});return;}
     if(act==='ubuntu-install-plan'){openAction('ubuntu_upgrade',actionContext.overrides);return;}
     if(act==='ubuntu-from-install'){
       const form=$('#action-form');
@@ -983,12 +1039,14 @@ document.addEventListener('click',async event=>{
   }catch(error){formError(error);}finally{target.disabled=false;}
 });
 document.addEventListener('change',e=>{
+  if(e.target.name==='compatibility_series'){$('#compatibility-report').dataset.series=e.target.value;loadCompatibility();}
+  if(e.target.name==='compatibility_host'){delete $('#compatibility-report').dataset.series;history.replaceState(null,'','#upgrade?machine='+encodeURIComponent(e.target.value));loadCompatibility();}
   if(e.target.id==='archive-host'){
     localStorage.setItem(archiveHostKey(),e.target.value);
     render();
   }
 });
-$('#profile-select').addEventListener('change',async event=>{backupItems=[];backupListedHost=null;jobId=null;pendingJoin=false;pendingJoinOptions={};selected=event.target.value;if(!demo)localStorage.setItem('mongo-manager-profile',selected);currentStatus=null;statusError='';await render();});
+$('#profile-select').addEventListener('change',async event=>{backupItems=[];backupListedHost=null;jobId=null;pendingJoin=false;pendingJoinOptions={};selected=event.target.value;if(currentRoute==='upgrade')history.replaceState(null,'','#upgrade');if(!demo)localStorage.setItem('mongo-manager-profile',selected);currentStatus=null;statusError='';await render();});
 $('#modal').addEventListener('close',()=>{if(!$('#modal').open)$('#modal-content').replaceChildren();jobId=null;if(currentRoute==='backup')$('#content').innerHTML=backupPage();});
 window.addEventListener('hashchange',()=>{if(!document.body.classList.contains('auth-pending'))render();});
 let pollBusy=false, scheduleChecked=0;
@@ -1017,7 +1075,7 @@ async function pollWorkspace(){
   await refreshTopology();
 }
 async function refreshTopology(){
-  if(topologyBusy||$('.member-name-input')||demo||document.hidden||$('#modal').open||!['overview','machines','replica','upgrade'].includes(currentRoute)||!profile()||Date.now()-topologyChecked<10000||document.body.classList.contains('auth-pending'))return;
+  if(topologyBusy||$('.member-name-input')||demo||document.hidden||$('#modal').open||!['overview','machines','replica'].includes(currentRoute)||!profile()||Date.now()-topologyChecked<10000||document.body.classList.contains('auth-pending'))return;
   topologyBusy=true;topologyChecked=Date.now();const requestId=renderId,pid=profile().id,route=currentRoute;
   try{const data=await api(`/profiles/${pid}/status`);if(requestId!==renderId||demo||profile()?.id!==pid||document.body.classList.contains('auth-pending'))return;currentStatus=data;statusError='';const saved=state.profiles.find(p=>p.id===pid);if(saved&&data.seeds)saved.seeds=data.seeds;}
   catch(error){if(requestId!==renderId||demo||profile()?.id!==pid||document.body.classList.contains('auth-pending'))return;currentStatus=null;statusError=error.message;}

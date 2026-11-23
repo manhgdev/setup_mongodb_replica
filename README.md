@@ -122,7 +122,11 @@ Hồ sơ quản trị mặc định nằm trong `.web-data/`. Khi sao lưu hoặ
 
 ## Nâng Ubuntu từ giao diện
 
-Vào **Phiên bản & nâng cấp → Quản lý Ubuntu**, hoặc chọn **Kiểm tra Ubuntu** trong popup **Cài MongoDB**. Chọn VPS và nhánh MongoDB. Mặc định ứng dụng giữ bản Ubuntu đã tương thích hoặc tìm bản LTS gần nhất có đủ gói chính thức. Có thể chọn đích cụ thể để lên LTS mới hơn.
+Trong **Máy chủ**, bấm **Tương thích** ở dòng VPS cần xem, hoặc mở **Phiên bản & nâng cấp** và chọn máy. Bảng tự đọc Ubuntu, kiến trúc CPU, phiên bản MongoDB, trạng thái dịch vụ và vai trò tại endpoint. Dòng **Gói trong kho chính thức** cho biết phiên bản đã đối chiếu cho kiến trúc và Ubuntu đích. Bấm **Kiểm tra lại** để cập nhật kết quả. Đây là thao tác chỉ đọc.
+
+![Bảng tương thích Ubuntu và MongoDB theo từng VPS](previews/ubuntu-compatibility.jpg)
+
+Để lập kế hoạch nâng, vào **Phiên bản & nâng cấp → Quản lý Ubuntu**, hoặc chọn **Kiểm tra Ubuntu** trong popup **Cài MongoDB**. Chọn VPS và nhánh MongoDB. Mặc định ứng dụng giữ bản Ubuntu đã tương thích hoặc tìm bản LTS gần nhất có đủ gói chính thức. Có thể chọn đích cụ thể để lên LTS mới hơn.
 
 ![Xem trước nâng Ubuntu trên VPS](previews/ubuntu-upgrade.jpg)
 

@@ -151,3 +151,45 @@ def test_retry_after_distribution_upgrade_only_finishes_packages(monkeypatch):
     result = ubuntu.advance(Mock(), {"id": "123"}, {}, None, ctx, threading.Event(), Mock())
     assert result["ubuntu"] == "26.04"
     assert [call.args[1] for call in remote.call_args_list] == ["ubuntu_status", "ubuntu_finalize", "ubuntu_status"]
+
+
+def test_compatibility_uses_endpoint_version_on_multi_instance_host(monkeypatch):
+    monkeypatch.setattr(worker, "preflight", lambda _: dict(os="Ubuntu", architecture="aarch64", hostname="vm",
+                        codename="resolute", tools={"systemctl": True}, version="db version v8.0.1",
+                        service="mongod-test", service_state="active", services=["mongod.service", "mongod-test.service"]))
+    monkeypatch.setattr(worker, "run", lambda cmd, **kw: {"systemctl": "42", "dpkg": "arm64", "pgrep": "41\n42"}[cmd[0]])
+    monkeypatch.setattr(worker.shutil, "which", lambda _: True)
+    monkeypatch.setattr(worker, "ubuntu_architecture", lambda: "arm64")
+    monkeypatch.setattr(worker, "linux_info", lambda: {"ID": "ubuntu"})
+    packages = Mock(return_value="9.0.8")
+    monkeypatch.setattr(worker, "package_version", packages)
+    result = worker.ubuntu_compatibility({"service": "mongod-test", "series": "8.0", "live_version": "9.0.8"})
+    assert (result["status"], result["processes"], result["package"]) == ("compatible", 2, "9.0.8")
+    packages.assert_called_once_with("9.0", "resolute", "arm64", "9.0.8")
+
+
+def test_read_only_compatibility_without_primary(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from unittest.mock import MagicMock
+    from web.app import create_app
+
+    db = MagicMock()
+    db.__enter__.return_value.admin.command.side_effect = [
+        {"version": "9.0.8"}, {"isreplicaset": True}, {"pid": 42},
+    ]
+    direct = Mock(return_value=db)
+    inspect = Mock(return_value={"pid": "42", "status": "compatible"})
+    monkeypatch.setattr("web.app.client", direct)
+    monkeypatch.setattr("web.app.host_run", inspect)
+    app = create_app(tmp_path)
+    with TestClient(app, base_url="http://127.0.0.1", headers={"X-MongoDB-Manager": "1"}) as api:
+        store = app.state.store
+        profile = store.save("profiles", {"name": "test"})
+        machine = store.save("machines", {"profile_id": profile["id"], "mongo_endpoint": "example.test:27017"})
+        response = api.get(f"/api/machines/{machine['id']}/compatibility")
+        assert response.status_code == 200
+        assert response.json()["role"] == "uninitialized"
+        assert response.json()["pid_match"] is True
+        direct.assert_called_once_with(profile, direct=machine["mongo_endpoint"])
+        assert inspect.call_args.args[1:3] == ("ubuntu_compatibility", {"series": "9.0", "live_version": "9.0.8"})
+        assert store.all("jobs") == []
