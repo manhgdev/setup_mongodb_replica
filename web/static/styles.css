@@ -226,3 +226,6 @@ td .password-control input[readonly] { min-width:9rem; padding-block:7px; border
 .host-compatibility .field { min-width: min(18rem, 100%); }
 .compatibility-outcome { display: flex; align-items: center; flex-wrap: wrap; gap: .6rem; margin-bottom: .8rem; }
 .host-compatibility .callout { margin-top: .8rem; }
+
+#modal:has(#manager-admin-form) { width: min(560px, calc(100vw - 24px)); }
+#manager-admin-form .form-error:empty { display: none; }

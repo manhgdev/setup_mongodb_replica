@@ -36,7 +36,7 @@ Tại thư mục dự án, chạy `pm2 start pm2.start.json` rồi mở http://1
 
 Trên Linux, lần đầu chạy bằng PM2 hoặc service systemd đi kèm, Manager tạo tài khoản `manhg` từ [cấu hình khởi tạo](deploy/initial-admin.json). File này lưu mật khẩu dạng băm scrypt. Tài khoản đang sử dụng nằm trong `admin.json` ở thư mục dữ liệu. Khởi động lại sẽ giữ tài khoản đã lưu. Đổi mật khẩu mặc định trước khi mở domain công khai.
 
-Trong **Cấu hình workspace → Đặt tài khoản quản trị**, nhập tên đăng nhập và mật khẩu cho giao diện Manager. Khi đổi tài khoản đã có, nhập mật khẩu hiện tại. Sau khi lưu, đăng nhập lại.
+Trong **Cấu hình workspace → Đặt tài khoản quản trị**, nhập tên đăng nhập và mật khẩu cho giao diện Manager. Khi đổi tài khoản đã có, nhập mật khẩu hiện tại. Nút **Lưu và đăng nhập lại** nằm ở chân popup, cạnh **Hủy**.
 
 ![Đặt tài khoản quản trị Manager](previews/manager-admin.jpg)
 

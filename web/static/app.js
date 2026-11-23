@@ -1034,7 +1034,14 @@ document.addEventListener('click',async event=>{
     if(act==='manager-admin'){
       const auth=await api('/auth/status');
       const t=dataLabel;
-      modal(t('Tài khoản quản trị Manager','Manager administrator'),`<form class="modal-body" id="manager-admin-form">${field('username','Username',auth.username||'','text')}${auth.enabled?field('current_password',t('Mật khẩu hiện tại','Current password'),'','password'):''}${field('password',t('Mật khẩu mới','New password'),'','password',t('Ít nhất 6 ký tự','At least 6 characters'))}${field('repeat',t('Nhập lại mật khẩu mới','Repeat new password'),'','password')}<p role="alert"></p><button class="button primary" type="submit">${t('Lưu và đăng nhập lại','Save and sign in again')}</button></form>`);
+      const fields=field('username',t('Tên đăng nhập','Username'),auth.username||'','text','',true)
+        +(auth.enabled?field('current_password',t('Mật khẩu hiện tại','Current password'),'','password','',true):'')
+        +field('password',t('Mật khẩu mới','New password'),'','password',t('Ít nhất 6 ký tự','At least 6 characters'))
+        +field('repeat',t('Nhập lại mật khẩu mới','Repeat new password'),'','password');
+      modal(t('Tài khoản quản trị Manager','Manager administrator'),`<form id="manager-admin-form">
+        <div class="modal-body"><div class="form-grid">${fields}</div><p role="alert" class="form-error"></p></div>
+        <div class="modal-footer">${button(uiText('Hủy'),'modal-close')}<button class="button primary" type="submit">${t('Lưu và đăng nhập lại','Save and sign in again')}</button></div>
+      </form>`);
       return;
     }
     if(act==='arbiter-upgrade'||act==='ubuntu-upgrade-required'){
