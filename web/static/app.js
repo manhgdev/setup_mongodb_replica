@@ -381,7 +381,7 @@ document.addEventListener('submit',async event=>{
  await api('/machines/batch',{method:'POST',body:JSON.stringify(records)});form.elements.ssh_password.value='';$('#modal').close();await refreshState();await render();toast((uiText("Đã lưu SSH cho")+" ")+records.length+' VPS.');
  }catch(error){formError(error);}finally{submit.disabled=false;}
 });
-function settingsPage(){const p=profile();return heading(uiText("Cấu hình workspace"),uiText("Thông tin kết nối và các thiết lập của cụm đang chọn."),button(uiText("Chỉnh kết nối"),'profile-edit','settings','primary'))+sshSettingsPanel()+panel(uiText("Hồ sơ MongoDB"),p?`<div class="panel-body">${[[uiText("Tên cụm"),p.name],['Seed list',p.seeds.join(', ')],['Replica set',p.replica_set||'Standalone'],['Username',p.username||uiText("Không dùng")],['Auth database',p.auth_db],['TLS',p.tls?uiText("Bật"):uiText("Tắt")]].map(([k,v])=>`<div class="key-value"><span>${k}</span><strong>${esc(v)}</strong></div>`).join('')}<div class="section-title"></div><div class="actions">${button(uiText("Chỉnh kết nối"),'profile-edit','settings','primary')}${button(uiText("Chuỗi kết nối"),'connection','external')}${button(uiText("Xóa hồ sơ"),'profile-delete','trash','danger')}</div></div>`:empty(uiText("Chưa chọn cụm"),uiText("Tạo hồ sơ kết nối trước khi cấu hình.")))+`<div class="callout neutral">${uiText("Hồ sơ và mật khẩu được mã hóa trên máy quản trị. Khóa mã hóa nằm cùng thư mục dữ liệu, chỉ tài khoản hệ điều hành hiện tại có quyền đọc. SSH hỗ trợ mật khẩu hoặc key/agent của tài khoản chạy ứng dụng.")}</div>`;}
+function settingsPage(){const p=profile();return heading(uiText("Cấu hình workspace"),uiText("Thông tin kết nối và các thiết lập của cụm đang chọn."),button(uiText("Chỉnh kết nối"),'profile-edit','settings','primary'))+(demo?'':panel(dataLabel('Quản trị MongoDB Manager','Manager administrator'),'',dataLabel('Tài khoản đăng nhập giao diện web.','Login for the web interface.'),button(dataLabel('Đặt tài khoản quản trị','Set administrator login'),'manager-admin','settings')))+sshSettingsPanel()+panel(uiText("Hồ sơ MongoDB"),p?`<div class="panel-body">${[[uiText("Tên cụm"),p.name],['Seed list',p.seeds.join(', ')],['Replica set',p.replica_set||'Standalone'],['Username',p.username||uiText("Không dùng")],['Auth database',p.auth_db],['TLS',p.tls?uiText("Bật"):uiText("Tắt")]].map(([k,v])=>`<div class="key-value"><span>${k}</span><strong>${esc(v)}</strong></div>`).join('')}<div class="section-title"></div><div class="actions">${button(uiText("Chỉnh kết nối"),'profile-edit','settings','primary')}${button(uiText("Chuỗi kết nối"),'connection','external')}${button(uiText("Xóa hồ sơ"),'profile-delete','trash','danger')}</div></div>`:empty(uiText("Chưa chọn cụm"),uiText("Tạo hồ sơ kết nối trước khi cấu hình.")))+`<div class="callout neutral">${uiText("Hồ sơ và mật khẩu được mã hóa trên máy quản trị. Khóa mã hóa nằm cùng thư mục dữ liệu, chỉ tài khoản hệ điều hành hiện tại có quyền đọc. SSH hỗ trợ mật khẩu hoặc key/agent của tài khoản chạy ứng dụng.")}</div>`;}
 function diagnosticsPage(){return heading(uiText("Chẩn đoán"),uiText("Kiểm tra kết nối MongoDB và môi trường máy chủ."),button(uiText("Kiểm tra kết nối"),'diagnose','pulse','primary'))+`<div class="cards">${feature(uiText("Kết nối các node"),uiText("Kết nối trực tiếp từng seed, xác thực và đọc vai trò từ máy quản trị."),'cluster','diagnose',uiText("Chạy chẩn đoán"))}${feature(uiText("Môi trường VPS"),uiText("Kiểm tra Ubuntu, CPU, kernel, đĩa, package và service qua SSH."),'server','preflight',uiText("Kiểm tra máy"))}${feature(uiText("Nhật ký MongoDB"),uiText("Xem journal của service để xác định lỗi startup, quyền hoặc port."),'terminal','logs',uiText("Đọc nhật ký"))}</div><div class="section-title"><h2>${uiText("Kết quả kiểm tra")}</h2></div><div id="query-result">${empty(uiText("Sẵn sàng kiểm tra"),uiText("Chọn một phép kiểm tra phía trên. Các bước chẩn đoán chỉ đọc thông tin."),'','','pulse')}</div>`;}
 function hostCompatibilityPanel(){
   const hosts=machines().filter(m=>(m.profile_id||'')===(profile()?.id||''));
@@ -816,6 +816,19 @@ async function saveRecord(form){
   $('#modal').close();toast(uiText("Đã lưu hồ sơ."));await refreshState();await render();if(ctx.kind==='machines'&&pendingJoin){pendingJoin=false;openAction('join_fresh',{...pendingJoinOptions,machine_id:saved.id});pendingJoinOptions={};}
 }
 document.addEventListener('submit',async event=>{
+  if(event.target.id==='manager-admin-form'){
+    event.preventDefault();
+    const form=event.target, submit=form.querySelector('button[type=submit]');
+    const {repeat,...body}=Object.fromEntries(new FormData(form));
+    submit.disabled=true;
+    try{
+      if(repeat!==body.password)throw new Error(dataLabel('Hai mật khẩu chưa khớp.','Passwords do not match.'));
+      await api('/auth/admin',{method:'POST',body:JSON.stringify(body)});
+      $('#modal').close();showLogin(dataLabel('Đã lưu tài khoản. Vui lòng đăng nhập lại.','Login saved. Please sign in again.'));
+    }catch(error){form.querySelector('[role=alert]').textContent=error.message;}
+    finally{submit.disabled=false;}
+    return;
+  }
   if(!['record-form','action-form'].includes(event.target.id))return;
   event.preventDefault();const submit=$('button[type="submit"]',event.target);submit.disabled=true;
   try{
@@ -868,6 +881,12 @@ document.addEventListener('click',async event=>{
   const target=event.target.closest('[data-act]');if(!target)return;
   const act=target.dataset.act;
   try{
+    if(act==='manager-admin'){
+      const auth=await api('/auth/status');
+      const t=dataLabel;
+      modal(t('Tài khoản quản trị Manager','Manager administrator'),`<form class="modal-body" id="manager-admin-form">${field('username','Username',auth.username||'','text')}${auth.enabled?field('current_password',t('Mật khẩu hiện tại','Current password'),'','password'):''}${field('password',t('Mật khẩu mới','New password'),'','password',t('Ít nhất 6 ký tự','At least 6 characters'))}${field('repeat',t('Nhập lại mật khẩu mới','Repeat new password'),'','password')}<p role="alert"></p><button class="button primary" type="submit">${t('Lưu và đăng nhập lại','Save and sign in again')}</button></form>`);
+      return;
+    }
     if(act==='compatibility-refresh'){await loadCompatibility();return;}
     if(act==='ubuntu-open'){openAction('ubuntu_upgrade',{machine_id:$('[name="compatibility_host"]')?.value,series:$('#compatibility-report')?.dataset.series||'9.0'});return;}
     if(act==='ubuntu-install-plan'){openAction('ubuntu_upgrade',actionContext.overrides);return;}

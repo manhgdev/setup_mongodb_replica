@@ -71,6 +71,9 @@ then
     fi
     .venv/bin/python -m pip install -r requirements-web.txt
 fi
+if [[ "$(uname -s)" == Linux ]]; then
+    .venv/bin/python -m web.manage init-admin
+fi
 echo 'MongoDB Manager: http://127.0.0.1:8765'
 echo 'Chỉ lắng nghe trên máy này. Ctrl+C để dừng.'
 exec .venv/bin/python -m uvicorn web.app:app --host 127.0.0.1 --port 8765 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1,::1

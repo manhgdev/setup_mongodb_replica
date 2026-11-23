@@ -3,6 +3,7 @@ import argparse
 import getpass
 import os
 import re
+import tempfile
 from pathlib import Path
 
 from .auth import password_hash, private_json, public_origin
@@ -12,6 +13,7 @@ def main():
     parser = argparse.ArgumentParser(description='Cấu hình MongoDB Manager trên máy chạy ứng dụng')
     parser.add_argument('--data-dir', default=os.environ.get('MONGO_MANAGER_DATA', str(Path(__file__).resolve().parent.parent / '.web-data')))
     sub = parser.add_subparsers(dest='command', required=True)
+    sub.add_parser('init-admin', help='Khởi tạo tài khoản mặc định khi chưa có admin')
     admin = sub.add_parser('create-admin')
     admin.add_argument('--username', required=True)
     admin.add_argument('--replace', action='store_true', help='Đặt lại tài khoản và vô hiệu hóa các phiên cũ sau khi restart')
@@ -19,6 +21,20 @@ def main():
     domain.add_argument('--url', required=True, help='https://mongo.example.com; dùng local để trở về localhost')
     args = parser.parse_args()
     directory = Path(args.data_dir).expanduser().resolve()
+    if args.command == 'init-admin':
+        path = directory / 'admin.json'
+        if path.exists():
+            return
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        template = Path(__file__).resolve().parent.parent / 'deploy' / 'initial-admin.json'
+        with tempfile.NamedTemporaryFile(dir=directory) as output:
+            output.write(template.read_bytes())
+            output.flush()
+            try:
+                os.link(output.name, path)
+            except FileExistsError:
+                pass
+        return
     if args.command == 'create-admin':
         if not re.fullmatch(r'[A-Za-z0-9_.-]{1,80}', args.username):
             parser.error('Username chỉ gồm chữ, số, dấu chấm, gạch ngang hoặc gạch dưới.')

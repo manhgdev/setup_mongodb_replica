@@ -26,7 +26,7 @@ from .operations import (HOST_ACTIONS, LABELS, PROFILE_ACTIONS, READ_ACTIONS, ex
                          client, discover, host_run, mongo_error, read_documents, write_document, query, redact, snapshot, validate_params)
 from . import ubuntu
 from .store import Store
-from .auth import Auth, SESSION_AGE
+from .auth import Auth, SESSION_AGE, password_matches, password_hash, private_json
 from .backup_schedule import BackupScheduler, KIND as SCHEDULES, ScheduleInput
 
 ROOT = Path(__file__).resolve().parent
@@ -38,12 +38,19 @@ class Login(BaseModel):
     password: str = Field(min_length=1, max_length=1000)
 
 
+class AdminCredentials(Login):
+    username: str = Field(pattern=r"^[A-Za-z0-9_.-]{1,80}$")
+    password: str = Field(min_length=6, max_length=1000)
+    current_password: str = Field(default="", max_length=1000)
+
+
 def create_app(data_dir=None):
     @asynccontextmanager
     async def lifespan(app):
         app.state.store = Store(data_dir or os.environ.get("MONGO_MANAGER_DATA", ROOT.parent / ".web-data"))
         app.state.auth = Auth(app.state.store)
         app.state.pool = ThreadPoolExecutor(max_workers=1)
+        app.state.admin_lock = threading.Lock()
         app.state.lock = threading.Lock()
         app.state.plans = {}
         app.state.stop = threading.Event()
@@ -138,6 +145,18 @@ def create_app(data_dir=None):
         response = JSONResponse({'authenticated': True, 'username': session['username'], 'csrf': session['csrf']})
         response.set_cookie(auth.cookie, token, max_age=SESSION_AGE, secure=bool(auth.origin), httponly=True, samesite='strict', path='/')
         return response
+
+    @app.post('/api/auth/admin')
+    def set_admin(body: AdminCredentials, request: Request):
+        with app.state.admin_lock:
+            auth = app.state.auth
+            if auth.enabled and (not request.state.session or not password_matches(body.current_password, auth.admin['password_hash'])):
+                raise HTTPException(403, 'Mật khẩu quản trị hiện tại chưa đúng.')
+            private_json(app.state.store.directory / 'admin.json',
+                         {'username': body.username, 'password_hash': password_hash(body.password)})
+            app.state.auth = Auth(app.state.store)
+        app.state.plans.clear()
+        return {'saved': True}
 
     @app.post('/api/auth/logout')
     def logout(request: Request):
