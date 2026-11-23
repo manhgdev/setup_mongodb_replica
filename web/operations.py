@@ -330,7 +330,7 @@ def host_run(machine, action, params, emit):
 LABELS = {
     "arbiter_upgrade": "Nâng MongoDB trên arbiter", "ubuntu_upgrade": "Kiểm tra và nâng Ubuntu",
     "preflight": "Kiểm tra môi trường", "logs": "Đọc nhật ký", "install": "Cài MongoDB", "setup": "Tạo replica set một node",
-    "service": "Điều khiển dịch vụ", "add_member": "Thêm thành viên", "remove_member": "Gỡ thành viên",
+    "service": "Điều khiển dịch vụ MongoDB", "add_member": "Thêm thành viên", "remove_member": "Gỡ thành viên",
     "member_options": "Sửa cấu hình thành viên", "step_down": "Step down Primary", "create_user": "Tạo user", "password": "Đổi mật khẩu",
     "drop_user": "Xóa user", "write_concern": "Đặt write concern", "backup": "Tạo backup", "backups": "Liệt kê backup",
     "sync_backup": "Đồng bộ bản mới từ nguồn", "restore": "Restore backup", "drop_database": "Xóa database", "upgrade_check": "Kiểm tra nâng cấp 9.0",

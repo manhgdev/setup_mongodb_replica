@@ -680,7 +680,19 @@ const schemas={
   logs:{title:uiText("Xem nhật ký dịch vụ"),host:true,fields:[]},
   install:{title:uiText("Cài MongoDB Community"),host:true,note:uiText("Cài mới bằng package chính thức. Nếu đã có mongod, tác vụ sẽ dừng và giữ nguyên phiên bản hiện tại."),fields:[['series',uiText("Nhánh MongoDB"),'9.0','select','',false,['9.0','8.0']]]},
   setup:{title:uiText("Tạo replica set một node"),host:true,note:uiText("Cần cài mongod và mongosh trước. Tạo service và đường dẫn riêng theo tên instance. Cụm mới dùng keyfile và mật khẩu, TLS tắt."),fields:[['instance',uiText("Tên instance"),'production','text',uiText("Chữ thường, số, dấu gạch ngang.")],['replica_set',uiText("Tên replica set"),'rs0'],['port','Port MongoDB',27017,'number'],['advertise',uiText("Địa chỉ quảng bá"),'', 'text',uiText("Nhập IP public hoặc DNS của VPS kèm port MongoDB, ví dụ mongo.example.com:27017.")],['bind_ip','Bind address','0.0.0.0','text',uiText("0.0.0.0 hoặc danh sách IP có 127.0.0.1. Firewall quản lý riêng."),true],['username',uiText("User quản trị"),'admin'],['password',uiText("Mật khẩu quản trị"),'','password',uiText("Ít nhất 12 ký tự.")]]},
-  service:{title:uiText("Điều khiển dịch vụ"),host:true,note:uiText("Chỉ tác động service trong hồ sơ máy. Stop/restart có thể gián đoạn truy cập dữ liệu; xem trạng thái replica set trước khi chạy."),fields:[['operation',uiText("Thao tác"),'restart','select','',true,[{value:'start',label:uiText("Khởi động")},{value:'stop',label:uiText("Dừng")},{value:'restart',label:uiText("Khởi động lại")},{value:'enable',label:uiText("Bật autostart")},{value:'disable',label:uiText("Tắt autostart")}]]]},
+  service:{
+    title:dataLabel('Dịch vụ MongoDB trên máy chủ','MongoDB service on the host'),
+    host:true,
+    hostLabel:dataLabel('Máy chủ chạy MongoDB','MongoDB host'),
+    note:dataLabel('Manager điều khiển dịch vụ MongoDB được ghi sau tên máy, ví dụ mongod. Dừng hoặc khởi động lại MongoDB có thể làm gián đoạn truy cập dữ liệu.', 'Manager controls the MongoDB service listed after the host name, for example mongod. Stopping or restarting MongoDB can interrupt data access.'),
+    fields:[['operation','MongoDB','restart','select','',true,[
+      {value:'start',label:dataLabel('Khởi động MongoDB','Start MongoDB')},
+      {value:'stop',label:dataLabel('Dừng MongoDB','Stop MongoDB')},
+      {value:'restart',label:dataLabel('Khởi động lại MongoDB','Restart MongoDB')},
+      {value:'enable',label:dataLabel('Bật tự chạy MongoDB khi máy chủ khởi động','Enable MongoDB at host boot')},
+      {value:'disable',label:dataLabel('Tắt tự chạy MongoDB khi máy chủ khởi động','Disable MongoDB at host boot')}
+    ]]]
+  },
   add_member:{title:uiText("Thêm thành viên"),profile:true,note:uiText("Node đích phải chạy mongod với cùng replSetName và keyfile. Web thêm membership; không ghi đè cấu hình node đích. Chọn Votes và Ưu tiên khi thêm secondary."),fields:[['host',uiText("Địa chỉ node"),'','text',uiText("IP hoặc hostname:port"),true],['arbiter',uiText("Thêm dưới vai trò Arbiter"),false,'checkbox','',true]]},
   remove_member:{title:uiText("Gỡ node khỏi cụm"),profile:true,note:uiText("Giữ nguyên dữ liệu trên máy đích. Gỡ bằng reconfig thông thường và kiểm tra quorum trước khi áp dụng."),fields:[['host',uiText("Node cần gỡ"),'','text','',true]]},
   member_options:{title:uiText("Sửa cấu hình member"),profile:true,fields:[['host',uiText("Địa chỉ node"),'','text','',true],['priority',uiText("Ưu tiên bầu primary"),1,'number',uiText("Giá trị cao hơn được ưu tiên. Đặt 0 để node không thể làm primary.")],['votes','Votes',1,'select','',false,[0,1]],['hidden','Hidden member',false,'checkbox',uiText("Hidden hoặc votes=0 cần priority=0."),true]]},
@@ -750,7 +762,7 @@ function openAction(action,overrides={}){
   if(action==='join_fresh'&&hosts.length<2){pendingJoinOptions=overrides;toast(uiText("Cần SSH của VPS nguồn và VPS đích. Nhập VPS mới trước."));pendingJoin=true;showRecord('machines');return;}
   actionContext={action,overrides,profileId:schema.profile?cluster.id:''};
   let fields='';
-  if(schema.host)fields+=field('machine_id',action==='join_fresh'?uiText("VPS đích mới"):uiText("Máy thực thi"),overrides.machine_id||(action==='join_fresh'?(hosts.find(m=>!m.profile_id)||hosts.at(-1)).id:hosts[0].id),'select','',true,hosts.map(m=>({value:m.id,label:`${m.name} · ${m.mode==='local'?'Local':`${m.user}@${m.host}`} · ${m.service}`})));
+  if(schema.host)fields+=field('machine_id',action==='join_fresh'?uiText("VPS đích mới"):(schema.hostLabel||uiText("Máy thực thi")),overrides.machine_id||(action==='join_fresh'?(hosts.find(m=>!m.profile_id)||hosts.at(-1)).id:hosts[0].id),'select','',true,hosts.map(m=>({value:m.id,label:`${m.name} · ${m.mode==='local'?'Local':`${m.user}@${m.host}`} · ${m.service}`})));
   if(action==='backup_schedule'){
     const presets=[{value:'0 * * * *',label:dataLabel('Mỗi giờ','Hourly')},
       {value:'0 2 * * *',label:dataLabel('Hằng ngày lúc 02:00','Daily at 02:00')},
@@ -887,7 +899,7 @@ function showPreview(plan){
     }
     electionPicker=field('next_primary',uiText("Primary mong muốn"),'','select',uiText("Chỉ secondary khỏe có Votes = 1 và Ưu tiên > 0 mới xuất hiện."),true,options);
   }
-  modal(uiText("Xác nhận thao tác"),`<div class="modal-body"><div class="review-params"><div class="review-row"><span>${uiText("Tác vụ")}</span><span>${esc(plan.label)}</span></div><div class="review-row"><span>${uiText("Máy / cụm đích")}</span><span>${esc(plan.target)}</span></div>${Object.entries(plan.params).map(([k,v])=>`<div class="review-row"><span>${esc(labels[k]||k)}</span><span>${esc(k==='destination_id'?(profiles().find(p=>p.id===v)?.name||v):k==='databases'?(v.join(', ')||uiText('Tất cả')):typeof v==='boolean'?(v?uiText("Bật"):uiText("Tắt")):v||'—')}</span></div>`).join('')}</div>${electionPicker}${plan.notices.map(n=>`<div class="callout">${esc(n)}</div>`).join('')}${demo?("<div class=\"callout neutral\">"+uiText("Đây là mô phỏng. Không có lệnh nào được gửi đến máy chủ.")+"</div>"):''}<div id="form-error"></div></div>`,(['remove_member','step_down','arbiter_upgrade'].includes(actionContext.action)?button(uiText("Hủy"),'modal-close'):button(uiText("Quay lại"),'action-back'))+button(demo?uiText("Chạy mô phỏng"):uiText("Thực hiện"),'action-apply','check','primary'));
+  modal(uiText("Xác nhận thao tác"),`<div class="modal-body"><div class="review-params"><div class="review-row"><span>${uiText("Tác vụ")}</span><span>${esc(plan.label)}</span></div><div class="review-row"><span>${uiText("Máy / cụm đích")}</span><span>${esc(plan.target)}</span></div>${Object.entries(plan.params).map(([k,v])=>`<div class="review-row"><span>${esc(labels[k]||k)}</span><span>${esc(k==='operation'&&actionContext.action==='service'?(schema.fields[0][6].find(option=>option.value===v)?.label||v):k==='destination_id'?(profiles().find(p=>p.id===v)?.name||v):k==='databases'?(v.join(', ')||uiText('Tất cả')):typeof v==='boolean'?(v?uiText("Bật"):uiText("Tắt")):v||'—')}</span></div>`).join('')}</div>${electionPicker}${plan.notices.map(n=>`<div class="callout">${esc(n)}</div>`).join('')}${demo?("<div class=\"callout neutral\">"+uiText("Đây là mô phỏng. Không có lệnh nào được gửi đến máy chủ.")+"</div>"):''}<div id="form-error"></div></div>`,(['remove_member','step_down','arbiter_upgrade'].includes(actionContext.action)?button(uiText("Hủy"),'modal-close'):button(uiText("Quay lại"),'action-back'))+button(demo?uiText("Chạy mô phỏng"):uiText("Thực hiện"),'action-apply','check','primary'));
 }
 function sshKeyButton(id){
   return button(dataLabel('Xác minh khóa SSH','Verify SSH host key'),'ssh-key','shield','',`data-id="${esc(id)}"`);

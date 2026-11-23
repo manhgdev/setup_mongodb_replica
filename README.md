@@ -58,6 +58,8 @@ Trên **Replica Set**, **Máy chủ** và **Backup & restore**, các nút dùng 
 
 Trong **Tổng quan cụm**, hàng nút **Thao tác trong cụm** tự xuống dòng trên màn hình hẹp và có khoảng cách với **Hoạt động gần đây**.
 
+Trong **Máy chủ → Dịch vụ**, chọn thao tác cho dịch vụ được ghi sau tên máy, ví dụ `mongod`. **Khởi động lại MongoDB** chỉ khởi động lại dịch vụ. Tùy chọn tự chạy áp dụng khi máy chủ khởi động.
+
 Trong **Máy chủ**, nhấn **Kiểm tra** trên từng dòng để đọc môi trường VPS và xem kết quả trong popup. Trường xác nhận backup chỉ được gửi khi nâng cấp Ubuntu.
 
 Khi bấm **Kiểm tra & lưu cụm** lần đầu, Manager tự đọc hostname của các member đang online. Hồ sơ SSH có tên tự động dùng hostname qua SSH. Với member chưa khai báo SSH, Manager thử đọc hostname qua MongoDB bằng tài khoản của cụm. Nếu chưa đọc được tên, giao diện dùng tên gợi ý.
