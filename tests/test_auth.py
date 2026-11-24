@@ -149,3 +149,37 @@ def test_saved_mongo_account_password_lifecycle(directory):
                     assert api.post(root+'/user-password', params={k:params[k] for k in ('database','username')}).json()['password']==params['password']
         assert api.post(path).status_code==404
         assert api.post(root+'/reveal-password').json()['password']=='new-admin-secret'
+
+
+def test_first_account_then_edit(tmp_path):
+    original = {"username": "first", "password": "first-password"}
+    updated = {"username": "updated", "password": "updated-password"}
+    with client_for(tmp_path) as api:
+        assert not api.get('/api/auth/status').json()['authenticated']
+        assert api.get('/api/state').status_code == 401
+        assert api.post('/api/auth/admin', json=original).status_code == 401
+        session = api.post('/api/auth/setup', json=original).json()
+        assert session['authenticated'] and api.get('/api/state').status_code == 200
+        assert api.post('/api/auth/setup', json=updated).status_code == 409
+        api.headers['X-CSRF-Token'] = session['csrf']
+        assert api.post('/api/auth/admin', json=dict(updated,current_password='wrong')).status_code == 403
+        assert api.post('/api/auth/admin', json=dict(updated,current_password=original['password'])).status_code == 200
+        assert api.get('/api/state').status_code == 401
+        assert api.post('/api/auth/login', json=original).status_code == 401
+        assert api.post('/api/auth/login', json=updated).status_code == 200
+
+
+def test_recovery_rotates_code_and_invalidates_session(tmp_path):
+    original = {"username": "admin", "password": "old-password"}
+    with client_for(tmp_path) as api:
+        code = api.post('/api/auth/setup', json=original).json()['recovery_code']
+        body = dict(original, password='new-password', recovery_code=code)
+        assert api.post('/api/auth/recover', json=dict(body, recovery_code='invalid')).status_code == 403
+        assert api.post('/api/auth/recover', json=dict(body, username='other')).status_code == 403
+        api.cookies.clear()
+        result = api.post('/api/auth/recover', json=body)
+        assert result.status_code == 200 and result.json()['recovery_code'] != code
+        assert code not in (tmp_path / 'admin.json').read_text()
+        assert api.post('/api/auth/recover', json=body).status_code == 403
+        assert api.post('/api/auth/login', json=original).status_code == 401
+        assert api.post('/api/auth/login', json=dict(original,password='new-password')).status_code == 200

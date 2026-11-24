@@ -15,9 +15,10 @@ from web.store import Store
 
 
 @pytest.fixture
-def api(tmp_path):
+def api(tmp_path, sign_in_new_manager):
     app = create_app(tmp_path / "state")
     with TestClient(app, base_url="http://127.0.0.1", headers={"X-MongoDB-Manager": "1"}) as client:
+        sign_in_new_manager(client)
         yield client
 
 
@@ -170,10 +171,11 @@ def test_single_job_and_local_preflight(api):
         api.app.state.slots.release("test")
 
 
-def test_interrupted_jobs_are_not_replayed(tmp_path):
+def test_interrupted_jobs_are_not_replayed(tmp_path, sign_in_new_manager):
     store = Store(tmp_path)
     job = store.save("jobs", {"status": "running", "events": []})
     with TestClient(create_app(tmp_path), base_url="http://127.0.0.1", headers={"X-MongoDB-Manager": "1"}) as api:
+        sign_in_new_manager(api)
         assert api.get("/api/jobs/" + job["id"]).json()["status"] == "interrupted"
 
 

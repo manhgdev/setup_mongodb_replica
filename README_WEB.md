@@ -38,7 +38,10 @@ Mở http://127.0.0.1:8766. Giữ tiến trình web và SSH tunnel đang chạy;
 
 ## Tài khoản quản trị và tên miền HTTPS
 
-Tạo tài khoản bằng terminal trên máy chạy web (password nhập ẩn, không có mật khẩu mặc định trong gói):
+Lần đầu mở Manager tại localhost, tạo tài khoản trên trang khởi tạo để tự đăng nhập vào workspace. Có thể bấm avatar để sửa tài khoản sau khi đăng nhập. Cũng có thể tạo tài khoản bằng terminal trên máy chạy web (password nhập ẩn, không có mật khẩu mặc định trong gói):
+
+Sau khi tạo hoặc sửa tài khoản quản trị, lưu mã khôi phục hiển thị trong popup. Khi quên mật khẩu, bấm **Quên mật khẩu?**, nhập tên đăng nhập, mã và mật khẩu mới. Manager vô hiệu hóa các phiên đăng nhập cũ và cấp mã mới thay cho mã vừa dùng. Với tài khoản cũ chưa có mã, vào **Sửa tài khoản quản trị**, xác nhận mật khẩu hiện tại và lưu để nhận mã. Nếu đã mất cả mật khẩu lẫn mã, trên máy chạy Manager dùng `.venv/bin/python -m web.manage create-admin --username TEN_DANG_NHAP --replace` với đúng thư mục dữ liệu rồi khởi động lại Manager.
+
 
 ```bash
 .venv/bin/python -m web.manage create-admin --username manhg

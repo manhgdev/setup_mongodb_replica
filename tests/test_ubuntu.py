@@ -55,7 +55,7 @@ def test_quorum_when_host_is_offline():
         ubuntu.check_quorum(cfg, {1: states[1]})
 
 
-def test_apply_requires_backup_and_plan_can_only_run_once(tmp_path, monkeypatch):
+def test_apply_requires_backup_and_plan_can_only_run_once(tmp_path, monkeypatch, sign_in_new_manager):
     from fastapi.testclient import TestClient
     from web.app import create_app
 
@@ -66,6 +66,7 @@ def test_apply_requires_backup_and_plan_can_only_run_once(tmp_path, monkeypatch)
     monkeypatch.setattr(ubuntu, "mongo_state", lambda *args: ("Standalone", {}))
     monkeypatch.setattr(ubuntu, "advance", lambda *args: {"ubuntu": "26.04"})
     with TestClient(create_app(tmp_path), base_url="http://127.0.0.1", headers={"X-MongoDB-Manager": "1"}) as api:
+        sign_in_new_manager(api)
         machine = api.post("/api/machines", json={"name": "VM", "mode": "local"}).json()
         plan = api.post("/api/plans", json={"action": "ubuntu_upgrade", "machine_id": machine["id"],
                                            "params": {"series": "9.0", "target": "resolute"}}).json()
@@ -168,7 +169,7 @@ def test_compatibility_uses_endpoint_version_on_multi_instance_host(monkeypatch)
     packages.assert_called_once_with("9.0", "resolute", "arm64", "9.0.8")
 
 
-def test_read_only_compatibility_without_primary(tmp_path, monkeypatch):
+def test_read_only_compatibility_without_primary(tmp_path, monkeypatch, sign_in_new_manager):
     from fastapi.testclient import TestClient
     from unittest.mock import MagicMock
     from web.app import create_app
@@ -183,6 +184,7 @@ def test_read_only_compatibility_without_primary(tmp_path, monkeypatch):
     monkeypatch.setattr("web.app.host_run", inspect)
     app = create_app(tmp_path)
     with TestClient(app, base_url="http://127.0.0.1", headers={"X-MongoDB-Manager": "1"}) as api:
+        sign_in_new_manager(api)
         store = app.state.store
         profile = store.save("profiles", {"name": "test"})
         machine = store.save("machines", {"profile_id": profile["id"], "mongo_endpoint": "example.test:27017"})

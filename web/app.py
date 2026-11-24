@@ -1,5 +1,6 @@
 import base64
 import copy
+import hashlib
 import hmac
 import json
 import os
@@ -52,6 +53,11 @@ class AdminCredentials(Login):
     username: str = Field(pattern=r"^[A-Za-z0-9_.-]{1,80}$")
     password: str = Field(min_length=6, max_length=1000)
     current_password: str = Field(default="", max_length=1000)
+
+
+class RecoveryCredentials(Login):
+    password: str = Field(min_length=6, max_length=1000)
+    recovery_code: str = Field(min_length=1, max_length=128)
 
 
 def create_app(data_dir=None):
@@ -127,8 +133,11 @@ def create_app(data_dir=None):
             if request.headers.get("x-mongodb-manager") != "1":
                 return denied("Thiếu header ứng dụng.")
             request.state.session = auth.session(request) if auth.enabled else None
-            public = request.url.path in {'/api/auth/status', '/api/auth/login'}
-            if auth.enabled and not public:
+            public = request.url.path in {'/api/auth/status', '/api/auth/login', '/api/auth/recover'}
+            first_setup = not auth.enabled and request.url.path == '/api/auth/setup' and request.method == 'POST'
+            if not auth.enabled and not public and not first_setup:
+                return denied('Cần tạo tài khoản quản trị đầu tiên.', 401)
+            if auth.enabled and not public and request.url.path != '/api/auth/setup':
                 session = request.state.session
                 if session is None:
                     return denied('Cần đăng nhập quản trị.', 401)
@@ -150,12 +159,15 @@ def create_app(data_dir=None):
     def auth_status(request: Request):
         auth = app.state.auth
         session = request.state.session
-        return {'enabled': auth.enabled, 'authenticated': bool(session) or not auth.enabled,
+        return {'enabled': auth.enabled, 'authenticated': bool(session),
                 'username': session['username'] if session else '', 'csrf': session['csrf'] if session else '',
                 'public_url': auth.origin}
 
     @app.post('/api/auth/login')
     def login(body: Login, request: Request):
+        return login_response(body, request)
+
+    def login_response(body, request, recovery_code=None):
         auth = app.state.auth
         if not auth.enabled:
             raise HTTPException(400, 'Chưa cấu hình tài khoản trên máy này.')
@@ -165,21 +177,42 @@ def create_app(data_dir=None):
         if result is None:
             raise HTTPException(401, 'Username hoặc mật khẩu không đúng.')
         token, session = result
-        response = JSONResponse({'authenticated': True, 'username': session['username'], 'csrf': session['csrf']})
+        response = JSONResponse({'authenticated': True, 'username': session['username'], 'csrf': session['csrf'],
+                                 **({'recovery_code': recovery_code} if recovery_code else {})})
         response.set_cookie(auth.cookie, token, max_age=SESSION_AGE, secure=bool(auth.origin), httponly=True, samesite='strict', path='/')
         return response
 
+    @app.post('/api/auth/setup')
     @app.post('/api/auth/admin')
     def set_admin(body: AdminCredentials, request: Request):
         with app.state.admin_lock:
             auth = app.state.auth
-            if auth.enabled and (not request.state.session or not password_matches(body.current_password, auth.admin['password_hash'])):
+            if request.url.path == '/api/auth/setup' and auth.enabled:
+                raise HTTPException(409, 'Tài khoản quản trị đã được tạo. Hãy đăng nhập.')
+            if request.url.path == '/api/auth/admin' and (not auth.enabled or not request.state.session or not password_matches(body.current_password, auth.admin['password_hash'])):
                 raise HTTPException(403, 'Mật khẩu quản trị hiện tại chưa đúng.')
-            private_json(app.state.store.directory / 'admin.json',
-                         {'username': body.username, 'password_hash': password_hash(body.password)})
-            app.state.auth = Auth(app.state.store)
+            code = save_credentials(body)
+            if request.url.path == '/api/auth/setup':
+                return login_response(body, request, code)
+        return {'saved': True, 'recovery_code': code}
+
+    def save_credentials(body):
+        code = secrets.token_urlsafe(32)
+        private_json(app.state.store.directory / 'admin.json',
+                     {'username': body.username, 'password_hash': password_hash(body.password),
+                      'recovery_hash': hashlib.sha256(code.encode()).hexdigest()})
+        app.state.auth = Auth(app.state.store)
         app.state.plans.clear()
-        return {'saved': True}
+        return code
+
+    @app.post('/api/auth/recover')
+    def recover_admin(body: RecoveryCredentials):
+        with app.state.admin_lock:
+            admin = app.state.auth.admin or {}
+            digest = hashlib.sha256(body.recovery_code.strip().encode()).hexdigest()
+            if not hmac.compare_digest(digest, admin.get('recovery_hash', '')) or body.username != admin.get('username'):
+                raise HTTPException(403, 'Tên đăng nhập hoặc mã khôi phục chưa đúng.')
+            return {'saved': True, 'recovery_code': save_credentials(body)}
 
     @app.post('/api/auth/logout')
     def logout(request: Request):

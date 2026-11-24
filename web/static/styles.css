@@ -241,3 +241,26 @@ td .password-control input[readonly] { min-width:9rem; padding-block:7px; border
 .step-down-review .review-row span:last-child { text-align:start; }
 .step-down-review .callout { padding:10px 14px; line-height:1.55; }
 .step-down-review #form-error:empty { display:none; }
+
+.recovery-methods { display:flex; flex-wrap:wrap; gap:6px; }
+.recovery-methods [aria-pressed="true"] { background:var(--green); color:white; }
+.recovery-help section { margin-top:18px; padding-top:16px; border-top:1px solid var(--line); }
+.recovery-help h3 { font-size:15px; margin:0; }
+.recovery-help p, .recovery-help small { font-size:13px; line-height:1.55; margin:5px 0 10px; }
+.recovery-help small { display:block; color:#55695e; }
+.recovery-help .recovery-copy { background:#f4f7f5; border:1px solid var(--line); border-radius:8px; padding:10px; }
+.recovery-help .recovery-copy code { font-size:12px; line-height:1.6; }
+
+.recovery-copy { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin:6px 0 12px; }
+.recovery-copy code { flex:1 1 180px; min-width:0; overflow-wrap:anywhere; user-select:all; }
+
+.recovery-card { width:min(520px,100%); gap:16px; }
+.recovery-heading { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; }
+.recovery-heading .brand { margin:0; padding:0; }
+.recovery-card header p { margin-top:8px; line-height:1.55; color:#52675b; }
+.recovery-code-field .text-button, .recovery-card .text-button { border:0; background:transparent; color:var(--green); }
+.recovery-code-field .text-button { margin-top:4px; padding-inline:0; }
+.recovery-passwords { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); align-items:start; gap:14px; }
+.recovery-passwords small { text-align:start; }
+.recovery-card #login-error:empty { display:none; }
+@media(max-width:480px){.recovery-card{padding:22px}.recovery-passwords{grid-template-columns:1fr}}

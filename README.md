@@ -34,7 +34,10 @@ Tại thư mục dự án, chạy `pm2 start pm2.start.json` rồi mở http://1
 - Sau khi cập nhật source hoặc giải nén bản mới, chờ tác vụ hoàn tất rồi khởi động lại Manager bằng `pm2 restart mongodb-manager` để API nhận các trường mới như Votes và Ưu tiên. Nếu chạy bằng terminal, dừng Manager bằng Ctrl+C rồi chạy lại `./start-web.sh`.
 - Dừng web: `pm2 stop mongodb-manager`
 
-Trên Linux, lần đầu chạy bằng PM2 hoặc service systemd đi kèm, Manager tạo tài khoản `manhg` từ [cấu hình khởi tạo](deploy/initial-admin.json). File này lưu mật khẩu dạng băm scrypt. Tài khoản đang sử dụng nằm trong `admin.json` ở thư mục dữ liệu. Khởi động lại sẽ giữ tài khoản đã lưu. Đổi mật khẩu mặc định trước khi mở domain công khai.
+Lần đầu mở Manager với thư mục dữ liệu trống, nhập tên đăng nhập, mật khẩu và xác nhận mật khẩu trên trang **Tạo tài khoản quản trị đầu tiên**. Tạo xong, Manager tự đăng nhập và mở workspace. Để sửa tên hoặc mật khẩu, bấm avatar ở góc phải hoặc **Cấu hình → Sửa tài khoản quản trị**. Nhập mật khẩu hiện tại, lưu và đăng nhập lại. Tài khoản đã tạo được giữ qua các lần khởi động. Tên tài khoản ở góc phải là nhãn hiển thị. Bấm **Đăng xuất** để kết thúc phiên.
+
+Sau khi tạo hoặc sửa tài khoản quản trị, lưu mã khôi phục hiển thị trong popup. Khi quên mật khẩu, bấm **Quên mật khẩu?** để mở trang **Đặt lại mật khẩu quản trị** của MongoDB Manager, nhập tên đăng nhập, mã và mật khẩu mới. Manager vô hiệu hóa các phiên đăng nhập cũ và cấp mã mới thay cho mã vừa dùng. Với tài khoản cũ chưa có mã, vào **Sửa tài khoản quản trị**, xác nhận mật khẩu hiện tại và lưu để nhận mã. Popup mã khôi phục và các lệnh trong popup hướng dẫn mở bằng nút **Không có mã khôi phục?** đều có nút **Sao chép**. Popup hiện ngay hai bước cho Terminal. Bấm PM2 hoặc systemd để đổi hướng dẫn ngay trong popup. F5 mở lại đúng màn hình quên mật khẩu và phương thức đang xem. Trình duyệt chỉ lưu lựa chọn giao diện cho luồng khôi phục. Nếu đã mất cả mật khẩu lẫn mã, trên máy chạy Manager dùng `.venv/bin/python -m web.manage create-admin --username TEN_DANG_NHAP --replace` với đúng thư mục dữ liệu rồi khởi động lại Manager.
+
 
 Trong **Cấu hình workspace → Đặt tài khoản quản trị**, nhập tên đăng nhập và mật khẩu cho giao diện Manager. Khi đổi tài khoản đã có, nhập mật khẩu hiện tại. Nút **Lưu và đăng nhập lại** nằm ở chân popup, cạnh **Hủy**.
 
