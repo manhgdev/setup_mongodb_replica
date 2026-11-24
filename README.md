@@ -160,6 +160,16 @@ Manager cho các VPS độc lập chạy song song. Các lần nâng có thể l
 
 Kiểm chứng ngày 23/11/2026 trên VM ARM64 có snapshot. Máy trống nâng từ Ubuntu 24.04.5 lên 26.04.1, sau đó cài MongoDB 9.0.8 từ giao diện và trả lời ping. Một replica một node trở lại PRIMARY với cùng phiên bản MongoDB và đọc được document đã ghi trước khi nâng. Kiểm thử riêng trên replica set ba node kiểm tra quorum và bàn giao primary.
 
+Nếu SSH xác nhận dịch vụ đã dừng, PID bằng 0 và không có tiến trình mongod, bảng tương thích hiển thị **Đã dừng** và phiên bản đọc trên VPS.
+
+![Trạng thái MongoDB đã dừng](previews/compatibility-stopped.jpg)
+
+Khi bấm **Nâng cấp MongoDB**, Manager mở tác vụ MongoDB hoặc arbiter đang chạy trên đúng máy. Nếu máy đang ở bước nâng Ubuntu, nút mở ngay nhật ký và tiến độ Ubuntu.
+
+![Mở bảng theo dõi từ nút MongoDB](previews/ubuntu-apt-recovery.jpg)
+
+Nếu APT dừng vì thiếu khóa ký MongoDB 8.0, Manager xác minh fingerprint khóa chính thức, thay keyring và thử lại một lần trên cùng tác vụ Ubuntu. Với lỗi đã xảy ra trước khi cập nhật Manager, dùng **Kiểm tra lại Ubuntu** trong bảng tác vụ.
+
 ## Cập nhật tài liệu
 
 Mỗi lần sửa dự án, cập nhật README này trong cùng thay đổi. Nếu thay đổi ảnh hưởng đến cách sử dụng, sửa trực tiếp hướng dẫn tương ứng. Với bản sửa nội bộ, ghi ngắn gọn nội dung và cách kiểm tra ở mục dưới. Đặt ảnh giao diện mới trong `previews/`.
@@ -240,6 +250,16 @@ Trong bảng theo dõi Ubuntu, **Đã chạy** tính từ lúc tác vụ bắt �
 
 Sau chặng cuối, Manager kiểm tra zip, unzip, Node.js và PM2, dùng bản hiện có trong PATH, NVM hoặc Bun và cài công cụ còn thiếu. Danh sách gói APT đã cài thủ công trước mỗi chặng nằm trong manual-packages.before cạnh log của chặng.
 
+Nếu APT đang hoạt động hoặc dpkg còn gói chờ cấu hình, nút nâng riêng mở bảng theo dõi và cập nhật mỗi 5 giây. Chọn **Xem kế hoạch nâng** để tiếp tục.
+
+![Bảng theo dõi APT và dpkg trên linux1929](previews/upgrade-package-activity.jpg)
+
 ![Tiến độ và thời gian nâng Ubuntu](previews/ubuntu-upgrade-progress.jpg)
 
 Nếu APT đang bận khi lập kế hoạch, popup Ubuntu và MongoDB cập nhật tiến trình dpkg qua SSH. Khi xác nhận, tác vụ chờ tiến trình hiện tại rồi hoàn tất cấu hình dở. Với MongoDB, nhật ký tác vụ ghi thêm gói đang tải, giải nén và cấu hình.
+
+Trong bảng kiểm tra VPS, ô chọn nhánh MongoDB nằm gọn phía trên kết quả tương thích. Khi Ubuntu phù hợp, giao diện hiển thị một nhãn trạng thái duy nhất.
+
+Bước kiểm tra trực tiếp endpoint ở bảng Ubuntu dùng chung thời hạn 3 giây cho các lệnh MongoDB và lần kiểm tra bổ sung trên arbiter. Khi hết thời gian, Manager tiếp tục với thông tin VPS đọc qua SSH.
+
+Bảng Ubuntu và MongoDB đặt máy, nhánh dự định cài và **Kiểm tra lại** trên cùng thanh điều khiển. Ngay sau **Kiểm tra lại** là ba nút **Nâng cấp Ubuntu**, **Nâng cấp MongoDB** và **Nâng cả hai**.

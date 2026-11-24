@@ -257,7 +257,7 @@ def query(profile, section, database="", collection=""):
 
 def host_run(machine, action, params, emit):
     worker = Path(__file__).with_name("host_worker.py")
-    elevated = action in {"package_recover", "role_storage", "role_restart", "retire_member", "check_service_stopped", "arbiter_check", "arbiter_packages", "arbiter_install", "ubuntu_start", "ubuntu_finalize", "ubuntu_status", "ubuntu_precheck", "ubuntu_tools", "ubuntu_restore_service", "install", "setup", "provision", "prepare_member", "read_keyfile", "service", "backup", "backups", "restore", "preview_backup", "delete_backup", "logs"}
+    elevated = action in {"package_recover", "role_storage", "role_restart", "retire_member", "check_service_stopped", "arbiter_check", "arbiter_packages", "arbiter_install", "ubuntu_start", "ubuntu_repair_key", "ubuntu_finalize", "ubuntu_status", "ubuntu_precheck", "ubuntu_tools", "ubuntu_restore_service", "install", "setup", "provision", "prepare_member", "read_keyfile", "service", "backup", "backups", "restore", "preview_backup", "delete_backup", "logs"}
     params = dict(params, service=machine["service"])
     payload = {"action": action, "params": params}
     if action.startswith(("ubuntu_", "arbiter_")) or action in {"mongo_latest", "install", "prepare_member", "provision", "setup"}:

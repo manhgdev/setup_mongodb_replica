@@ -222,9 +222,13 @@ td .password-control input[readonly] { min-width:9rem; padding-block:7px; border
 .cluster-actions + .panel { margin-block-start:20px; }
 
 .host-compatibility { display: grid; gap: 1rem; }
-.host-compatibility > .actions { align-items: end; flex-wrap: wrap; }
-.host-compatibility .field { min-width: min(18rem, 100%); }
-.compatibility-outcome { display: flex; align-items: center; flex-wrap: wrap; gap: .6rem; margin-bottom: .8rem; }
+.compatibility-controls { display:flex; gap:.75rem; align-items:end; flex-wrap:wrap; }
+.compatibility-controls .field { min-width:0; }
+.compatibility-controls > .field { width:min(20rem,100%); }
+.compatibility-summary { margin-bottom:.7rem; }
+.host-compatibility td, .host-compatibility th { padding:.65rem .85rem; }
+@media(max-width:540px){ .compatibility-controls > .field { width:100%; } }
+.compatibility-outcome { display: flex; align-items: center; flex-wrap: wrap; gap: .6rem; }
 .host-compatibility .callout { margin-top: .8rem; }
 
 #modal:has(#manager-admin-form) { width: min(560px, calc(100vw - 24px)); }

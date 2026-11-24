@@ -522,7 +522,7 @@ def ubuntu_action(action, p):
                 if download:
                     detail = f"APT tải gói {download[1]} · {download[2]} ({download[3]})"
                     break
-                match = re.search(r"(Setting up|Unpacking|status installed|status unpacked) ([a-z0-9][a-z0-9.+:-]{0,100})(?: |$)", line)
+                match = re.search(r"(Setting up|Unpacking|Processing triggers for|Removing|Purging|remove|purge|trigproc|status installed|status unpacked|status half-configured|status config-files|status not-installed) ([a-z0-9][a-z0-9.+:-]{0,100})(?: |$)", line)
                 if match:
                     detail = " ".join(match.groups())
                     break
@@ -579,11 +579,26 @@ def ubuntu_action(action, p):
                                         finished.add((pkg, fields[3]))
                         progress = dict(packages_done=len(finished), packages_total=2 * len(planned), configuring=True)
                     elif not detail:
-                        files = {item.name.split("_", 1)[0] for item in Path("/var/cache/apt/archives").glob("*.deb")
-                                 if item.stat().st_ctime >= phase.stat().st_mtime}
+                        files = set()
+                        started = phase.stat().st_mtime
+                        for item in Path("/var/cache/apt/archives").glob("*.deb"):
+                            try:
+                                if item.stat().st_ctime >= started:
+                                    files.add(item.name.split("_", 1)[0])
+                            except FileNotFoundError:
+                                continue
                         detail = "APT tải bộ gói Ubuntu mới"
                         progress = dict(packages_done=len(planned & files), packages_total=len(planned), downloading=True)
-        return dict(phase=status, last_phase=last_phase, detail=detail, progress=progress, can_finalize=(directory / "release-complete").exists(), rebooted=boot != (directory / "boot").read_text(),
+        missing_key = False
+        if status == "failed" and last_phase == "apt" and logfile.is_file():
+            with logfile.open("rb") as stream:
+                stream.seek(max(0, logfile.stat().st_size - 8192))
+                tail = stream.read().decode(errors="replace")
+            missing_key = ("NO_PUBKEY 41DE058A4E7DCA05" in tail and
+                           "repo.mongodb.org/apt/ubuntu" in tail and "/mongodb-org/8.0" in tail)
+            if missing_key:
+                detail = "APT thiếu khóa ký chính thức của kho MongoDB 8.0."
+        return dict(phase=status, last_phase=last_phase, detail=detail, progress=progress, repair_key=missing_key, can_finalize=(directory / "release-complete").exists(), rebooted=boot != (directory / "boot").read_text(),
                     current=linux_info().get("VERSION_CODENAME"), log=str(directory / "upgrade.log"))
     if action == "ubuntu_tools":
         if (linux_info().get("VERSION_CODENAME") != stage
@@ -634,6 +649,32 @@ def ubuntu_action(action, p):
         if unavailable:
             result["Gói cũ thiếu ứng viên trong kho Ubuntu mới"] = ", ".join(unavailable)
         return result
+    if action == "ubuntu_repair_key":
+        state = ubuntu_action("ubuntu_status", p)
+        if (not state.get("repair_key") or state["current"] != p["source"] or state["rebooted"]
+                or hashlib.sha256(Path("/etc/machine-id").read_bytes()).hexdigest() != p["machine_token"]):
+            raise ValueError("Máy hoặc chặng APT đã thay đổi. Kiểm tra lại tác vụ.")
+        key = Path("/usr/share/keyrings/mongodb-server-8.0.gpg")
+        sources = Path("/etc/apt/sources.list.d").glob("*.list")
+        if not any("signed-by=" + str(key) in line and "https://repo.mongodb.org/apt/ubuntu " in line
+                   and "/mongodb-org/8.0 " in line for src in sources for line in src.read_text().splitlines()
+                   if line.strip().startswith("deb ")):
+            raise ValueError("Kho MongoDB chưa trỏ tới keyring chính thức.")
+        with tempfile.TemporaryDirectory(dir=key.parent) as tmp:
+            signed = Path(tmp) / "server.asc"
+            with urllib.request.urlopen("https://pgp.mongodb.com/server-8.0.asc", timeout=30) as response:
+                signed.write_bytes(response.read())
+            fields = run(["gpg", "--batch", "--show-keys", "--with-colons", str(signed)]).splitlines()
+            keys = [line for line in fields if line.startswith("pub:")]
+            fingerprints = [line.split(":")[9] for line in fields if line.startswith("fpr:")]
+            if len(keys) != 1 or fingerprints[:1] != ["4B0752C1BCA238C0B4EE14DC41DE058A4E7DCA05"]:
+                raise ValueError("Fingerprint của khóa MongoDB 8.0 không khớp.")
+            binary = Path(tmp) / "server.gpg"
+            run(["gpg", "--batch", "--dearmor", "--output", str(binary), str(signed)])
+            binary.chmod(0o644)
+            os.replace(binary, key)
+        (directory / "failed").unlink()
+        return launch_ubuntu(directory, p, boot, "-key-" + secrets.token_hex(4))
     if action == "ubuntu_finalize":
         if (not (directory / "release-complete").is_file() or linux_info().get("VERSION_CODENAME") != stage
                 or hashlib.sha256(Path("/etc/machine-id").read_bytes()).hexdigest() != p["machine_token"]):

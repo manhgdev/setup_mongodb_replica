@@ -135,6 +135,13 @@ def advance(store, job, machine, profile, ctx, stop, emit):
                 source = expected["path"][index - 1] if index else expected["current"]
                 identity = {"machine_token": expected["machine_token"], "current": stage if phase == "reboot" else source}
                 host_run(machine, "ubuntu_restore_service", identity, emit)
+            if phase == "failed" and state.get("repair_key") and ctx.get("key_repair_stage") != stage:
+                ctx["key_repair_stage"] = stage
+                store.save("ubuntu-jobs", ctx, job["id"])
+                emit("APT thiếu khóa kho MongoDB 8.0. Xác minh fingerprint, sửa keyring và tiếp tục chặng.")
+                host_run(machine, "ubuntu_repair_key", dict(args, source=expected["path"][index-1] if index else expected["current"],
+                         machine_token=expected["machine_token"]), emit)
+                continue
             if phase == "failed" and ctx.pop("retry_finalize", False):
                 store.save("ubuntu-jobs", ctx, job["id"])
                 try:

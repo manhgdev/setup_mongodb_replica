@@ -21,6 +21,7 @@ from fastapi import Query, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pymongo import timeout as mongo_timeout
 from pymongo.errors import OperationFailure, PyMongoError
 
 from .models import Action, Apply, Machine, Profile, ProfileProbe, ProfileAdopt, AttachedMachine, DocumentPage, DocumentWrite, public_endpoint, public_host
@@ -507,34 +508,35 @@ def create_app(data_dir=None):
         arbiter_version_restricted = False
         if endpoint and machine.get("profile_id"):
             profile = store.get("profiles", machine["profile_id"])
-            try:
-                with client(profile, direct=endpoint) as db:
-                    version = db.admin.command("buildInfo")["version"]
-                    hello = db.admin.command("hello")
-                    if hello.get("isreplicaset") and not hello.get("setName"):
-                        role = "uninitialized"
-                    elif hello.get("setName"):
-                        role = next((name for key, name in (("isWritablePrimary", "PRIMARY"), ("secondary", "SECONDARY"),
-                                                             ("arbiterOnly", "ARBITER")) if hello.get(key)), "other")
-                    else:
-                        role = "mongos" if hello.get("msg") == "isdbgrid" else "standalone"
-                    live_pid = db.admin.command("serverStatus")["pid"]
-            except PyMongoError as exc:
-                endpoint_error = mongo_error(exc)
-                if isinstance(exc, OperationFailure) and exc.code in (13, 18):
-                    # Arbiters do not replicate the cluster's user collection.
-                    try:
-                        with client(dict(profile, username="", password=""), direct=endpoint) as probe:
-                            hello = probe.admin.command("hello")
-                            if hello.get("arbiterOnly") and (not profile.get("replica_set") or
-                                                            hello.get("setName") == profile["replica_set"]):
-                                role = "ARBITER"
-                                version = probe.admin.command("buildInfo").get("version", "")
-                                endpoint_error = "" if version else "Arbiter chưa cung cấp phiên bản qua buildInfo."
-                    except PyMongoError as probe_error:
-                        if role == "ARBITER":
-                            arbiter_version_restricted = isinstance(probe_error, OperationFailure) and probe_error.code == 13
-                            endpoint_error = "" if arbiter_version_restricted else mongo_error(probe_error)
+            with mongo_timeout(3):
+                try:
+                    with client(profile, direct=endpoint) as db:
+                        version = db.admin.command("buildInfo")["version"]
+                        hello = db.admin.command("hello")
+                        if hello.get("isreplicaset") and not hello.get("setName"):
+                            role = "uninitialized"
+                        elif hello.get("setName"):
+                            role = next((name for key, name in (("isWritablePrimary", "PRIMARY"), ("secondary", "SECONDARY"),
+                                                                 ("arbiterOnly", "ARBITER")) if hello.get(key)), "other")
+                        else:
+                            role = "mongos" if hello.get("msg") == "isdbgrid" else "standalone"
+                        live_pid = db.admin.command("serverStatus")["pid"]
+                except PyMongoError as exc:
+                    endpoint_error = ("Endpoint MongoDB chưa trả lời trong 3 giây." if exc.timeout else mongo_error(exc))
+                    if isinstance(exc, OperationFailure) and exc.code in (13, 18):
+                        # Arbiters do not replicate the cluster's user collection.
+                        try:
+                            with client(dict(profile, username="", password=""), direct=endpoint) as probe:
+                                hello = probe.admin.command("hello")
+                                if hello.get("arbiterOnly") and (not profile.get("replica_set") or
+                                                                hello.get("setName") == profile["replica_set"]):
+                                    role = "ARBITER"
+                                    version = probe.admin.command("buildInfo").get("version", "")
+                                    endpoint_error = "" if version else "Arbiter chưa cung cấp phiên bản qua buildInfo."
+                        except PyMongoError as probe_error:
+                            if role == "ARBITER":
+                                arbiter_version_restricted = isinstance(probe_error, OperationFailure) and probe_error.code == 13
+                                endpoint_error = "" if arbiter_version_restricted else mongo_error(probe_error)
         return dict(endpoint=endpoint, live_version=version, live_pid=live_pid, role=role,
                     live=bool(version), endpoint_error=endpoint_error, arbiter_version_restricted=arbiter_version_restricted)
 
@@ -550,6 +552,9 @@ def create_app(data_dir=None):
         match = str(pid) == result["pid"] if pid else None
         if match is False:
             result.update(status="unknown", reason="Endpoint và dịch vụ đã chọn có PID khác nhau.")
+        if (result.get("service_state") == "inactive" and result.get("pid") == "0"
+                and result.get("processes") == 0 and not probe["role"] and not probe["live"]):
+            probe = dict(probe, role="stopped", endpoint_error="")
         return dict(result, **probe, pid_match=match)
 
     @app.get("/api/machines/{record_id}/compatibility")
@@ -1068,6 +1073,12 @@ def create_app(data_dir=None):
                 state = host_run(plan["machine"], "ubuntu_status", args, lambda _: None)
                 if state["phase"] == "failed" and state.get("can_finalize") and state.get("current") == args["stage"]:
                     ctx["retry_finalize"] = True
+                elif state["phase"] == "failed" and state.get("repair_key"):
+                    newer = [item for item in store.all("jobs") if item.get("machine_id") == job["machine_id"]
+                             and item.get("action") == "ubuntu_upgrade" and item["created_at"] > job["created_at"]]
+                    if newer:
+                        raise HTTPException(409, "Máy đã có tác vụ Ubuntu mới hơn. Mở lịch sử để xem kết quả.")
+                    ctx.pop("key_repair_stage", None)
                 elif ctx.get("launching") and state["phase"] in {"starting", "apt", "release", "packages"}:
                     pass
                 elif state["phase"] not in {"reboot", "prepare-reboot"} or not state["rebooted"]:
