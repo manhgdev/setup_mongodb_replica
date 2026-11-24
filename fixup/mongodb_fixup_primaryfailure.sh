@@ -1,4 +1,5 @@
 #!/bin/bash
+source "$(dirname "${BASH_SOURCE[0]}")/../new/lib/mongo_auth.sh" || exit 1
 
 echo "====== FIX LỖI KHÔNG THỂ BẦU CHỌN PRIMARY NODE ======"
 
@@ -6,7 +7,6 @@ echo "====== FIX LỖI KHÔNG THỂ BẦU CHỌN PRIMARY NODE ======"
 PORT="27017"
 REPLICA_SET="rs0"
 USERNAME="manhg"
-PASSWORD="manhnk"
 
 # Prompt for values
 read -p "Port MongoDB [$PORT]: " USER_PORT
@@ -18,8 +18,9 @@ REPLICA_SET=${USER_RS:-$REPLICA_SET}
 read -p "Tên người dùng MongoDB [$USERNAME]: " USER_NAME
 USERNAME=${USER_NAME:-$USERNAME}
 
-read -p "Mật khẩu MongoDB [$PASSWORD]: " USER_PASS
-PASSWORD=${USER_PASS:-$PASSWORD}
+IFS= read -rs -p "Mật khẩu MongoDB: " PASSWORD || exit 1
+echo >&2
+[[ -n "$PASSWORD" ]] || exit 1
 
 # Kiểm tra trạng thái của replica set
 echo "Kiểm tra trạng thái replica set..."
@@ -43,13 +44,13 @@ read -p "Lựa chọn của bạn (1-4): " choice
 case $choice in
     1)
         echo "Đang force bầu chọn lại..."
-        mongosh --port $PORT -u $USERNAME -p $PASSWORD --authenticationDatabase admin --eval "rs.reconfig(rs.conf(), {force: true})"
+        mongo_eval "$USERNAME" "$PASSWORD" "admin" --port $PORT --eval "rs.reconfig(rs.conf(), {force: true})"
         
         echo "Đợi 10 giây để thiết lập mới..."
         sleep 10
         
         echo "Kiểm tra lại trạng thái..."
-        mongosh --port $PORT -u $USERNAME -p $PASSWORD --authenticationDatabase admin --eval "rs.status()"
+        mongo_eval "$USERNAME" "$PASSWORD" "admin" --port $PORT --eval "rs.status()"
         ;;
     2)
         read -p "Nhập tên node để dừng (ví dụ: 192.168.1.10:27017): " NODE_NAME

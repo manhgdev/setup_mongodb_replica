@@ -1,5 +1,8 @@
 # MongoDB Manager
 
+Khi backup hoặc restore qua terminal, truyền tên đăng nhập và database xác thực. Nhập mật khẩu tại lời nhắc của công cụ MongoDB để giữ mật khẩu ngoài lịch sử lệnh. Các script quản trị trong new/, fixup/ và one_server/ chuyển mật khẩu cho mongosh qua file descriptor riêng.
+
+
 Giao diện web để quản lý MongoDB Community. Chọn **Tiếng Việt** hoặc **English** ngay tại màn hình đăng nhập hoặc trên thanh phía trên. Từ một máy quản trị, bạn có thể tiếp nhận replica set đang chạy, cài cụm một node trên VPS Ubuntu mới, thêm secondary hoặc arbiter, theo dõi đồng bộ và quản lý backup.
 
 ## Xem trước giao diện

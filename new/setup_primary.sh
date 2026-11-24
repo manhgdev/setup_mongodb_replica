@@ -1,4 +1,5 @@
 #!/bin/bash
+source "$(dirname "${BASH_SOURCE[0]}")/lib/mongo_auth.sh" || exit 1
 # setup_primary.sh
 # Script cài đặt MongoDB Primary Node
 
@@ -17,7 +18,9 @@ MONGODB_LOG_PATH="/var/log/mongodb/mongod.log"
 MONGODB_CONFIG="/etc/mongod.conf"
 MONGODB_KEYFILE="/etc/mongodb-keyfile"
 MONGODB_USER="manhg"
-MONGODB_PASS="manhnk"
+IFS= read -rs -p "Mật khẩu MongoDB: " MONGODB_PASS || exit 1
+echo >&2
+[[ -n "$MONGODB_PASS" ]] || exit 1
 
 PRIMARY_IP=$(get_current_ip)
 echo "PRIMARY IP: $PRIMARY_IP"
@@ -39,14 +42,14 @@ sudo cp "$MONGODB_CONFIG" "${MONGODB_CONFIG}.bak.$(date +%Y%m%d%H%M%S)"
 
 # Kiểm tra xem đã có thể đăng nhập với tài khoản admin chưa
 echo -e "${YELLOW}Kiểm tra xem đã cài đặt authentication chưa...${NC}"
-AUTH_STATUS=$(mongosh --port 27017 -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "try { db.runCommand({ping: 1}).ok } catch(e) { 0 }" 2>/dev/null)
+AUTH_STATUS=$(mongo_eval "$MONGODB_USER" "$MONGODB_PASS" "admin" --port 27017 --quiet --eval "try { db.runCommand({ping: 1}).ok } catch(e) { 0 }" 2>/dev/null)
 
 if [ "$AUTH_STATUS" == "1" ]; then
     # Trường hợp 2: Đã cài đặt authentication thành công
     echo -e "${GREEN}Đã cài đặt authentication thành công. Sử dụng tài khoản hiện có.${NC}"
     
     # Kiểm tra replica set
-    RS_STATUS=$(mongosh --port 27017 -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "try { rs.status().ok } catch(e) { 0 }" 2>/dev/null)
+    RS_STATUS=$(mongo_eval "$MONGODB_USER" "$MONGODB_PASS" "admin" --port 27017 --quiet --eval "try { rs.status().ok } catch(e) { 0 }" 2>/dev/null)
     
     if [ "$RS_STATUS" == "1" ]; then
         echo -e "${GREEN}Replica Set đã được cấu hình đúng.${NC}"
@@ -67,7 +70,7 @@ if [ "$AUTH_STATUS" == "1" ]; then
         
         # Khởi tạo Replica Set
         echo -e "${YELLOW}Khởi tạo Replica Set...${NC}"
-        mongosh --port 27017 -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "rs.initiate({ _id: \"$REPLICA_SET_NAME\", members: [{ _id: 0, host: \"$PRIMARY_IP:27017\" }] })"
+        mongo_eval "$MONGODB_USER" "$MONGODB_PASS" "admin" --port 27017 --eval "rs.initiate({ _id: \"$REPLICA_SET_NAME\", members: [{ _id: 0, host: \"$PRIMARY_IP:27017\" }] })"
     fi
     
 else
@@ -158,9 +161,9 @@ EOF
         echo -e "${BLUE}User $MONGODB_USER đã tồn tại.${NC}"
     else
         echo -e "${YELLOW}Tạo user mới $MONGODB_USER...${NC}"
-        mongosh --port 27017 admin --eval "
+        mongosh 3<<<"$MONGODB_PASS" --port 27017 admin --eval "
         if (!db.getUser('$MONGODB_USER')) {
-          db.createUser({ user: '$MONGODB_USER', pwd: '$MONGODB_PASS', roles: [{ role: 'root', db: 'admin' }] });
+          db.createUser({ user: '$MONGODB_USER', pwd: require('fs').readFileSync(3,'utf8').slice(0,-1), roles: [{ role: 'root', db: 'admin' }] });
         } else {
           print('User đã tồn tại');
         }
@@ -223,19 +226,19 @@ fi
 
 # Kiểm tra đăng nhập cuối cùng
 echo -e "${YELLOW}Kiểm tra đăng nhập...${NC}"
-AUTH_CHECK=$(mongosh --port 27017 -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "try { db.runCommand({ping: 1}).ok } catch(e) { 0 }" 2>/dev/null)
+AUTH_CHECK=$(mongo_eval "$MONGODB_USER" "$MONGODB_PASS" "admin" --port 27017 --quiet --eval "try { db.runCommand({ping: 1}).ok } catch(e) { 0 }" 2>/dev/null)
 
 if [ "$AUTH_CHECK" == "1" ]; then
     echo -e "${GREEN}Đăng nhập thành công!${NC}"
     
     # Hiển thị trạng thái Replica Set
     echo -e "${YELLOW}Trạng thái Replica Set:${NC}"
-    mongosh --port 27017 -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "rs.status()"
+    mongo_eval "$MONGODB_USER" "$MONGODB_PASS" "admin" --port 27017 --eval "rs.status()"
     
     # Hoàn thành
     echo -e "${GREEN}MongoDB Primary Node đã được thiết lập thành công!${NC}"
     echo -e "${GREEN}Bạn có thể đăng nhập với lệnh sau:${NC}"
-    echo -e "${GREEN}mongosh -u $MONGODB_USER -p $MONGODB_PASS --authenticationDatabase admin${NC}"
+    echo -e "${GREEN}mongosh -u $MONGODB_USER --authenticationDatabase admin${NC}"
 else
     echo -e "${RED}Đăng nhập thất bại. Vui lòng thử lại script hoặc khởi động lại MongoDB.${NC}"
     echo -e "${YELLOW}Kiểm tra xem MongoDB đã khởi động lại hoàn toàn chưa. Đôi khi cần đợi lâu hơn.${NC}"

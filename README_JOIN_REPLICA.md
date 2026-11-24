@@ -56,7 +56,7 @@ sudo chown mongodb:mongodb /etc/mongo-keyfile
 ### 3.1. Backup toàn bộ dữ liệu
 ```bash
 # Trên node có dữ liệu cần backup
-mongodump --host localhost --port 27017 --username manhg --password manhnk --authenticationDatabase admin --out /tmp/mongodb_backup
+mongodump --host localhost --port 27017 --username manhg --authenticationDatabase admin --out /tmp/mongodb_backup
 
 # Copy dữ liệu sang node mới
 scp -r /tmp/mongodb_backup user@IP_NODE_MOI:/tmp/
@@ -65,7 +65,7 @@ scp -r /tmp/mongodb_backup user@IP_NODE_MOI:/tmp/
 ### 3.2. Backup từng database cụ thể
 ```bash
 # Backup database cụ thể
-mongodump --host localhost --port 27017 --username manhg --password manhnk --authenticationDatabase admin --db database_name --out /tmp/mongodb_backup
+mongodump --host localhost --port 27017 --username manhg --authenticationDatabase admin --db database_name --out /tmp/mongodb_backup
 
 # Copy dữ liệu sang node mới
 scp -r /tmp/mongodb_backup user@IP_NODE_MOI:/tmp/
@@ -74,7 +74,7 @@ scp -r /tmp/mongodb_backup user@IP_NODE_MOI:/tmp/
 ### 3.3. Restore dữ liệu trên node mới
 ```bash
 # Trên node mới
-mongorestore --host localhost --port 27017 --username manhg --password manhnk --authenticationDatabase admin /tmp/mongodb_backup
+mongorestore --host localhost --port 27017 --username manhg --authenticationDatabase admin /tmp/mongodb_backup
 ```
 
 ## 4. Quy trình join node

@@ -1,4 +1,5 @@
 #!/bin/bash
+source "$(dirname "${BASH_SOURCE[0]}")/lib/mongo_auth.sh" || exit 1
 
 # Lấy đường dẫn thư mục chứa script
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,12 +12,14 @@ source "$LIB_DIR/colors.sh"
 host="localhost"
 port="27017"
 username="manhg"
-password="manhnk"
+IFS= read -rs -p "Mật khẩu MongoDB: " password || exit 1
+echo >&2
+[[ -n "$password" ]] || exit 1
 auth_db="admin"
 
 # Hàm kiểm tra kết nối MongoDB
 check_mongodb_connection() {
-    if mongosh --host $host --port $port --username $username --password $password --authenticationDatabase $auth_db --eval "db.runCommand({ping: 1})" >/dev/null 2>&1; then
+    if mongo_eval "$username" "$password" "$auth_db" --host $host --port $port --eval "db.runCommand({ping: 1})" >/dev/null 2>&1; then
         echo -e "${GREEN}✓${NC} Kết nối thành công đến $host:$port"
         return 0
     else
@@ -29,7 +32,7 @@ check_mongodb_connection() {
 check_node_running() {
     local node_host=$1
     local node_port=$2
-    if mongosh --host $node_host --port $node_port --username $username --password $password --authenticationDatabase $auth_db --eval "db.runCommand({ping: 1})" >/dev/null 2>&1; then
+    if mongo_eval "$username" "$password" "$auth_db" --host $node_host --port $node_port --eval "db.runCommand({ping: 1})" >/dev/null 2>&1; then
         echo -e "${GREEN}✓${NC} Node $node_host:$node_port đang chạy"
         return 0
     else
@@ -56,7 +59,7 @@ check_replica_set_config() {
     local node_host=$1
     local node_port=$2
     echo -e "\n${BLUE}Kiểm tra cấu hình replica set trên $node_host:$node_port:${NC}"
-    mongosh --host $node_host --port $node_port --username $username --password $password --authenticationDatabase $auth_db --eval "rs.conf()"
+    mongo_eval "$username" "$password" "$auth_db" --host $node_host --port $node_port --eval "rs.conf()"
 }
 
 # Hàm kiểm tra quyền truy cập
@@ -64,20 +67,20 @@ check_access_rights() {
     local node_host=$1
     local node_port=$2
     echo -e "\n${BLUE}Kiểm tra quyền truy cập trên $node_host:$node_port:${NC}"
-    mongosh --host $node_host --port $node_port --username $username --password $password --authenticationDatabase $auth_db --eval "db.runCommand({connectionStatus: 1})"
+    mongo_eval "$username" "$password" "$auth_db" --host $node_host --port $node_port --eval "db.runCommand({connectionStatus: 1})"
 }
 
 # Hàm lấy danh sách các node không reachable
 get_unreachable_nodes() {
     echo -e "\n${BLUE}Danh sách các node không reachable:${NC}"
-    mongosh --host $host --port $port --username $username --password $password --authenticationDatabase $auth_db --eval "rs.status().members.forEach(function(member) { if (member.stateStr === '(not reachable/healthy)') { print(member.name) } })"
+    mongo_eval "$username" "$password" "$auth_db" --host $host --port $port --eval "rs.status().members.forEach(function(member) { if (member.stateStr === '(not reachable/healthy)') { print(member.name) } })"
 }
 
 # Hàm xóa node không reachable
 remove_unreachable_node() {
     local node_name=$1
     echo -e "\n${YELLOW}Đang xóa node $node_name...${NC}"
-    mongosh --host $host --port $port --username $username --password $password --authenticationDatabase $auth_db --eval "rs.remove('$node_name')"
+    mongo_eval "$username" "$password" "$auth_db" --host $host --port $port --eval "rs.remove('$node_name')"
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}✓${NC} Đã xóa node $node_name thành công"
     else
@@ -128,7 +131,7 @@ restart_node() {
 add_node_back() {
     local node_name=$1
     echo -e "\n${YELLOW}Đang thêm lại node $node_name...${NC}"
-    mongosh --host $host --port $port --username $username --password $password --authenticationDatabase $auth_db --eval "rs.add('$node_name')"
+    mongo_eval "$username" "$password" "$auth_db" --host $host --port $port --eval "rs.add('$node_name')"
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}✓${NC} Đã thêm lại node $node_name thành công"
     else
@@ -149,7 +152,7 @@ if check_mongodb_connection; then
     read -p "Bạn có muốn xử lý các node không reachable không? (y/n): " choice
     if [[ $choice == "y" || $choice == "Y" ]]; then
         # Lấy danh sách các node không reachable và xử lý từng node
-        mongosh --host $host --port $port --username $username --password $password --authenticationDatabase $auth_db --eval "rs.status().members.forEach(function(member) { if (member.stateStr === '(not reachable/healthy)') { print(member.name) } })" | while read -r node_name; do
+        mongo_eval "$username" "$password" "$auth_db" --host $host --port $port --eval "rs.status().members.forEach(function(member) { if (member.stateStr === '(not reachable/healthy)') { print(member.name) } })" | while read -r node_name; do
             if [ ! -z "$node_name" ]; then
                 # Kiểm tra và khởi động lại node nếu cần
                 if restart_node "$node_name"; then

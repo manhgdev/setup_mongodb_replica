@@ -77,7 +77,7 @@ tar -xzf your_backup_file.tar.gz -C /tmp
 mongorestore --host localhost --port 27017 /tmp/your_backup_folder/
 
 # Khôi phục có xác thực
-mongorestore --host localhost --port 27017 --username your_user --password your_password --authenticationDatabase admin /tmp/your_backup_folder/
+mongorestore --host localhost --port 27017 --username your_user --authenticationDatabase admin /tmp/your_backup_folder/
 ```
 
 #### B. Nếu backup không được nén:
@@ -87,7 +87,7 @@ mongorestore --host localhost --port 27017 --username your_user --password your_
 mongorestore --host localhost --port 27017 /path/to/your_backup_folder/
 
 # Khôi phục có xác thực
-mongorestore --host localhost --port 27017 --username your_user --password your_password --authenticationDatabase admin /path/to/your_backup_folder/
+mongorestore --host localhost --port 27017 --username your_user --authenticationDatabase admin /path/to/your_backup_folder/
 ```
 
 ### 2. Khôi phục một database cụ thể
@@ -97,7 +97,7 @@ mongorestore --host localhost --port 27017 --username your_user --password your_
 mongorestore --host localhost --port 27017 --nsInclude="database_name.*" /path/to/your_backup_folder/
 
 # Khôi phục database cụ thể (có xác thực)
-mongorestore --host localhost --port 27017 --username your_user --password your_password --authenticationDatabase admin --nsInclude="database_name.*" /path/to/your_backup_folder/
+mongorestore --host localhost --port 27017 --username your_user --authenticationDatabase admin --nsInclude="database_name.*" /path/to/your_backup_folder/
 ```
 
 ### 3. Khôi phục vào database khác
@@ -113,10 +113,10 @@ Khi khôi phục dữ liệu vào MongoDB Replica Set, chỉ cần khôi phục 
 
 ```bash
 # Lấy connection string của Replica Set từ MongoDB
-# Ví dụ: mongodb://username:password@primary_ip:27017,secondary_ip:27017/admin?replicaSet=rs0
+# Ví dụ: mongodb://username@primary_ip:27017,secondary_ip:27017/admin?replicaSet=rs0
 
 # Khôi phục vào Replica Set
-mongorestore --uri "mongodb://username:password@primary_ip:27017,secondary_ip:27017/admin?replicaSet=rs0" /path/to/your_backup_folder/
+mongorestore --uri "mongodb://username@primary_ip:27017,secondary_ip:27017/admin?replicaSet=rs0" /path/to/your_backup_folder/
 ```
 
 Dữ liệu sẽ tự động sao chép sang các Secondary nodes thông qua cơ chế replication.
@@ -153,7 +153,7 @@ Nếu hệ thống báo không đủ dung lượng lưu trữ:
 ssh root@127.0.0.1
 
 # Export database ExpressApiNew
-mongodump --host 127.0.0.1 --port 27018 -u manhg -p manhnk --authenticationDatabase admin --db ExpressApiNew --out /root/mongodb_backup
+mongodump --host 127.0.0.1 --port 27018 -u manhg --authenticationDatabase admin --db ExpressApiNew --out /root/mongodb_backup
 
 # Nén lại để dễ chuyển
 cd /root

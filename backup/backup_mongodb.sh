@@ -13,7 +13,6 @@ DATE_FORMAT=$(date +"%Y%m%d_%H%M%S")
 MONGODB_HOST="localhost"
 MONGODB_PORT="27017"
 MONGODB_USER=""
-MONGODB_PASSWORD=""
 AUTH_DB="admin"
 COMPRESS=true
 
@@ -66,8 +65,6 @@ read -p "Bạn có cần xác thực để kết nối MongoDB không? (y/n): " 
 
 if [[ "$NEED_AUTH" =~ ^[Yy]$ ]]; then
   read -p "Tên người dùng MongoDB: " MONGODB_USER
-  read -s -p "Mật khẩu MongoDB: " MONGODB_PASSWORD
-  echo ""
   read -p "Database xác thực [$AUTH_DB]: " USER_AUTH_DB
   AUTH_DB=${USER_AUTH_DB:-$AUTH_DB}
 fi
@@ -90,8 +87,8 @@ if [[ "$BACKUP_TYPE" == "specific" ]]; then
   read -p "Tên database cần backup: " SPECIFIC_DB
   
   # Kiểm tra xem database tồn tại không
-  if [[ -n "$MONGODB_USER" && -n "$MONGODB_PASSWORD" ]]; then
-    DB_EXISTS=$(mongosh --host $MONGODB_HOST --port $MONGODB_PORT -u $MONGODB_USER -p $MONGODB_PASSWORD --authenticationDatabase $AUTH_DB --quiet --eval "db.getMongo().getDBNames().includes('$SPECIFIC_DB')")
+  if [[ -n "$MONGODB_USER" ]]; then
+    DB_EXISTS=$(mongosh --host $MONGODB_HOST --port $MONGODB_PORT -u "$MONGODB_USER" --authenticationDatabase $AUTH_DB --quiet --eval "db.getMongo().getDBNames().includes('$SPECIFIC_DB')")
   else
     DB_EXISTS=$(mongosh --host $MONGODB_HOST --port $MONGODB_PORT --quiet --eval "db.getMongo().getDBNames().includes('$SPECIFIC_DB')")
   fi
@@ -158,19 +155,14 @@ fi
 echo -e "${GREEN}Bắt đầu tiến trình backup...${NC}"
 
 # Xây dựng command
-COMMAND="mongodump --host $MONGODB_HOST --port $MONGODB_PORT --out $BACKUP_PATH"
-
-if [[ -n "$MONGODB_USER" && -n "$MONGODB_PASSWORD" ]]; then
-  COMMAND="$COMMAND --username $MONGODB_USER --password $MONGODB_PASSWORD --authenticationDatabase $AUTH_DB"
+COMMAND=(mongodump --host "$MONGODB_HOST" --port "$MONGODB_PORT" --out "$BACKUP_PATH")
+if [[ -n "$MONGODB_USER" ]]; then
+  COMMAND+=(--username "$MONGODB_USER" --authenticationDatabase "$AUTH_DB")
 fi
-
 if [[ "$BACKUP_TYPE" == "specific" ]]; then
-  COMMAND="$COMMAND --db $SPECIFIC_DB"
+  COMMAND+=(--db "$SPECIFIC_DB")
 fi
-
-# Thực hiện backup
-echo "Đang chạy: $COMMAND"
-eval $COMMAND
+"${COMMAND[@]}"
 
 # Kiểm tra kết quả
 if [ $? -eq 0 ]; then

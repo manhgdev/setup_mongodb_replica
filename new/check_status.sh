@@ -1,4 +1,5 @@
 #!/bin/bash
+source "$(dirname "${BASH_SOURCE[0]}")/lib/mongo_auth.sh" || exit 1
 
 # Lấy đường dẫn thư mục chứa script
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,7 +17,7 @@ check_mongodb_connection_status() {
     local password=$4
     local auth_db=$5
     
-    if mongosh --host $host --port $port --username $username --password $password --authenticationDatabase $auth_db --eval "db.runCommand({ping: 1})" >/dev/null 2>&1; then
+    if mongo_eval "$username" "$password" "$auth_db" --host $host --port $port --eval "db.runCommand({ping: 1})" >/dev/null 2>&1; then
         echo -e "${GREEN}✓${NC} Kết nối thành công đến $host:$port"
         return 0
     else
@@ -37,7 +38,7 @@ get_replica_set_info() {
     echo -e "${CYAN}📊 Thông tin Replica Set${NC}"
     echo -e "${CYAN}═══════════════════════════════════════${NC}"
     
-    RS_INFO=$(mongosh --host $host --port $port --username $username --password $password --authenticationDatabase $auth_db --quiet --eval "
+    RS_INFO=$(mongo_eval "$username" "$password" "$auth_db" --host $host --port $port --quiet --eval "
     const status = rs.status();
     print('SET:' + status.set);
     print('DATE:' + status.date);
@@ -86,7 +87,7 @@ check_replication_lag() {
     echo -e "\n${YELLOW}═══════════════════════════════════════${NC}"
     echo -e "${YELLOW}⏱️  Replication Lag${NC}"
     echo -e "${YELLOW}═══════════════════════════════════════${NC}"
-    mongosh --host $host --port $port --username $username --password $password --authenticationDatabase $auth_db --quiet --eval "db.printSlaveReplicationInfo()"
+    mongo_eval "$username" "$password" "$auth_db" --host $host --port $port --quiet --eval "db.printSlaveReplicationInfo()"
 }
 
 # Hàm kiểm tra trạng thái các node
@@ -101,7 +102,7 @@ check_nodes_status() {
     echo -e "${MAGENTA}🖥️  Trạng thái các Node${NC}"
     echo -e "${MAGENTA}═══════════════════════════════════════${NC}"
     
-    NODES_INFO=$(mongosh --host $host --port $port --username $username --password $password --authenticationDatabase $auth_db --quiet --eval "
+    NODES_INFO=$(mongo_eval "$username" "$password" "$auth_db" --host $host --port $port --quiet --eval "
     rs.status().members.forEach(function(member) { 
         print(member.name + '|' + member.stateStr + '|' + member.health);
     })")
@@ -136,22 +137,21 @@ port=${port:-27017}
 
 read -p "Nhập username: " username
 username="manhg"
-read -s -p "Nhập password: " password
-password="manhnk"
+IFS= read -rs -p "Nhập password: " password || exit 1
 echo
 read -p "Nhập authentication database (mặc định: admin): " auth_db
 auth_db=${auth_db:-admin}
 
 # Kiểm tra kết nối
-if check_mongodb_connection_status $host $port $username $password $auth_db; then
+if check_mongodb_connection_status $host $port $username "$password" "$auth_db"; then
     # Lấy thông tin replica set
-    get_replica_set_info $host $port $username $password $auth_db
+    get_replica_set_info $host $port $username "$password" "$auth_db"
     
     # Kiểm tra trạng thái các node
-    check_nodes_status $host $port $username $password $auth_db
+    check_nodes_status $host $port $username "$password" "$auth_db"
     
     # Kiểm tra replication lag
-    check_replication_lag $host $port $username $password $auth_db
+    check_replication_lag $host $port $username "$password" "$auth_db"
 else
     echo -e "${RED}Không thể kết nối đến MongoDB. Vui lòng kiểm tra lại thông tin kết nối.${NC}"
 fi 

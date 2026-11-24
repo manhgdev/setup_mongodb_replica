@@ -1,4 +1,5 @@
 #!/bin/bash
+source "$(dirname "${BASH_SOURCE[0]}")/lib/mongo_auth.sh" || exit 1
 # add_secondary.sh
 # Script cài đặt và thêm MongoDB Secondary Node vào Replica Set
 
@@ -21,7 +22,9 @@ MONGODB_LOG_PATH="/var/log/mongodb/mongod.log"
 MONGODB_CONFIG="/etc/mongod.conf"
 MONGODB_KEYFILE="/etc/mongodb-keyfile"
 MONGODB_USER="manhg"
-MONGODB_PASS="manhnk"
+IFS= read -rs -p "Mật khẩu MongoDB: " MONGODB_PASS || exit 1
+echo >&2
+[[ -n "$MONGODB_PASS" ]] || exit 1
 
 echo -e "${BLUE}========================================${NC}"
 echo -e "${BLUE}     THIẾT LẬP MONGODB SECONDARY NODE   ${NC}"
@@ -124,9 +127,9 @@ if [ "$AUTH_STATUS" == "1" ]; then
         
         # Join vào Replica Set từ PRIMARY
         echo -e "${YELLOW}Đang join vào Replica Set từ PRIMARY...${NC}"
-        mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "rs.add(\"$SECONDARY_HOST\")"
+        mongo_eval "$MONGODB_USER" "$MONGODB_PASS" "admin" --host "$PRIMARY_HOST" --eval "rs.add(\"$SECONDARY_HOST\")"
         sleep 2
-        mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "
+        mongo_eval "$MONGODB_USER" "$MONGODB_PASS" "admin" --host "$PRIMARY_HOST" --eval "
             var cfg = rs.conf();
             for (var i = 0; i < cfg.members.length; i++) {
                 if (cfg.members[i].host === '$SECONDARY_HOST') {
@@ -204,7 +207,7 @@ EOF
     
     # Join vào Replica Set từ PRIMARY
     echo -e "${YELLOW}Đang join vào Replica Set từ PRIMARY...${NC}"
-    mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "rs.add(\"$SECONDARY_HOST\")"
+    mongo_eval "$MONGODB_USER" "$MONGODB_PASS" "admin" --host "$PRIMARY_HOST" --eval "rs.add(\"$SECONDARY_HOST\")"
     
     # Đợi một chút để Replica Set cập nhật
     sleep 5
@@ -221,9 +224,9 @@ EOF
         echo -e "${BLUE}User $MONGODB_USER đã tồn tại.${NC}"
     else
         echo -e "${YELLOW}Tạo user mới $MONGODB_USER...${NC}"
-        mongosh --port 27017 admin --eval "
+        mongosh 3<<<"$MONGODB_PASS" --port 27017 admin --eval "
         if (!db.getUser('$MONGODB_USER')) {
-          db.createUser({ user: '$MONGODB_USER', pwd: '$MONGODB_PASS', roles: [{ role: 'root', db: 'admin' }] });
+          db.createUser({ user: '$MONGODB_USER', pwd: require('fs').readFileSync(3,'utf8').slice(0,-1), roles: [{ role: 'root', db: 'admin' }] });
         } else {
           print('User đã tồn tại');
         }
@@ -281,10 +284,10 @@ EOF
     
     # Kiểm tra trạng thái Replica Set
     echo -e "${YELLOW}Kiểm tra trạng thái Replica Set...${NC}"
-    mongosh --port 27017 -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "rs.status()"
+    mongo_eval "$MONGODB_USER" "$MONGODB_PASS" "admin" --port 27017 --eval "rs.status()"
 fi
 
 # Hoàn thành
 echo -e "${GREEN}MongoDB Secondary Node đã được thiết lập thành công!${NC}"
 echo -e "${GREEN}Bạn có thể đăng nhập với lệnh sau:${NC}"
-echo -e "${GREEN}mongosh -u $MONGODB_USER -p $MONGODB_PASS --authenticationDatabase admin${NC}"
+echo -e "${GREEN}mongosh -u $MONGODB_USER --authenticationDatabase admin${NC}"

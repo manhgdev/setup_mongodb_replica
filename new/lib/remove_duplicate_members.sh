@@ -1,4 +1,5 @@
 #!/bin/bash
+source "$(dirname "${BASH_SOURCE[0]}")/mongo_auth.sh" || exit 1
 # remove_duplicate_members.sh
 # Hàm kiểm tra và xóa member trùng lặp
 
@@ -14,7 +15,7 @@ remove_duplicate_members() {
     local current_host=$5
     
     echo -e "${YELLOW}Kiểm tra và xóa member trùng lặp trong replica set...${NC}"
-    mongosh --host "$host" -u "$user" -p "$pass" --authenticationDatabase "$auth_db" --quiet --eval "
+    mongo_eval "$user" "$pass" "$auth_db" --host "$host" --quiet --eval "
         var cfg = rs.conf();
         var members = cfg.members;
         var seen = {};

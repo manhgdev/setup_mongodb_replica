@@ -1,4 +1,5 @@
 #!/bin/bash
+source "$(dirname "${BASH_SOURCE[0]}")/lib/mongo_auth.sh" || exit 1
 
 # Lấy đường dẫn thư mục chứa script
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -9,7 +10,9 @@ source "$LIB_DIR/colors.sh"
 source "$LIB_DIR/get_current_ip.sh"
 
 MONGODB_USER="manhg"
-MONGODB_PASS="manhnk"
+IFS= read -rs -p "Mật khẩu MongoDB: " MONGODB_PASS || exit 1
+echo >&2
+[[ -n "$MONGODB_PASS" ]] || exit 1
 AUTH_DB="admin"
 
 echo -e "Vui lòng nhập IP của PRIMARY node"
@@ -32,7 +35,7 @@ fi
 
 # Lấy danh sách các node không reachable
 echo "Đang kiểm tra các node không reachable..."
-UNREACHABLE_INFO=$(mongosh --host "$PRIMARY_IP" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "$AUTH_DB" --quiet --eval '
+UNREACHABLE_INFO=$(mongo_eval "$MONGODB_USER" "$MONGODB_PASS" "$AUTH_DB" --host "$PRIMARY_IP" --quiet --eval '
 const status = rs.status();
 const unreachable = status.members.filter(m => m.health === 0 || m.stateStr.includes("not reachable"));
 if (unreachable.length === 0) {
@@ -52,7 +55,7 @@ echo "$UNREACHABLE_INFO"
 
 # Sử dụng rs.reconfig() với force để remove các node
 echo -e "\n${YELLOW}Đang remove các node bằng rs.reconfig() force...${NC}"
-mongosh --host "$PRIMARY_IP" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "$AUTH_DB" --quiet --eval "
+mongo_eval "$MONGODB_USER" "$MONGODB_PASS" "$AUTH_DB" --host "$PRIMARY_IP" --quiet --eval "
 const cfg = rs.conf();
 const unreachable = rs.status().members.filter(m => m.health === 0 || m.stateStr.includes('not reachable')).map(m => m._id);
 cfg.members = cfg.members.filter(m => !unreachable.includes(m._id));
@@ -66,4 +69,4 @@ try {
 "
 
 echo -e "\n${GREEN}Hoàn tất! Kiểm tra lại trạng thái replica set:${NC}"
-mongosh --host "$PRIMARY_IP" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "$AUTH_DB" --quiet --eval "rs.status().members.forEach(m => print(m.name + ' - ' + m.stateStr + ' (health: ' + m.health + ')'))"
+mongo_eval "$MONGODB_USER" "$MONGODB_PASS" "$AUTH_DB" --host "$PRIMARY_IP" --quiet --eval "rs.status().members.forEach(m => print(m.name + ' - ' + m.stateStr + ' (health: ' + m.health + ')'))"

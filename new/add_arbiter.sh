@@ -1,4 +1,5 @@
 #!/bin/bash
+source "$(dirname "${BASH_SOURCE[0]}")/lib/mongo_auth.sh" || exit 1
 # add_arbiter.sh
 # Script thêm MongoDB Arbiter Node vào Replica Set
 
@@ -26,7 +27,9 @@ MONGODB_LOG_PATH="/var/log/mongodb/mongod.log"
 MONGODB_CONFIG="/etc/mongod.conf"
 MONGODB_KEYFILE="/etc/mongodb-keyfile"
 MONGODB_USER="manhg"
-MONGODB_PASS="manhnk"
+IFS= read -rs -p "Mật khẩu MongoDB: " MONGODB_PASS || exit 1
+echo >&2
+[[ -n "$MONGODB_PASS" ]] || exit 1
 ARBITER_PORT="27017"  # Sử dụng port mặc định MongoDB
 
 # Hàm tạo cấu hình MongoDB cho Arbiter
@@ -128,7 +131,7 @@ if ! check_mongodb_connection "$PRIMARY_HOST" "$MONGODB_USER" "$MONGODB_PASS" "a
     echo -e "${RED}Không thể kết nối tới PRIMARY node. Vui lòng kiểm tra lại.${NC}"
     echo -e "${YELLOW}Đảm bảo rằng:${NC}"
     echo -e "${YELLOW}1. PRIMARY node đang chạy${NC}"
-    echo -e "${YELLOW}2. Thông tin xác thực ($MONGODB_USER/$MONGODB_PASS) chính xác${NC}"
+    echo -e "${YELLOW}2. Thông tin xác thực ($MONGODB_USER) chính xác${NC}"
     echo -e "${YELLOW}3. Firewall cho phép kết nối MongoDB${NC}"
     exit 1
 fi
@@ -209,7 +212,7 @@ remove_duplicate_members "$PRIMARY_HOST" "$MONGODB_USER" "$MONGODB_PASS" "admin"
 
 # Thiết lập write concern trước khi thêm arbiter (bắt buộc)
 echo -e "${YELLOW}Thiết lập write concern cho replica set...${NC}"
-WRITE_CONCERN_RESULT=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
+WRITE_CONCERN_RESULT=$(mongo_eval "$MONGODB_USER" "$MONGODB_PASS" "admin" --host "$PRIMARY_HOST" --quiet --eval "
 try {
     // Kiểm tra write concern hiện tại
     var currentConcern = db.adminCommand({getDefaultRWConcern: 1});
@@ -252,7 +255,7 @@ fi
 
 # Kiểm tra xem đã có arbiter nào chưa
 echo -e "${YELLOW}Kiểm tra arbiter hiện có trong replica set...${NC}"
-EXISTING_ARBITERS=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
+EXISTING_ARBITERS=$(mongo_eval "$MONGODB_USER" "$MONGODB_PASS" "admin" --host "$PRIMARY_HOST" --quiet --eval "
 var cfg = rs.conf();
 var arbiters = [];
 for (var i = 0; i < cfg.members.length; i++) {
@@ -282,7 +285,7 @@ if [ ! -z "$EXISTING_ARBITERS" ] && [ "$EXISTING_ARBITERS" != "" ]; then
             echo -e "${YELLOW}Đang xóa arbiter cũ và thêm arbiter mới...${NC}"
             
             # Xóa arbiter cũ
-            REMOVE_RESULT=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
+            REMOVE_RESULT=$(mongo_eval "$MONGODB_USER" "$MONGODB_PASS" "admin" --host "$PRIMARY_HOST" --quiet --eval "
             try {
                 var cfg = rs.conf();
                 var newMembers = [];
@@ -359,7 +362,7 @@ fi
 if [ -z "$EXISTING_ARBITERS" ] || [ "$EXISTING_ARBITERS" == "" ] || [[ "$replace_choice" =~ ^[Yy]$ ]]; then
     echo -e "${YELLOW}Đang thêm arbiter mới vào replica set...${NC}"
     
-    ADD_RESULT=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
+    ADD_RESULT=$(mongo_eval "$MONGODB_USER" "$MONGODB_PASS" "admin" --host "$PRIMARY_HOST" --quiet --eval "
     try {
         print('Trying rs.addArb...');
         rs.addArb('$ARBITER_HOST');
@@ -376,7 +379,7 @@ if [ -z "$EXISTING_ARBITERS" ] || [ "$EXISTING_ARBITERS" == "" ] || [[ "$replace
         echo -e "${YELLOW}Thử phương pháp thay thế để thêm Arbiter...${NC}"
         
         # Phương pháp thay thế: sử dụng rs.add với cấu hình đặc biệt
-        ALT_RESULT=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
+        ALT_RESULT=$(mongo_eval "$MONGODB_USER" "$MONGODB_PASS" "admin" --host "$PRIMARY_HOST" --quiet --eval "
         try {
             print('Getting current config...');
             var cfg = rs.conf();
@@ -421,7 +424,7 @@ if [ -z "$EXISTING_ARBITERS" ] || [ "$EXISTING_ARBITERS" == "" ] || [[ "$replace
     sleep 3
     
     # Kiểm tra trạng thái arbiter ngay lập tức
-    IMMEDIATE_STATUS=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
+    IMMEDIATE_STATUS=$(mongo_eval "$MONGODB_USER" "$MONGODB_PASS" "admin" --host "$PRIMARY_HOST" --quiet --eval "
     var status = rs.status();
     for (var i = 0; i < status.members.length; i++) {
         if (status.members[i].name === '$ARBITER_HOST') {
@@ -465,7 +468,7 @@ if [ -z "$EXISTING_ARBITERS" ] || [ "$EXISTING_ARBITERS" == "" ] || [[ "$replace
             echo "IP thực tế: $CORRECT_IP, IP trong config: $ARBITER_IP"
             echo "Cập nhật từ $ARBITER_HOST thành $CORRECT_ARBITER_HOST"
             
-            UPDATE_RESULT=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
+            UPDATE_RESULT=$(mongo_eval "$MONGODB_USER" "$MONGODB_PASS" "admin" --host "$PRIMARY_HOST" --quiet --eval "
             try {
                 var cfg = rs.conf();
                 for (var i = 0; i < cfg.members.length; i++) {
@@ -490,7 +493,7 @@ if [ -z "$EXISTING_ARBITERS" ] || [ "$EXISTING_ARBITERS" == "" ] || [[ "$replace
         echo -e "${YELLOW}4. Đợi replica set cập nhật...${NC}"
         sleep 10
         
-        FIXED_STATUS=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
+        FIXED_STATUS=$(mongo_eval "$MONGODB_USER" "$MONGODB_PASS" "admin" --host "$PRIMARY_HOST" --quiet --eval "
         var status = rs.status();
         for (var i = 0; i < status.members.length; i++) {
             if (status.members[i].name === '$ARBITER_HOST' || status.members[i].name === '$CORRECT_ARBITER_HOST') {
@@ -511,7 +514,7 @@ sleep 5
 
 # Kiểm tra trạng thái Replica Set
 echo -e "${YELLOW}Kiểm tra trạng thái Replica Set...${NC}"
-mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --eval "
+mongo_eval "$MONGODB_USER" "$MONGODB_PASS" "admin" --host "$PRIMARY_HOST" --eval "
 printjson(rs.status());
 print('\\n=== REPLICA SET CONFIGURATION ===');
 printjson(rs.conf());
@@ -519,7 +522,7 @@ printjson(rs.conf());
 
 # Kiểm tra đặc biệt xem arbiter có hoạt động không
 echo -e "${YELLOW}Kiểm tra trạng thái Arbiter...${NC}"
-ARBITER_STATUS=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
+ARBITER_STATUS=$(mongo_eval "$MONGODB_USER" "$MONGODB_PASS" "admin" --host "$PRIMARY_HOST" --quiet --eval "
 var status = rs.status();
 for (var i = 0; i < status.members.length; i++) {
     if (status.members[i].name === '$ARBITER_HOST') {
@@ -562,7 +565,7 @@ if [[ "$ARBITER_STATUS" == *"not reachable"* ]] || [[ "$ARBITER_STATUS" == *"(no
     if [ "$CORRECT_ARBITER_HOST" != "$ARBITER_HOST" ]; then
         echo "Cập nhật IP arbiter từ $ARBITER_HOST thành $CORRECT_ARBITER_HOST"
         
-        UPDATE_RESULT=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
+        UPDATE_RESULT=$(mongo_eval "$MONGODB_USER" "$MONGODB_PASS" "admin" --host "$PRIMARY_HOST" --quiet --eval "
         try {
             var cfg = rs.conf();
             var updated = false;
@@ -597,7 +600,7 @@ if [[ "$ARBITER_STATUS" == *"not reachable"* ]] || [[ "$ARBITER_STATUS" == *"(no
     sleep 10
     
     # Kiểm tra lại trạng thái
-    ARBITER_STATUS_FIXED=$(mongosh --host "$PRIMARY_HOST" -u "$MONGODB_USER" -p "$MONGODB_PASS" --authenticationDatabase "admin" --quiet --eval "
+    ARBITER_STATUS_FIXED=$(mongo_eval "$MONGODB_USER" "$MONGODB_PASS" "admin" --host "$PRIMARY_HOST" --quiet --eval "
     var status = rs.status();
     for (var i = 0; i < status.members.length; i++) {
         if (status.members[i].name === '$ARBITER_HOST' || status.members[i].name === '$CORRECT_ARBITER_HOST') {
@@ -637,6 +640,6 @@ echo -e "${BLUE}  - Priority: 0 (không thể trở thành Primary)${NC}"
 echo -e "${BLUE}  - Votes: 1 (tham gia bầu chọn Primary)${NC}"
 echo ""
 echo -e "${GREEN}Bạn có thể kiểm tra trạng thái replica set với lệnh:${NC}"
-echo -e "${GREEN}mongosh $PRIMARY_HOST -u $MONGODB_USER -p $MONGODB_PASS --authenticationDatabase admin --eval 'rs.status()'${NC}"
+echo -e "${GREEN}mongosh $PRIMARY_HOST -u $MONGODB_USER --authenticationDatabase admin --eval 'rs.status()'${NC}"
 echo ""
 echo -e "${YELLOW}Lưu ý: Arbiter không lưu trữ dữ liệu, chỉ tham gia bầu chọn để đảm bảo tính khả dụng cao của Replica Set.${NC}"

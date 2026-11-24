@@ -1,4 +1,5 @@
 #!/bin/bash
+source "$(dirname "${BASH_SOURCE[0]}")/lib/mongo_auth.sh" || exit 1
 
 # diagnose_server_selection.sh
 # Chẩn đoán lỗi MongoServerSelectionError (kết nối/không chọn được server phù hợp)
@@ -36,8 +37,8 @@ if [ -z "${USERNAME:-}" ]; then
   CFG_JSON=$(mongosh --host "$PRIMARY_HOST" --quiet --eval 'printjson(rs.conf())')
   RS_NAME=$(mongosh --host "$PRIMARY_HOST" --quiet --eval 'print(rs.conf()._id)')
 else
-  CFG_JSON=$(mongosh --host "$PRIMARY_HOST" -u "$USERNAME" -p "$PASSWORD" --authenticationDatabase "$AUTH_DB" --quiet --eval 'printjson(rs.conf())')
-  RS_NAME=$(mongosh --host "$PRIMARY_HOST" -u "$USERNAME" -p "$PASSWORD" --authenticationDatabase "$AUTH_DB" --quiet --eval 'print(rs.conf()._id)')
+  CFG_JSON=$(mongo_eval "$USERNAME" "$PASSWORD" "$AUTH_DB" --host "$PRIMARY_HOST" --quiet --eval 'printjson(rs.conf())')
+  RS_NAME=$(mongo_eval "$USERNAME" "$PASSWORD" "$AUTH_DB" --host "$PRIMARY_HOST" --quiet --eval 'print(rs.conf()._id)')
 fi
 
 echo "$CFG_JSON" | sed -e 's/^/  /'
@@ -47,7 +48,7 @@ HOSTS=()
 DATA_HOSTS=()
 ARBITERS=()
 while IFS= read -r line; do
-  host=$(echo "$line" | sed -n 's/.*host"\s*:\s*"\([^"']*\)".*/\1/p')
+  host=$(echo "$line" | sed -n 's/.*host"\s*:\s*"\([^"]*\)".*/\1/p')
   arb=$(echo "$line" | sed -n 's/.*arbiterOnly"\s*:\s*\(true\|false\).*/\1/p')
   if [ -n "$host" ]; then
     HOSTS+=("$host")
@@ -79,7 +80,7 @@ for h in "${HOSTS[@]}"; do
   if [ -z "${USERNAME:-}" ]; then
     res=$(timeout 5 mongosh --host "$h" --quiet --eval 'db.runCommand({ping:1}).ok' 2>/dev/null | tr -d ' \n\r\t')
   else
-    res=$(timeout 5 mongosh --host "$h" -u "$USERNAME" -p "$PASSWORD" --authenticationDatabase "$AUTH_DB" --quiet --eval 'db.runCommand({ping:1}).ok' 2>/dev/null | tr -d ' \n\r\t')
+    res=$(mongo_eval "$USERNAME" "$PASSWORD" "$AUTH_DB" --timeout 5 --host "$h" --quiet --eval 'db.runCommand({ping:1}).ok' 2>/dev/null | tr -d ' \n\r\t')
   fi
   if [ "$res" = "1" ]; then
     echo -e "${GREEN}✓${NC} mongosh OK: $h"
@@ -92,7 +93,7 @@ echo -e "\n${BLUE}5) Gợi ý connection string cho ứng dụng (không nên in
 JOINED_DATA=$(IFS=,; echo "${DATA_HOSTS[*]}")
 if [ -n "$JOINED_DATA" ]; then
   if [ -n "${USERNAME:-}" ]; then
-    echo "mongodb://${USERNAME}:${PASSWORD}@${JOINED_DATA}/?replicaSet=${RS_NAME}&authSource=${AUTH_DB}&directConnection=false"
+    echo "mongodb://${JOINED_DATA}/?replicaSet=${RS_NAME}&authSource=${AUTH_DB}&directConnection=false"
   else
     echo "mongodb://${JOINED_DATA}/?replicaSet=${RS_NAME}&directConnection=false"
   fi

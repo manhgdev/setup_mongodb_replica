@@ -1,4 +1,5 @@
 #!/bin/bash
+source "$(dirname "${BASH_SOURCE[0]}")/mongo_auth.sh" || exit 1
 # check_mongodb_connection.sh
 # Hàm kiểm tra kết nối MongoDB
 
@@ -23,7 +24,7 @@ check_mongodb_connection() {
         result=$(timeout 10 mongosh --host "$host" --quiet --eval "db.runCommand({ping: 1}).ok" 2>/dev/null)
     else
         echo "Kiểm tra kết nối với auth (user: $user)..."
-        result=$(timeout 10 mongosh --host "$host" -u "$user" -p "$pass" --authenticationDatabase "$auth_db" --quiet --eval "db.runCommand({ping: 1}).ok" 2>/dev/null)
+        result=$(mongo_eval "$user" "$pass" "$auth_db" --timeout 10 --host "$host" --quiet --eval "db.runCommand({ping: 1}).ok" 2>/dev/null)
     fi
     
     echo "Kết quả ping MongoDB: '$result'"
@@ -41,7 +42,7 @@ check_mongodb_connection() {
         if [ -z "$user" ]; then
             timeout 5 mongosh --host "$host" --eval "db.runCommand({ping: 1})" 2>&1 | head -5
         else
-            timeout 5 mongosh --host "$host" -u "$user" -p "$pass" --authenticationDatabase "$auth_db" --eval "db.runCommand({ping: 1})" 2>&1 | head -5
+            mongo_eval "$user" "$pass" "$auth_db" --timeout 5 --host "$host" --eval "db.runCommand({ping: 1})" 2>&1 | head -5
         fi
         
         return 1

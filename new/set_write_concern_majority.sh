@@ -1,4 +1,5 @@
 #!/bin/bash
+source "$(dirname "${BASH_SOURCE[0]}")/lib/mongo_auth.sh" || exit 1
 
 # set_write_concern_majority.sh
 # Kiểm tra và thiết lập Default Write Concern = "majority" cho Replica Set (chạy trên PRIMARY)
@@ -45,7 +46,7 @@ echo -e "\n${BLUE}2) Xác định PRIMARY của Replica Set...${NC}"
 if [ -z "${USERNAME:-}" ]; then
   PRIMARY=$(mongosh --host "$HOSTPORT" --quiet --eval 'let p=""; try { const h=db.hello(); p=h.primary||""; if(h.isWritablePrimary && !p) p=h.me||""; } catch(e) { const m=rs.isMaster(); p=m.primary||""; if(m.ismaster && !p) p=m.me||""; } print(p)')
 else
-  PRIMARY=$(mongosh --host "$HOSTPORT" -u "$USERNAME" -p "$PASSWORD" --authenticationDatabase "$AUTH_DB" --quiet --eval 'let p=""; try { const h=db.hello(); p=h.primary||""; if(h.isWritablePrimary && !p) p=h.me||""; } catch(e) { const m=rs.isMaster(); p=m.primary||""; if(m.ismaster && !p) p=m.me||""; } print(p)')
+  PRIMARY=$(mongo_eval "$USERNAME" "$PASSWORD" "$AUTH_DB" --host "$HOSTPORT" --quiet --eval 'let p=""; try { const h=db.hello(); p=h.primary||""; if(h.isWritablePrimary && !p) p=h.me||""; } catch(e) { const m=rs.isMaster(); p=m.primary||""; if(m.ismaster && !p) p=m.me||""; } print(p)')
 fi
 
 PRIMARY=$(echo "$PRIMARY" | tr -d ' \n\r\t')
@@ -68,7 +69,7 @@ get_current_w() {
   if [ -z "${USERNAME:-}" ]; then
     mongosh --host "$HOSTPORT" --quiet --eval 'const r=db.adminCommand({getDefaultRWConcern:1}); print((r.defaultWriteConcern&&r.defaultWriteConcern.w)||"")'
   else
-    mongosh --host "$HOSTPORT" -u "$USERNAME" -p "$PASSWORD" --authenticationDatabase "$AUTH_DB" --quiet --eval 'const r=db.adminCommand({getDefaultRWConcern:1}); print((r.defaultWriteConcern&&r.defaultWriteConcern.w)||"")'
+    mongo_eval "$USERNAME" "$PASSWORD" "$AUTH_DB" --host "$HOSTPORT" --quiet --eval 'const r=db.adminCommand({getDefaultRWConcern:1}); print((r.defaultWriteConcern&&r.defaultWriteConcern.w)||"")'
   fi
 }
 
@@ -90,7 +91,7 @@ echo -e "\n${BLUE}4) Thiết lập Default Write Concern = 'majority'...${NC}"
 if [ -z "${USERNAME:-}" ]; then
   SET_RES=$(mongosh --host "$HOSTPORT" --quiet --eval "printjson(db.adminCommand({ setDefaultRWConcern: 1, defaultWriteConcern: { w: 'majority' } }))")
 else
-  SET_RES=$(mongosh --host "$HOSTPORT" -u "$USERNAME" -p "$PASSWORD" --authenticationDatabase "$AUTH_DB" --quiet --eval "printjson(db.adminCommand({ setDefaultRWConcern: 1, defaultWriteConcern: { w: 'majority' } }))")
+  SET_RES=$(mongo_eval "$USERNAME" "$PASSWORD" "$AUTH_DB" --host "$HOSTPORT" --quiet --eval "printjson(db.adminCommand({ setDefaultRWConcern: 1, defaultWriteConcern: { w: 'majority' } }))")
 fi
 
 echo "$SET_RES" | sed -e 's/^/  /'

@@ -1,4 +1,5 @@
 #!/bin/bash
+source "$(dirname "${BASH_SOURCE[0]}")/../new/lib/mongo_auth.sh" || exit 1
 
 # Màu sắc
 RED='\033[0;31m'
@@ -9,14 +10,15 @@ NC='\033[0m' # No Color
 
 # Thông tin xác thực
 MONGODB_USER="manhg"
-MONGODB_PASSWORD="manhnk"
+IFS= read -rs -p "Mật khẩu MongoDB: " MONGODB_PASSWORD || exit 1
+echo >&2
+[[ -n "$MONGODB_PASSWORD" ]] || exit 1
 
 echo -e "${BLUE}====== SỬA LỖI XÁC THỰC MONGODB ======${NC}"
 
 # 1. Xác nhận thông tin xác thực
 echo -e "${YELLOW}Xác thực hiện tại:${NC}"
 echo "Username: $MONGODB_USER"
-echo "Password: $MONGODB_PASSWORD"
 read -p "Bạn muốn tiếp tục với thông tin này? (y/n): " CONFIRM
 if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
   read -p "Nhập username mới: " NEW_USER
@@ -63,7 +65,7 @@ echo "Primary node: $primary_node"
 
 # 7. Đặt lại user admin
 echo -e "${YELLOW}Đặt lại user admin...${NC}"
-result=$(mongosh --quiet --eval "
+result=$(mongosh 3<<<"$MONGODB_PASSWORD" --quiet --eval "
 db = db.getSiblingDB('admin');
 try {
   db.dropUser('$MONGODB_USER');
@@ -75,7 +77,7 @@ try {
 try {
   db.createUser({
     user: '$MONGODB_USER',
-    pwd: '$MONGODB_PASSWORD',
+    pwd: require('fs').readFileSync(3,'utf8').slice(0,-1),
     roles: [ { role: 'root', db: 'admin' } ]
   });
   print('✓ Đã tạo user admin thành công');
@@ -97,7 +99,7 @@ sleep 5
 
 # 10. Kiểm tra kết nối
 echo -e "${YELLOW}Kiểm tra kết nối...${NC}"
-conn_test=$(mongosh --quiet -u "$MONGODB_USER" -p "$MONGODB_PASSWORD" --authenticationDatabase admin --eval "try { print('✓ Kết nối thành công!'); } catch(e) { print('✗ Lỗi kết nối: ' + e.message); }")
+conn_test=$(mongo_eval "$MONGODB_USER" "$MONGODB_PASSWORD" "admin" --quiet --eval "try { print('✓ Kết nối thành công!'); } catch(e) { print('✗ Lỗi kết nối: ' + e.message); }")
 
 if [[ "$conn_test" == *"Kết nối thành công"* ]]; then
   echo -e "${GREEN}$conn_test${NC}"
@@ -107,7 +109,7 @@ if [[ "$conn_test" == *"Kết nối thành công"* ]]; then
   
   # Hiển thị thông tin kết nối
   echo -e "${YELLOW}Để kết nối MongoDB Replica Set:${NC}"
-  echo "mongosh -u $MONGODB_USER -p $MONGODB_PASSWORD --authenticationDatabase admin"
+  echo "mongosh -u $MONGODB_USER --authenticationDatabase admin"
   
   # Thông tin Replica Set
   echo -e "${YELLOW}Kiểm tra trạng thái replica set:${NC}"
@@ -127,7 +129,7 @@ else
   echo -e "${YELLOW}Cách sửa thủ công:${NC}"
   echo "1. Tắt xác thực bằng cách chỉnh sửa file /etc/mongod.conf"
   echo "2. Khởi động lại MongoDB: sudo systemctl restart mongod"
-  echo "3. Tạo người dùng mới: mongosh --eval \"db.getSiblingDB('admin').createUser({user: 'manhg', pwd: 'manhnk', roles: [ { role: 'root', db: 'admin' } ]})\""
+  echo "3. Tạo người dùng mới: mongosh --eval \"db.getSiblingDB('admin').createUser({user: 'manhg', pwd: passwordPrompt(), roles: [ { role: 'root', db: 'admin' } ]})\""
   echo "4. Bật lại xác thực và khởi động lại MongoDB"
 fi
 

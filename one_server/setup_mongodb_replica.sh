@@ -1,4 +1,5 @@
 #!/bin/bash
+source "$(dirname "${BASH_SOURCE[0]}")/../new/lib/mongo_auth.sh" || exit 1
 
 #============================================================
 # THIẾT LẬP MONGODB REPLICA SET
@@ -12,7 +13,9 @@
 SKIP_USER_CREATION=${SKIP_USER_CREATION:-false}  # Đặt thành true nếu đã tạo user từ trước
 USE_AUTH_FROM_START=${USE_AUTH_FROM_START:-false}  # Đặt thành true nếu muốn bật xác thực từ đầu
 MONGODB_USER="manhg"
-MONGODB_PASSWORD="manhnk"
+IFS= read -rs -p "Mật khẩu MongoDB: " MONGODB_PASSWORD || exit 1
+echo >&2
+[[ -n "$MONGODB_PASSWORD" ]] || exit 1
 # Danh sách các port MongoDB
 MONGODB_PORTS=(27017 27018 27019 27020)
 # Danh sách các đường dẫn dữ liệu tương ứng
@@ -475,7 +478,6 @@ if [ "$SKIP_USER_CREATION" = true ]; then
   echo "Bỏ qua bước tạo user vì đã được chỉ định (SKIP_USER_CREATION=true)"
   echo "Sử dụng thông tin user đã có:"
   echo "- User: $MONGODB_USER"
-  echo "- Password: $MONGODB_PASSWORD" 
 elif [ "$PRIMARY_ERROR" = true ]; then
   echo "Bỏ qua bước tạo user vì không thể xác định được primary node"
   echo "Tiếp tục với khởi động lại với bảo mật"
@@ -524,11 +526,11 @@ else
     else
       # Thử tạo user vài lần
       for attempt in {1..3}; do
-        USER_RESULT=$(mongosh --port $PRIMARY_PORT --eval "
+        USER_RESULT=$(mongosh 3<<<"$MONGODB_PASSWORD" --port $PRIMARY_PORT --eval "
         try {
           db.getSiblingDB('admin').createUser({
             user: '$MONGODB_USER',
-            pwd: '$MONGODB_PASSWORD',
+            pwd: require('fs').readFileSync(3,'utf8').slice(0,-1),
             roles: [{ role: 'root', db: 'admin' }]
           });
           print('SUCCESS');
@@ -556,7 +558,7 @@ else
     
     # Kiểm tra xác thực
     echo "Kiểm tra xác thực với user quản trị..."
-    AUTH_TEST=$(mongosh --port $PRIMARY_PORT -u $MONGODB_USER -p $MONGODB_PASSWORD --authenticationDatabase admin --eval "
+    AUTH_TEST=$(mongo_eval "$MONGODB_USER" "$MONGODB_PASSWORD" "admin" --port $PRIMARY_PORT --eval "
     try {
       print('Xác thực thành công!');
     } catch(e) {
@@ -647,8 +649,8 @@ echo "Tóm tắt cấu hình:"
 echo "- Số lượng node đang chạy: $ACTIVE_COUNT"
 echo "- Port hoạt động: $(for PORT in "${MONGODB_PORTS[@]}"; do check_mongodb_running $PORT && echo -n "$PORT "; done)"
 echo "- Primary node: $PRIMARY_PORT_SECURE (hoặc được chọn tự động trong replica set)"
-echo "- Kết nối: mongosh --port ${MONGODB_PORTS[0]} --username $MONGODB_USER --password $MONGODB_PASSWORD --authenticationDatabase admin"
-echo "- Kết nối: mongosh --host 'rs0/localhost:$PRIMARY_PORT_SECURE' -u $MONGODB_USER -p $MONGODB_PASSWORD --authenticationDatabase admin"
+echo "- Kết nối: mongosh --port ${MONGODB_PORTS[0]} --username $MONGODB_USER --authenticationDatabase admin"
+echo "- Kết nối: mongosh --host 'rs0/localhost:$PRIMARY_PORT_SECURE' -u $MONGODB_USER --authenticationDatabase admin"
 
 # Tạo chuỗi kết nối replica set với tất cả các port
 RS_CONNECTION="rs0/"
@@ -664,6 +666,6 @@ for PORT in "${MONGODB_PORTS[@]}"; do
   fi
 done
 
-echo "- Kết nối với tất cả nodes: mongosh --host '$RS_CONNECTION' -u $MONGODB_USER -p $MONGODB_PASSWORD --authenticationDatabase admin"
+echo "- Kết nối với tất cả nodes: mongosh --host '$RS_CONNECTION' -u $MONGODB_USER --authenticationDatabase admin"
 echo "- Trạng thái replica set: rs.status()"
 echo "- Kiểm tra primary: rs.isMaster()"
