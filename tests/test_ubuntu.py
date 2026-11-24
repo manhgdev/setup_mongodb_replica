@@ -228,3 +228,27 @@ def test_arbiter_upgrade_rechecks_before_install(monkeypatch, quorum_lost):
     else:
         assert operations.execute(*args)["role"] == "ARBITER"
         assert [c.args[1] for c in remote.call_args_list] == ["arbiter_packages", "arbiter_install"]
+
+
+def test_arbiter_version_restricted(tmp_path, monkeypatch, sign_in_new_manager):
+    from fastapi.testclient import TestClient
+    from pymongo.errors import OperationFailure
+    from unittest.mock import MagicMock
+    from web.app import create_app
+
+    db = MagicMock()
+    db.__enter__.return_value.admin.command.side_effect = [
+        OperationFailure("authentication failed", 18), {"arbiterOnly": True, "setName": "rs0"},
+        OperationFailure("unauthorized", 13),
+    ]
+    monkeypatch.setattr("web.app.client", Mock(return_value=db))
+    monkeypatch.setattr("web.app.host_run", Mock(return_value={"version": "9.0.8", "status": "compatible"}))
+    app = create_app(tmp_path)
+    with TestClient(app, base_url="http://127.0.0.1", headers={"X-MongoDB-Manager": "1"}) as api:
+        sign_in_new_manager(api)
+        store = app.state.store
+        profile = store.save("profiles", {"name": "test", "replica_set": "rs0"})
+        machine = store.save("machines", {"profile_id": profile["id"], "mongo_endpoint": "example.test:27017"})
+        result = api.get(f"/api/machines/{machine['id']}/compatibility").json()
+        assert result["role"] == "ARBITER" and result["arbiter_version_restricted"]
+        assert result["version"] == "9.0.8" and not result["live"] and not result["endpoint_error"]

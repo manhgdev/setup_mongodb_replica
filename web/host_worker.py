@@ -195,6 +195,39 @@ def ubuntu_architecture():
     return arch
 
 
+def host_resources():
+    disk = shutil.disk_usage("/")
+    resources = dict(cpu_count=os.cpu_count(), disk_total=disk.total, disk_used=disk.used, disk_free=disk.free)
+    try:
+        memory = dict(re.findall(r"^(MemTotal|MemAvailable):\s+(\d+) kB", Path("/proc/meminfo").read_text(), re.M))
+        resources.update(ram_total=int(memory["MemTotal"]) * 1024, ram_available=int(memory["MemAvailable"]) * 1024)
+    except (KeyError, OSError, ValueError):
+        pass
+
+    def cpu_sample():
+        counters = list(map(int, Path("/proc/stat").read_text().splitlines()[0].split()[1:9]))
+        return sum(counters), counters[3] + counters[4]
+
+    try:
+        total, idle = cpu_sample()
+        time.sleep(0.3)
+        end, idle_end = cpu_sample()
+        if end > total:
+            resources["cpu_percent"] = round(100 * (1 - (idle_end - idle) / (end - total)), 1)
+    except (IndexError, ValueError, OSError):
+        pass
+    try:
+        device = os.stat("/").st_dev
+        block = (Path("/sys/dev/block") / f"{os.major(device)}:{os.minor(device)}").resolve(strict=True)
+        if (block / "partition").exists():
+            block = block.parent
+        if "virtual" not in block.parts:
+            resources["disk_medium"] = {"0": "SSD", "1": "HDD"}.get((block / "queue/rotational").read_text().strip())
+    except OSError:
+        pass
+    return resources
+
+
 def ubuntu_compatibility(p):
     host = preflight(p)
     pid = run(["systemctl", "show", "-p", "MainPID", "--value", p["service"]], check=False) if host["tools"]["systemctl"] else ""
@@ -202,7 +235,7 @@ def ubuntu_compatibility(p):
     binary = re.search(r"db version v(\d+\.\d+\.\d+)\b", host["version"])
     version = p.get("live_version") or (binary[1] if binary else "")
     series = version.rsplit(".", 1)[0] if version else p["series"]
-    result = dict(os=host["os"], arch=host["architecture"], hostname=host["hostname"], current=host["codename"],
+    result = dict(resources=host_resources(), os=host["os"], arch=host["architecture"], hostname=host["hostname"], current=host["codename"],
                   version=version, series=series, service=host["service"], service_state=host["service_state"],
                   services=host["services"], processes=len(processes), pid=pid, path=[], target="", package="")
     try:
@@ -1168,6 +1201,97 @@ def arbiter_packages(action, p):
     return {"service": service}
 
 
+STARTUP_HINTS = (
+    (r"address already in use|EADDRINUSE", "Cổng bị chiếm. Đối chiếu PID đang lắng nghe với MainPID của service."),
+    (r"permissions on .*too open", "Keyfile cho phép nhóm hoặc người khác truy cập. Kiểm tra quyền keyfile."),
+    (r"permission denied|operation not permitted", "Truy cập bị từ chối. Kiểm tra owner và quyền của dbPath, đường dẫn log và keyfile."),
+    (r"no space left|ENOSPC", "Hết dung lượng hoặc inode. Kiểm tra filesystem chứa dữ liệu và log."),
+    (r"error parsing YAML|unrecognized option|error parsing command line", "Cấu hình không hợp lệ. Kiểm tra cú pháp và tên tùy chọn trong file cấu hình của service."),
+    (r"WT_PANIC|WT_TRY_SALVAGE|checksum mismatch", "WiredTiger báo lỗi dữ liệu. Bảo toàn dbPath và kiểm tra bản backup trước khi phục hồi."),
+)
+
+
+def startup_diagnosis(service, port=None):
+    state = run(["systemctl", "show", service, "-p", "ActiveState", "-p", "Result", "-p", "MainPID", "-p", "ExecMainStatus"], check=False)
+    journal = run(["journalctl", "-b", "-u", service, "-n", "100", "--no-pager", "-o", "cat"], check=False)
+    paths = {}
+    match = re.fullmatch(r"mongod-manager-([a-z][a-z0-9-]{0,30})", service)
+    if match:
+        instance = match[1]
+        config = Path("/etc/mongodb-manager") / instance / "mongod.conf"
+        try:
+            settings = json.loads(config.read_text())
+            for section, option in (("storage", "dbPath"), ("systemLog", "path"), ("security", "keyFile")):
+                path = Path(settings[section][option])
+                try:
+                    meta = path.lstat()
+                    paths[option] = dict(path=str(path), uid=meta.st_uid, gid=meta.st_gid,
+                                         mode=oct(meta.st_mode & 0o777), free_bytes=shutil.disk_usage(path.parent).free)
+                except OSError:
+                    paths[option] = dict(path=str(path), error="Không đọc được metadata.")
+        except (OSError, ValueError, TypeError, KeyError):
+            paths["config"] = "Không đọc được cấu hình JSON chuẩn của instance Manager."
+    hints = [hint for pattern, hint in STARTUP_HINTS if re.search(pattern, journal, re.I)]
+    listener = run(["ss", "-Hlntp", f"sport = :{int(port)}"], check=False) if port and shutil.which("ss") else ""
+    return {"service": service, "systemd": state, "listener": listener, "paths": paths, "findings": hints or [
+        "Journal chưa đủ để kết luận. Xem systemLog.path của instance và nhật ký MongoDB tại thời điểm lỗi."]}
+
+
+def repair_keyfile(service):
+    import pwd
+    import stat
+    match = re.fullmatch(r"mongod-manager-([a-z][a-z0-9-]{0,30})", service)
+    if not match:
+        raise ValueError("Chỉ sửa keyfile của instance do Manager tạo.")
+    root = Path("/etc/mongodb-manager") / match[1]
+    config = root / "mongod.conf"
+    key = root / "keyfile"
+
+    def prop(name):
+        return run(["systemctl", "show", service, "-p", name, "--value"])
+
+    if (prop("ActiveState") not in {"inactive", "failed"} or prop("User") != "mongodb"
+            or prop("FragmentPath") != f"/etc/systemd/system/{service}.service"
+            or f"argv[]=/usr/bin/mongod --config {config} ;" not in prop("ExecStart")):
+        raise ValueError("Cần instance Manager đã dừng và dùng đúng cấu hình.")
+    if config.resolve() != config or json.loads(config.read_text()).get("security", {}).get("keyFile") != str(key):
+        raise ValueError("Cấu hình không trỏ đến keyfile của instance.")
+    fd = os.open(key, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != pwd.getpwnam("mongodb").pw_uid:
+            raise ValueError("Chưa xác minh được owner hoặc loại file của keyfile.")
+        if stat.S_IMODE(info.st_mode) in {0o400, 0o600}:
+            raise ValueError("Quyền keyfile đã phù hợp. Chạy chẩn đoán để tìm nguyên nhân khác.")
+        event(f"{key}: {stat.S_IMODE(info.st_mode):04o} → 0400")
+        os.fchmod(fd, 0o400)
+    finally:
+        os.close(fd)
+
+
+def service_operation(p):
+    service, operation = p["service"], p["operation"]
+    if operation == "diagnose":
+        return startup_diagnosis(service, p.get("mongo_port"))
+    if operation == "repair_keyfile":
+        repair_keyfile(service)
+        operation = "start"
+    try:
+        run(["systemctl", operation, service], timeout=180)
+        state = run(["systemctl", "is-active", service], check=False)
+        if operation in {"start", "restart"} and state != "active":
+            raise RuntimeError("Service chưa active.")
+    except (RuntimeError, subprocess.TimeoutExpired):
+        if operation in {"start", "restart"}:
+            report = startup_diagnosis(service, p.get("mongo_port"))
+            event(report["systemd"])
+            if report["listener"]:
+                event(report["listener"])
+            raise RuntimeError(" ".join(report["findings"])) from None
+        raise
+    return {"state": state, "operation": operation}
+
+
 def main(request):
     p = request["params"]
     action = request["action"]
@@ -1194,8 +1318,7 @@ def main(request):
     if action == "logs":
         return {"log": run(["journalctl", "-u", p["service"], "--no-pager", "-n", "100"], check=False)}
     if action == "service":
-        run(["systemctl", p["operation"], p["service"]], timeout=180)
-        return {"state": run(["systemctl", "is-active", p["service"]], check=False), "operation": p["operation"]}
+        return service_operation(p)
     handlers = {"install": install, "setup": setup, "provision": provision, "prepare_member": prepare_member,
                 "read_keyfile": read_keyfile, "member_network": member_network, "backup": backup, "backups": list_backups, "delete_backup": delete_backup, "preview_backup": preview_backup, "restore": restore}
     if action not in handlers:

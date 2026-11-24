@@ -441,7 +441,7 @@ def validate_params(action, params, machine=None):
         raise ValueError("Chọn database trước khi backup collection.")
     if action in {"install", "provision"} and p["series"] not in {"8.0", "9.0"}:
         raise ValueError("Chỉ hỗ trợ nhánh 8.0 hoặc 9.0.")
-    if action == "service" and p["operation"] not in {"start", "stop", "restart", "enable", "disable"}:
+    if action == "service" and p["operation"] not in {"diagnose", "repair_keyfile", "start", "stop", "restart", "enable", "disable"}:
         raise ValueError("Thao tác dịch vụ không hợp lệ.")
     if action in {"setup", "provision", "join_fresh"}:
         if not re.fullmatch(r"[a-z][a-z0-9-]{0,30}", p["instance"]):
@@ -749,6 +749,20 @@ def execute(action, p, profile, machine, emit):
                 if "targetVersion" in fcv or "previousVersion" in fcv:
                     raise ValueError("Chờ chuyển đổi FCV hoàn tất trước khi backup/restore.")
             p = dict(p, replica=replica, connection={"uri": uri(profile), **({"password": profile["password"]} if profile.get("username") else {})}, source=profile["name"], source_id=profile.get("id"), compatibility={"version": version, "fcv": fcv["version"]})
+        if action == "service":
+            endpoint = machine.get("mongo_endpoint")
+            port = int(endpoint.rsplit(":", 1)[1]) if endpoint else None
+            result = host_run(machine, action, dict(p, mongo_port=port), emit)
+            if endpoint and p["operation"] in {"start", "restart", "repair_keyfile"}:
+                try:
+                    with client(profile or {}, direct=endpoint) as db:
+                        hello = db.admin.command("hello")
+                    result.update(endpoint=endpoint, replica_set=hello.get("setName"),
+                                  primary=hello.get("primary"), secondary=bool(hello.get("secondary")),
+                                  writable=bool(hello.get("isWritablePrimary")), arbiter=bool(hello.get("arbiterOnly")))
+                except PyMongoError as exc:
+                    raise RuntimeError("systemd đã báo active nhưng chưa xác minh được MongoDB tại endpoint. " + mongo_error(exc)) from None
+            return result
         return host_run(machine, action, p, emit)
     emit('Kết nối cụm nguồn và tìm primary hiện tại…')
     with client(profile) as db:

@@ -500,6 +500,7 @@ def create_app(data_dir=None):
         endpoint = machine.get("mongo_endpoint")
         version, role, live_pid = "", "", None
         endpoint_error = ""
+        arbiter_version_restricted = False
         if endpoint and machine.get("profile_id"):
             profile = store.get("profiles", machine["profile_id"])
             try:
@@ -516,7 +517,7 @@ def create_app(data_dir=None):
                     live_pid = db.admin.command("serverStatus")["pid"]
             except PyMongoError as exc:
                 endpoint_error = mongo_error(exc)
-                if isinstance(exc, OperationFailure) and exc.code == 18:
+                if isinstance(exc, OperationFailure) and exc.code in (13, 18):
                     # Arbiters do not replicate the cluster's user collection.
                     try:
                         with client(dict(profile, username="", password=""), direct=endpoint) as probe:
@@ -528,14 +529,15 @@ def create_app(data_dir=None):
                                 endpoint_error = "" if version else "Arbiter chưa cung cấp phiên bản qua buildInfo."
                     except PyMongoError as probe_error:
                         if role == "ARBITER":
-                            endpoint_error = mongo_error(probe_error)
+                            arbiter_version_restricted = isinstance(probe_error, OperationFailure) and probe_error.code == 13
+                            endpoint_error = "" if arbiter_version_restricted else mongo_error(probe_error)
         try:
             result = host_run(machine, "ubuntu_compatibility", {"series": series, "live_version": version}, lambda _: None)
         except (RuntimeError, OSError) as exc:
             raise ValueError(redact(str(exc), machine.get("ssh_password") or "")) from exc
         if live_pid and str(live_pid) != result["pid"]:
             result.update(status="unknown", reason="Endpoint và dịch vụ đã chọn có PID khác nhau.")
-        return dict(result, endpoint=endpoint, endpoint_error=endpoint_error, live=bool(version), role=role,
+        return dict(result, endpoint=endpoint, endpoint_error=endpoint_error, arbiter_version_restricted=arbiter_version_restricted, live=bool(version), role=role,
                     pid_match=str(live_pid) == result["pid"] if live_pid else None)
 
     def verify_machine_deletion(machine, precheck=False):

@@ -183,3 +183,11 @@ Mỗi lần sửa dự án, cập nhật README này trong cùng thay đổi. N�
 - **23/11/2026** — Sau khi tác vụ kết thúc, trang hiện tại tự đọc lại dữ liệu. Trang Máy chủ cập nhật topology định kỳ. Khi có bản giao diện mới, tab tự tải lại khi đang hiển thị và đã đóng biểu mẫu.
 
 - Xác nhận xoá hồ sơ máy và cụm bằng popup trong ứng dụng. Bấm **Hủy** hoặc **Esc** để quay lại.
+
+**Máy chủ → Dịch vụ → Chẩn đoán dịch vụ** đọc trạng thái systemd, PID, listener tại cổng MongoDB trong hồ sơ và 100 dòng journal gần nhất của service trong lần boot hiện tại. Khi khởi động thất bại, Manager tự chạy bước này. Nếu MongoDB ghi lỗi vào file riêng, kiểm tra thêm file tại `systemLog.path`.
+
+**Sửa quyền keyfile và khởi động instance Manager** áp dụng cho instance Manager đang dừng, dùng đúng unit, cấu hình và keyfile thuộc user mongodb. Sau khi xác nhận, Manager đặt quyền file thành 0400 rồi khởi động. Khi hồ sơ có endpoint, Manager gửi trực tiếp lệnh hello để kiểm tra khả năng kết nối và vai trò của node.
+
+Trong bảng **Ubuntu và MongoDB trên máy**, bấm **Kiểm tra lại** để lấy mức sử dụng CPU trong khoảng lấy mẫu 0,3 giây và số CPU logic, RAM đang dùng/tổng và khả dụng, dung lượng đã dùng/tổng và còn trống của filesystem `/`. Đơn vị dung lượng là GiB. SSD/HDD dựa trên thuộc tính rotational mà Linux trên VPS nhìn thấy. Thiết bị chưa nhận diện hiển thị **Chưa rõ loại ổ**.
+
+Nếu `hello` xác nhận đúng arbiter nhưng `buildInfo` trả code 13, bảng kiểm tra máy ghi rõ giới hạn quyền đọc phiên bản. Cột chi tiết cho biết khi nào phiên bản được đọc từ binary mongod trên VPS.

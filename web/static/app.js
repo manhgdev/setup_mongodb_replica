@@ -490,9 +490,16 @@ function compatibilityReport(r,series,machineId){
   const role=({uninitialized:t('Replica set chưa khởi tạo','Replica set uninitialized'),other:t('Vai trò khác','Other member role')})[r.role]||r.role||t('Chưa xác minh','Unverified');
   const notes=[];
   if(r.processes>1)notes.push(t(`Có ${r.processes} tiến trình mongod trên máy. Trình nâng Ubuntu tự động yêu cầu một instance duy nhất.`,`This host has ${r.processes} mongod processes. Automated Ubuntu upgrades require a single instance.`));
-  if(r.endpoint&&!r.live)notes.push(r.endpoint_error||t('Chưa đọc được phiên bản trực tiếp từ endpoint.','The endpoint version could not be verified directly.'));
+  if(r.arbiter_version_restricted)notes.push(t('Đã xác nhận ARBITER. Endpoint giới hạn quyền đọc phiên bản MongoDB.', 'ARBITER confirmed. The endpoint restricts access to the MongoDB version.'));
+  else if(r.endpoint&&!r.live)notes.push(r.endpoint_error||t('Chưa đọc được phiên bản trực tiếp từ endpoint.','The endpoint version could not be verified directly.'));
+  const resources=r.resources||{};
+  const gib=value=>Number.isFinite(value)?(value/1024**3).toFixed(2)+' GiB':'—';
+  const capacity=(used,total)=>gib(used)+' / '+gib(total);
   const rows=[
     ['Ubuntu',r.os,r.hostname], [t('Kiến trúc CPU','CPU architecture'),r.arch,r.current],
+    ['CPU',Number.isFinite(resources.cpu_percent)?resources.cpu_percent+'%':'—',resources.cpu_count?resources.cpu_count+' vCPU':'—'],
+    ['RAM',capacity(resources.ram_total-resources.ram_available,resources.ram_total),t('Khả dụng','Available')+' · '+gib(resources.ram_available)],
+    [t('Ổ đĩa /','Root disk /'),capacity(resources.disk_used,resources.disk_total),t('Còn trống','Free')+' · '+gib(resources.disk_free)+' · '+(resources.disk_medium||t('Chưa rõ loại ổ','Unknown drive type'))],
     ['MongoDB',r.version||r.series,r.live?t('Đọc trực tiếp từ endpoint','Reported by the endpoint'):r.version?t('Đọc từ mongod trên máy','Reported by host binary'):t('Nhánh dự định cài','Planned series')],
     [t('Gói trong kho chính thức','Official repository package'),r.package||'—',r.target?'Ubuntu '+r.target:''],
     [t('Dịch vụ','Service'),r.service,r.service_state], [t('Vai trò MongoDB','MongoDB role'),role,r.endpoint||'—']
@@ -725,7 +732,9 @@ const schemas={
     host:true,
     hostLabel:dataLabel('Máy chủ chạy MongoDB','MongoDB host'),
     note:dataLabel('Manager điều khiển dịch vụ MongoDB được ghi sau tên máy, ví dụ mongod. Dừng hoặc khởi động lại MongoDB có thể làm gián đoạn truy cập dữ liệu.', 'Manager controls the MongoDB service listed after the host name, for example mongod. Stopping or restarting MongoDB can interrupt data access.'),
-    fields:[['operation','MongoDB','restart','select','',true,[
+    fields:[['operation','MongoDB','diagnose','select','',true,[
+      {value:'diagnose',label:dataLabel('Chẩn đoán dịch vụ','Diagnose service')},
+      {value:'repair_keyfile',label:dataLabel('Sửa quyền keyfile và khởi động instance Manager','Repair keyfile permissions and start Manager instance')},
       {value:'start',label:dataLabel('Khởi động MongoDB','Start MongoDB')},
       {value:'stop',label:dataLabel('Dừng MongoDB','Stop MongoDB')},
       {value:'restart',label:dataLabel('Khởi động lại MongoDB','Restart MongoDB')},
@@ -988,7 +997,10 @@ function showPreview(plan){
     }
     electionPicker=field('next_primary',uiText("Primary mong muốn"),'','select',uiText("Chỉ secondary khỏe có Votes = 1 và Ưu tiên > 0 mới xuất hiện."),true,options);
   }
-  modal(uiText("Xác nhận thao tác"),`<div class="modal-body${electionPicker?' step-down-review':''}"><div class="review-params"><div class="review-row"><span>${uiText("Tác vụ")}</span><span>${esc(plan.label)}</span></div><div class="review-row"><span>${uiText("Máy / cụm đích")}</span><span>${esc(plan.target)}</span></div>${Object.entries(plan.params).map(([k,v])=>`<div class="review-row"><span>${esc(labels[k]||k)}</span><span>${esc(k==='operation'&&actionContext.action==='service'?(schema.fields[0][6].find(option=>option.value===v)?.label||v):k==='destination_id'?(profiles().find(p=>p.id===v)?.name||v):k==='databases'?(v.join(', ')||uiText('Tất cả')):typeof v==='boolean'?(v?uiText("Bật"):uiText("Tắt")):v||'—')}</span></div>`).join('')}</div>${electionPicker}${plan.notices.map(n=>`<div class="callout">${esc(n)}</div>`).join('')}${demo?("<div class=\"callout neutral\">"+uiText("Đây là mô phỏng. Không có lệnh nào được gửi đến máy chủ.")+"</div>"):''}<div id="form-error"></div></div>`,(['remove_member','step_down','arbiter_upgrade'].includes(actionContext.action)?button(uiText("Hủy"),'modal-close'):button(uiText("Quay lại"),'action-back'))+button(demo?uiText("Chạy mô phỏng"):uiText("Thực hiện"),'action-apply','check','primary'));
+  const repairNotice=actionContext.action==='service'&&plan.params.operation==='repair_keyfile'
+    ? '<div class="callout">'+esc(dataLabel('Manager sẽ đặt quyền keyfile thành 0400 rồi khởi động dịch vụ đang dừng.','Manager will set the keyfile mode to 0400 and start the stopped service.'))+'</div>'
+    : '';
+  modal(uiText("Xác nhận thao tác"),`<div class="modal-body${electionPicker?' step-down-review':''}"><div class="review-params"><div class="review-row"><span>${uiText("Tác vụ")}</span><span>${esc(plan.label)}</span></div><div class="review-row"><span>${uiText("Máy / cụm đích")}</span><span>${esc(plan.target)}</span></div>${Object.entries(plan.params).map(([k,v])=>`<div class="review-row"><span>${esc(labels[k]||k)}</span><span>${esc(k==='operation'&&actionContext.action==='service'?(schema.fields[0][6].find(option=>option.value===v)?.label||v):k==='destination_id'?(profiles().find(p=>p.id===v)?.name||v):k==='databases'?(v.join(', ')||uiText('Tất cả')):typeof v==='boolean'?(v?uiText("Bật"):uiText("Tắt")):v||'—')}</span></div>`).join('')}</div>${electionPicker}${repairNotice}${plan.notices.map(n=>`<div class="callout">${esc(n)}</div>`).join('')}${demo?("<div class=\"callout neutral\">"+uiText("Đây là mô phỏng. Không có lệnh nào được gửi đến máy chủ.")+"</div>"):''}<div id="form-error"></div></div>`,(['remove_member','step_down','arbiter_upgrade'].includes(actionContext.action)?button(uiText("Hủy"),'modal-close'):button(uiText("Quay lại"),'action-back'))+button(demo?uiText("Chạy mô phỏng"):uiText("Thực hiện"),'action-apply','check','primary'));
 }
 function sshKeyButton(id){
   return button(dataLabel('Xác minh khóa SSH','Verify SSH host key'),'ssh-key','shield','',`data-id="${esc(id)}"`);
