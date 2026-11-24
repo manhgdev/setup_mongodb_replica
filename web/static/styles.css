@@ -264,3 +264,11 @@ td .password-control input[readonly] { min-width:9rem; padding-block:7px; border
 .recovery-passwords small { text-align:start; }
 .recovery-card #login-error:empty { display:none; }
 @media(max-width:480px){.recovery-card{padding:22px}.recovery-passwords{grid-template-columns:1fr}}
+
+.account-actions,.account-profile { display:inline-flex; align-items:center; min-width:0; }
+.account-profile { gap:7px; padding:4px 7px; border:0; border-radius:7px; background:transparent; color:inherit; font-size:13px; font-weight:600; }
+.account-profile:hover { background:#eef4ef; }
+.account-profile .avatar { flex:none; }
+#admin-username { max-width:14ch; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.account-actions #logout-button { margin-inline-start:6px; border-inline-start:1px solid var(--line); padding:6px 0 6px 12px; }
+@media(max-width:680px){.account-profile #admin-username{display:none}.account-profile{padding:3px}.account-actions #logout-button{padding-inline-start:8px}}

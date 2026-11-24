@@ -1548,6 +1548,10 @@ async function enterWorkspace(auth){
   csrfToken=auth.csrf||'';$('#login-root').replaceChildren();$('#login-root').hidden=true;document.body.classList.remove('auth-pending');
   $('#logout-button').hidden=!auth.enabled;$('#logout-button').textContent=uiText("Đăng xuất");
   $('#admin-username').textContent=auth.username||'';
+  const accountLabel=dataLabel('Sửa tài khoản quản trị','Edit administrator account')+' · '+auth.username;
+  const accountButton=$('.account-profile');
+  accountButton.title=accountLabel;
+  accountButton.setAttribute('aria-label',accountLabel);
   $('#admin-avatar').textContent=(auth.username||'AD').slice(0,2).toUpperCase();
   await refreshState();await render();clearInterval(pollTimer);pollTimer=setInterval(poll,2500);
 }
