@@ -726,6 +726,10 @@ def create_app(data_dir=None):
             raise ValueError("Hãy chọn máy thực thi.")
         if machine and profile and machine.get("profile_id") and machine["profile_id"] != profile["id"]:
             raise ValueError("VPS đã chọn thuộc workspace khác.")
+        if body.action in {"mongo_upgrade", "arbiter_upgrade", "install"}:
+            existing = active_upgrade(body.machine_id, "mongo_upgrade")
+            if existing:
+                raise Busy(existing["id"])
         params = validate_params(body.action, body.params, machine)
         target = machine["name"] if body.action in HOST_ACTIONS else profile["name"]
         if body.action in {"backup", "restore", "join_fresh"}:

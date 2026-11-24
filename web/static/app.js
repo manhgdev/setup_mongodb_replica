@@ -1330,7 +1330,14 @@ document.addEventListener('submit',async event=>{
       const payload={action:actionContext.action,profile_id:actionContext.profileId,machine_id:data.machine_id||'',params};
       let plan;
       if(demo){const target=schema.host?machines().find(m=>m.id===data.machine_id).name:profile().name;plan={id:'demo',label:schema.title,target,params:{...params,...('password'in params?{password:'••••••••'}:{})},notices:[],confirmation:['preflight','logs','backups','upgrade_check'].includes(actionContext.action)?'':target};}
-      else plan=await api('/plans',{method:'POST',body:JSON.stringify(payload)});
+      else {
+        if(['install','mongo_upgrade','arbiter_upgrade'].includes(payload.action)){
+          const job=await activeUpgrade(payload.machine_id,'mongo_upgrade');
+          if(!event.target.isConnected)return;
+          if(job){showJob(job);return;}
+        }
+        plan=await api('/plans',{method:'POST',body:JSON.stringify(payload)});
+      }
       if(!event.target.isConnected||!$('#modal').open)return;
       if(demo&&actionContext.action==='ubuntu_upgrade'){
         const route=releaseOptions.lts, releases=Object.keys(route), start=releases.indexOf('jammy');
@@ -1343,7 +1350,7 @@ document.addEventListener('submit',async event=>{
       }
       showPreview(plan);
     }
-  }catch(error){formError(error);}finally{submit.disabled=false;}
+  }catch(error){if(error.activeJob){await openJob(error.activeJob);return;}formError(error);}finally{submit.disabled=false;}
 });
 document.addEventListener('click',async event=>{
   const target=event.target.closest('[data-act]');if(!target)return;
@@ -1435,7 +1442,11 @@ document.addEventListener('click',async event=>{
     if(act==='compatibility-refresh'){await loadCompatibility();return;}
     if(act==='mongo-install-preview'){
       const machine_id=actionContext.overrides.machine_id,params={series:previewPlan.params.series};
-      const plan=await api('/plans',{method:'POST',body:JSON.stringify({action:'install',machine_id,profile_id:'',params})});
+      const job=await activeUpgrade(machine_id,'mongo_upgrade');
+      if(job){showJob(job);return;}
+      let plan;
+      try{plan=await api('/plans',{method:'POST',body:JSON.stringify({action:'install',machine_id,profile_id:'',params})});}
+      catch(error){if(error.activeJob){await openJob(error.activeJob);return;}throw error;}
       if(target.isConnected){actionContext={action:'install',overrides:{machine_id,...params},profileId:''};showPreview(plan);}
       return;
     }

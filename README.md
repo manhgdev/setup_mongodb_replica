@@ -254,6 +254,10 @@ Nút **Nâng cấp MongoDB** và **Nâng cả hai** mở cả tác vụ cài m�
 
 ![Theo dõi cài MongoDB](previews/mongo-install-progress.jpg)
 
+Nếu popup kế hoạch đã mở trước lúc máy bắt đầu cài MongoDB, bấm **Xem kế hoạch** sẽ mở tác vụ đang chạy ngay cả khi APT chưa tạo dịch vụ mongod.
+
+![Tác vụ đang tải gói trước khi tạo mongod](previews/mongo-install-service-pending.jpg)
+
 ## Cập nhật tài liệu
 
 Cập nhật mục hướng dẫn liên quan trong cùng thay đổi mã nguồn. Khi giao diện thay đổi, chụp ảnh bằng workspace minh họa, lưu trong [previews/](previews/) và dùng liên kết tương đối để GitHub hiển thị ảnh.
