@@ -467,7 +467,7 @@ def test_new_member_election_settings(action):
     params = dict(host='node:27018') if action == 'add_member' else dict(
         instance='secondary', port=27018, advertise='node:27018', bind_ip='0.0.0.0',
         source_machine_id='source', source_endpoint='source:27017')
-    for options, expected in [({}, (0, 0)), ({'votes': 1, 'priority': 2.5}, (1, 2.5)), ({'arbiter': True}, (1, 0))]:
+    for options, expected in [({}, (1, 1)), ({'votes': 0}, (0, 0)), ({'votes': 1, 'priority': 2.5}, (1, 2.5)), ({'arbiter': True}, (1, 0))]:
         result = validate_params(action, dict(params, **options))
         assert (result['votes'], result['priority']) == expected
     for options in [{'votes': 2}, {'votes': 0, 'priority': 1}, {'arbiter': True, 'priority': 1}]:
@@ -765,6 +765,9 @@ def test_remove_member_allows_distinct_loopback_listener(monkeypatch, tmp_path):
     stopped = []
 
     def run(args, **kwargs):
+        if args[0] == "mongosh":
+            assert args[2].startswith("mongodb://10.0.0.221:27017/admin?")
+            return json.dumps({"primary": False, "process_id": "member-id"})
         if args[0] == "ss":
             loopback = 'LISTEN 0 4096 127.0.0.1:27017 0.0.0.0:* users:(("mongod",pid=99,fd=9))'
             member = 'LISTEN 0 4096 10.0.0.221:27017 0.0.0.0:* users:(("mongod",pid=42,fd=9))'
@@ -775,11 +778,49 @@ def test_remove_member_allows_distinct_loopback_listener(monkeypatch, tmp_path):
 
     monkeypatch.setattr(host_worker, "run", run)
 
-    def hello(script, params, timeout):
-        assert params["host"] == "10.0.0.221"
-        return {"primary": False, "process_id": "member-id"}
-
-    monkeypatch.setattr(host_worker, "shell_js", hello)
     params = {"service": "mongod-manager-old", "port": 27017, "process_id": "member-id", "member_present": True}
     assert host_worker.retire_member(params)["state"] == "inactive"
     assert stopped == [params["service"]]
+
+
+def test_role_restart_preserves_data_and_rejects_replay(tmp_path, monkeypatch):
+    from web import host_worker
+    path = tmp_path / "node"
+    path.mkdir()
+    (path / "WiredTiger.wt").write_bytes(b"old data")
+    stat = path.stat()
+    params = dict(path=str(path), inode=stat.st_ino, device=stat.st_dev, service="mongod")
+    monkeypatch.setattr(host_worker, "check_service_stopped", lambda _: None)
+    monkeypatch.setattr(host_worker, "run", lambda *args, **kwargs: "")
+    monkeypatch.setattr(os, "chown", lambda *args: None)
+    result = host_worker.role_restart(params)
+    from pathlib import Path
+    assert (Path(result["archive"]) / "WiredTiger.wt").read_bytes() == b"old data"
+    assert list(path.iterdir()) == []
+    with pytest.raises(ValueError):
+        host_worker.role_restart(params)
+
+
+def test_add_ssh_machine_with_election_defaults(api):
+    body = dict(name="mongo-01", auto_name=True, mode="ssh", host="161.118.198.188",
+                mongo_endpoint="161.118.198.188:27017", port=22, user="root", ssh_auth="password",
+                ssh_password="fixture-password", votes=1, priority=1, service="mongod")
+    with patch("web.app.host_run", return_value={"hostname": "fixture-host"}):
+        response = api.post("/api/machines", json=body)
+    assert response.status_code == 200
+    assert response.json()["name"] == "fixture-host"
+    assert response.json()["votes"] == response.json()["priority"] == 1
+    invalid = api.post("/api/machines", json={**body, "votes": 2})
+    assert invalid.status_code == 422 and "Votes" in invalid.json()["detail"]
+    assert body["ssh_password"] not in invalid.text
+
+
+def test_role_storage_ignores_wiredtiger_spill_database(tmp_path):
+    from web.host_worker import wiredtiger_directory
+    database = tmp_path / "db"
+    spill = database / "_tmp" / "spilldb"
+    spill.mkdir(parents=True)
+    files = [database / "mongod.lock", database / "WiredTiger.wt", spill / "WiredTiger.wt"]
+    for path in files:
+        path.touch()
+    assert wiredtiger_directory(files) == database

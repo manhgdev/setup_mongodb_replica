@@ -567,12 +567,62 @@ def verify_other_loopback_listeners(service, listeners):
                 raise ValueError("Chưa xác minh được tiến trình lắng nghe thuộc dịch vụ khác.")
 
 
+def wiredtiger_directory(descriptors):
+    paths = set()
+    for descriptor in descriptors:
+        try:
+            target = descriptor.resolve(strict=True)
+        except (FileNotFoundError, OSError):
+            continue
+        if target.name == "mongod.lock":
+            paths.add(target.parent)
+    if len(paths) != 1:
+        raise ValueError("Không xác định được duy nhất một dbPath từ các file khóa của mongod đang chạy.")
+    path = paths.pop()
+    if not (path / "WiredTiger.wt").is_file():
+        raise ValueError("dbPath của tiến trình không chứa WiredTiger.wt.")
+    return path
+
+
+def role_storage(p):
+    pid = run(["systemctl", "show", "-p", "MainPID", "--value", p["service"]])
+    proc = Path("/proc") / pid
+    if not pid.isdigit() or pid == "0" or (proc / "exe").resolve().name != "mongod":
+        raise ValueError("Không xác minh được mongod của service.")
+    path = wiredtiger_directory((proc / "fd").iterdir())
+    if path.is_mount() or not (path / "mongod.lock").is_file():
+        raise ValueError("Thư mục dữ liệu không hỗ trợ lưu trữ bằng đổi tên.")
+    if shutil.disk_usage(path).free < p["required_bytes"]:
+        raise ValueError("VPS chưa đủ dung lượng trống cho bản đồng bộ mới.")
+    version = re.search(r"db version v([0-9.]+)", run([str(proc / "exe"), "--version"]))
+    if not version:
+        raise ValueError("Chưa đọc được phiên bản mongod.")
+    return {"path": str(path), "pid": int(pid), "inode": path.stat().st_ino, "device": path.stat().st_dev, "version": version[1]}
+
+
+def role_restart(p):
+    check_service_stopped(p)
+    path = Path(p["path"])
+    stat = path.stat()
+    if path.resolve() != path or (stat.st_dev, stat.st_ino) != (p["device"], p["inode"]) or not (path / "WiredTiger.wt").is_file():
+        raise ValueError("Thư mục dữ liệu đã thay đổi sau khi dừng dịch vụ.")
+    archive = path.with_name(path.name + "-before-role-" + secrets.token_hex(8))
+    path.rename(archive)
+    event("Đã lưu thư mục cũ tại " + str(archive))
+    path.mkdir(mode=0o700)
+    os.chown(path, stat.st_uid, stat.st_gid)
+    run(["systemctl", "enable", "--now", p["service"]], timeout=180)
+    return {"archive": str(archive)}
+
+
 def retire_member(p):
     service = p["service"]
     port = str(int(p["port"]))
     pid = run(["systemctl", "show", "-p", "MainPID", "--value", service])
     listeners = run(["ss", "-Hlnpt", f"sport = :{port}"]).splitlines()
     state = run(["systemctl", "is-active", service], check=False)
+    if p.get("storage_pid") and pid != str(p["storage_pid"]):
+        raise ValueError("Tiến trình mongod đã đổi sau khi kiểm tra thư mục dữ liệu.")
     if pid == "0" and state == "inactive":
         verify_other_loopback_listeners(service, listeners)
         load = run(["systemctl", "show", "-p", "LoadState", "--value", service])
@@ -593,11 +643,12 @@ def retire_member(p):
             if address in {"0.0.0.0", "*", "::"}:
                 address = "::1" if address == "::" else "127.0.0.1"
             try:
-                local = shell_js("""
-        const h = new Mongo("mongodb://" + input.host + ":" + input.port +
-            "/?directConnection=true&serverSelectionTimeoutMS=2000").getDB("admin").runCommand({hello: 1});
-        print(JSON.stringify({primary: h.isWritablePrimary, process_id: h.topologyVersion?.processId?.toHexString()}));
-        """, {"host": '[' + address + ']' if ':' in address else address, "port": p["port"]}, timeout=10)
+                host = '[' + address + ']' if ':' in address else address
+                uri = f"mongodb://{host}:{port}/admin?directConnection=true&serverSelectionTimeoutMS=2000"
+                output = run(["mongosh", "--quiet", uri, "--eval",
+                              "const h=db.runCommand({hello:1});print(JSON.stringify({primary:h.isWritablePrimary,"
+                              "process_id:h.topologyVersion.processId.toHexString()}))"], timeout=10)
+                local = json.loads(output.splitlines()[-1])
             except (RuntimeError, OSError, ValueError) as exc:
                 raise ValueError("Không đọc được hello tại địa chỉ bind " + address + ":" + port +
                                  ". Cần tài khoản có quyền serverStatus hoặc mongosh kết nối được đúng instance.") from exc
@@ -1130,6 +1181,10 @@ def main(request):
             return {"ip": response.read(64).decode("ascii").strip()}
     if action == "check_service_stopped":
         return check_service_stopped(p)
+    if action == "role_storage":
+        return role_storage(p)
+    if action == "role_restart":
+        return role_restart(p)
     if action == "retire_member":
         return retire_member(p)
     if action == "hostname":

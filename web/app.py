@@ -95,11 +95,19 @@ def create_app(data_dir=None):
     async def invalid_input(request, exc):
         # Validation errors must never echo submitted credentials.
         labels = {'seeds': 'Seed MongoDB', 'mongo_endpoint': 'Endpoint MongoDB', 'host': 'Địa chỉ SSH', 'port': 'Port SSH', 'user': 'User SSH', 'ssh_password': 'Mật khẩu SSH', 'password': 'Mật khẩu', 'name': 'Tên hiển thị', 'replica_set': 'Tên replica set'}
+        labels.update(votes="Votes", priority="Ưu tiên bầu primary", service="Tên service",
+                      ssh_auth="Xác thực SSH", identity="SSH private key", profile_id="Cụm MongoDB",
+                      mode="Chế độ kết nối", auto_name="Tự đọc hostname")
+        hints = {"votes": "Chọn 0 hoặc 1.", "priority": "Nhập số từ 0 đến 1000.",
+                 "port": "Nhập số nguyên từ 1 đến 65535.", "seeds": "Dùng IP hoặc hostname, có thể kèm :port (mặc định 27017)."}
         errors = []
         for error in exc.errors():
             field = next((part for part in reversed(error['loc']) if isinstance(part, str) and part != 'body'), '')
             label = labels.get(field, 'Thông tin nhập')
-            message = 'Dùng IP hoặc hostname, có thể kèm :port (mặc định 27017).' if field == 'seeds' else 'Kiểm tra định dạng hoặc giá trị bắt buộc.'
+            if error["type"] == "extra_forbidden":
+                message = "API chưa hỗ trợ trường này. Kiểm tra phiên bản Manager đang chạy."
+            else:
+                message = hints.get(field, 'Kiểm tra định dạng hoặc giá trị bắt buộc.')
             errors.append(label + ': ' + message)
         return JSONResponse({"detail": ' '.join(dict.fromkeys(errors))}, status_code=422)
 
@@ -362,6 +370,11 @@ def create_app(data_dir=None):
         if value["profile_id"]:
             app.state.store.get("profiles", value["profile_id"])
         previous = app.state.store.get("machines", record_id) if record_id else {}
+        for setting in ("votes", "priority"):
+            if setting not in body.model_fields_set and setting in previous:
+                value[setting] = previous[setting]
+        if not value["votes"] and value["priority"]:
+            raise ValueError("Votes = 0 yêu cầu ưu tiên bằng 0.")
         if value["mode"] == "ssh":
             public_host(value["host"])
             if value["mongo_endpoint"]:
@@ -713,13 +726,18 @@ def create_app(data_dir=None):
             notices.append("Đọc keyfile từ primary " + source_machine["name"] + ", cài/cấu hình node mới rồi thêm vào cụm. Không khởi tạo replica set riêng. Chọn Votes và Ưu tiên khi thêm secondary.")
         if body.action == "add_member":
             notices.append("Node phải được cấu hình cùng replSetName/keyfile và truy cập được từ các member. Kiểm tra Votes và Ưu tiên đã chọn.")
-        if body.action == "remove_member":
+        if body.action in {"remove_member", "convert_role"}:
             candidates = [m for m in store.all("machines") if m.get("profile_id") == profile["id"]
                           and m.get("mongo_endpoint") == params["host"]]
             if len(candidates) != 1:
                 raise ValueError("Cần lưu đúng một hồ sơ SSH cho node trước khi gỡ.")
             machine = candidates[0]
-            notices.append("Manager kiểm tra quorum, dừng mongod và tắt tự khởi động trước khi gỡ node. Hồ sơ SSH và dữ liệu được giữ để có thể thêm lại VPS.")
+            if body.action == "convert_role":
+                if machine["mode"] != "ssh":
+                    raise ValueError("Đổi vai trò cần hồ sơ SSH của VPS.")
+                notices.append("Dừng dịch vụ trên VPS đã chọn, lưu thư mục dữ liệu cũ cạnh thư mục mới và thêm lại trên cùng cổng. Secondary cần đồng bộ dữ liệu từ đầu.")
+            else:
+                notices.append("Manager kiểm tra quorum, dừng mongod và tắt tự khởi động trước khi gỡ node. Hồ sơ SSH và dữ liệu được giữ để có thể thêm lại VPS.")
         if body.action in {"remove_member", "member_options", "step_down"}:
             notices.append("Kiểm tra lại quorum và cấu hình ngay trước khi thực hiện; không force reconfig.")
         if body.action == "step_down":
@@ -772,7 +790,7 @@ def create_app(data_dir=None):
                 if result is None:
                     return
             else:
-                if job["action"] == "remove_member":
+                if job["action"] in {"remove_member", "convert_role"}:
                     if store.get("machines", plan["machine"]["id"]) != plan["machine"]:
                         raise ValueError("Hồ sơ VPS đã đổi. Mở lại thao tác trước khi dừng mongod.")
                     if any(p["id"] != profile["id"] and params["host"] in p["seeds"] for p in store.all("profiles")):

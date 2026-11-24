@@ -256,7 +256,7 @@ def query(profile, section, database="", collection=""):
 
 def host_run(machine, action, params, emit):
     worker = Path(__file__).with_name("host_worker.py")
-    elevated = action in {"retire_member", "check_service_stopped", "arbiter_check", "arbiter_packages", "arbiter_install", "ubuntu_start", "ubuntu_finalize", "ubuntu_status", "ubuntu_precheck", "ubuntu_restore_service", "install", "setup", "provision", "prepare_member", "read_keyfile", "service", "backup", "backups", "restore", "preview_backup", "delete_backup", "logs"}
+    elevated = action in {"role_storage", "role_restart", "retire_member", "check_service_stopped", "arbiter_check", "arbiter_packages", "arbiter_install", "ubuntu_start", "ubuntu_finalize", "ubuntu_status", "ubuntu_precheck", "ubuntu_restore_service", "install", "setup", "provision", "prepare_member", "read_keyfile", "service", "backup", "backups", "restore", "preview_backup", "delete_backup", "logs"}
     params = dict(params, service=machine["service"])
     payload = {"action": action, "params": params}
     if machine["mode"] == "local":
@@ -328,6 +328,7 @@ def host_run(machine, action, params, emit):
 
 
 LABELS = {
+    "convert_role": "Đổi vai trò thành viên",
     "arbiter_upgrade": "Nâng MongoDB trên arbiter", "ubuntu_upgrade": "Kiểm tra và nâng Ubuntu",
     "preflight": "Kiểm tra môi trường", "logs": "Đọc nhật ký", "install": "Cài MongoDB", "setup": "Tạo replica set một node",
     "service": "Điều khiển dịch vụ MongoDB", "add_member": "Thêm thành viên", "remove_member": "Gỡ thành viên",
@@ -369,6 +370,7 @@ def validate_params(action, params, machine=None):
         "member_options": ["host", "priority", "votes", "hidden"], "create_user": ["username", "password", "database", "role"],
         "password": ["username", "password", "database"], "drop_user": ["username", "database"],
         "write_concern": ["w"], "backup": ["database", "databases", "collection", "collections", "application_only"], "restore": ["backup_id", "drop", "destination_id", "destination_machine_id"], "drop_database": ["database"]}
+    allowed["convert_role"] = ["host", "role"]
     allowed["arbiter_upgrade"] = ["version"]
     allowed["ubuntu_upgrade"] = ["series", "target"]
     allowed["sync_backup"] = allowed["backup"] + ["destination_id", "drop"]
@@ -382,6 +384,9 @@ def validate_params(action, params, machine=None):
     required = {"install": ["series"], "setup": allowed["setup"], "service": ["operation"], "add_member": ["host"], "remove_member": ["host"],
                 "member_options": ["host", "priority", "votes", "hidden"], "create_user": allowed["create_user"], "password": allowed["password"],
                 "drop_user": allowed["drop_user"], "write_concern": ["w"], "restore": ["backup_id"], "drop_database": ["database"]}
+    required["convert_role"] = allowed["convert_role"]
+    if action == "convert_role" and p.get("role") not in ("ARBITER", "SECONDARY"):
+        raise ValueError("Chọn vai trò ARBITER hoặc SECONDARY.")
     required.update(provision=allowed["provision"], join_fresh=["instance", "port", "bind_ip"])
     if action == "ubuntu_upgrade" and (p.get("series") not in ("8.0", "9.0") or p.get("target") not in ("auto", "focal", "jammy", "noble", "resolute")):
         raise ValueError("Chọn nhánh MongoDB và bản Ubuntu đích hợp lệ.")
@@ -469,8 +474,8 @@ def validate_params(action, params, machine=None):
         if key in p and type(p[key]) is not bool:
             raise ValueError(key + " phải là boolean.")
     if action in {"add_member", "join_fresh"}:
-        p.setdefault("votes", 1 if p.get("arbiter") else 0)
-        p.setdefault("priority", 0)
+        p.setdefault("votes", 1)
+        p.setdefault("priority", 0 if p.get("arbiter") else p["votes"])
         if p.get("arbiter") and (p["votes"] != 1 or p["priority"] != 0):
             raise ValueError("Arbiter cần Votes = 1 và Ưu tiên = 0.")
     if action in {"member_options", "add_member", "join_fresh"}:
@@ -486,7 +491,7 @@ def validate_params(action, params, machine=None):
 
 
 def check_new_vote(cfg, params):
-    if params.get("votes", 1 if params.get("arbiter") else 0) and sum(m.get("votes", 1) for m in cfg["members"]) >= 7:
+    if params.get("votes", 1) and sum(m.get("votes", 1) for m in cfg["members"]) >= 7:
         raise ValueError("Replica set đã có 7 voting member. Hãy chọn Votes = 0 cho secondary mới.")
 
 
@@ -551,7 +556,7 @@ def upgrade_arbiter(p, profile, machine, emit):
     raise ValueError("Chưa xác minh được phiên bản và vai trò sau khi nâng. Kiểm tra nhật ký dịch vụ.")
 
 
-def stop_member_service(profile, machine, host, member_present):
+def stop_member_service(profile, machine, host, member_present, storage_pid=None):
     if not machine or machine.get("mongo_endpoint") != host:
         raise ValueError("Cần hồ sơ SSH khớp endpoint của node trước khi gỡ.")
     process_id = None
@@ -580,10 +585,56 @@ def stop_member_service(profile, machine, host, member_present):
         except PyMongoError:
             pass  # Accounts without serverStatus permission use the local hello check.
     return host_run(machine, "retire_member", {"port": int(host.rsplit(":", 1)[1]),
-                    "process_id": process_id, "member_present": member_present, **identity}, lambda _: None)
+                    "process_id": process_id, "member_present": member_present, "storage_pid": storage_pid, **identity}, lambda _: None)
 
 
 def execute(action, p, profile, machine, emit):
+    if action == "convert_role":
+        host = p["host"]
+        arbiter = p["role"] == "ARBITER"
+        with client(profile) as db:
+            cfg, states = healthy_config(db)
+            member = next((m for m in cfg["members"] if m["host"] == host), None)
+            if not member or states.get(member["_id"], {}).get("state") != (2 if arbiter else 7):
+                raise ValueError("Vai trò nguồn đã thay đổi. Mở lại danh sách thành viên.")
+            remaining = {k:v for k,v in states.items() if k != member["_id"]}
+            check_quorum(cfg, remaining)
+            peers = [m for m in cfg["members"] if m != member]
+            check_new_vote({"members": peers}, {"votes": 1})
+            if arbiter and any(m.get("arbiterOnly") for m in peers):
+                raise ValueError("Cụm đã có arbiter.")
+            if arbiter and "defaultWriteConcern" not in db.admin.command("getDefaultRWConcern"):
+                raise ValueError("Đặt default write concern trước khi chuyển sang Arbiter.")
+            source_version = db.admin.command("buildInfo")["version"]
+            required_bytes = 0 if arbiter else db.admin.command("listDatabases")["totalSize"]
+        with client(dict(profile, username="", password=""), direct=host) as target:
+            hello = target.admin.command("hello")
+            if hello.get("setName") != cfg["_id"] or not hello.get("secondary" if arbiter else "arbiterOnly"):
+                raise ValueError("Endpoint trực tiếp không khớp vai trò nguồn.")
+        storage = host_run(machine, "role_storage", {"required_bytes": required_bytes}, emit)
+        if storage["version"].split(".")[:2] != source_version.split(".")[:2]:
+            raise ValueError("Phiên bản binary của VPS khác nhánh của primary.")
+        emit("Đã xác minh thư mục dữ liệu. Đang gỡ vai trò cũ của " + host)
+        execute("remove_member", {"host": host, "_expected_version": cfg["version"], "_storage_pid": storage["pid"]},
+                dict(profile, replica_set=cfg["_id"]), machine, emit)
+        restarted = host_run(machine, "role_restart", {**storage, "port": int(host.rsplit(":", 1)[1])}, emit)
+        emit("Đã giữ thư mục dữ liệu cũ tại " + restarted["archive"])
+        for attempt in range(30):
+            try:
+                with client(dict(profile, username="", password=""), direct=host) as node:
+                    hello = node.admin.command("hello")
+                if not hello.get("isreplicaset") or hello.get("setName"):
+                    raise ValueError("Instance vừa bật chưa ở trạng thái replica set trống.")
+                break
+            except AutoReconnect:
+                if attempt == 29:
+                    raise
+                time.sleep(1)
+        result = execute("add_member", {"host": host, "arbiter": arbiter, "votes": 1,
+                         "priority": 0 if arbiter else 1, "_member_id": member["_id"], "_verified_version": storage["version"]}, profile, machine, emit)
+        if not result.get("ready"):
+            raise RuntimeError("Membership đã đổi đồng thời. Kiểm tra vai trò thực tế.")
+        return {**result, **restarted, "role": p["role"]}
     if action == "arbiter_upgrade":
         return upgrade_arbiter(p, profile, machine, emit)
     if action == "join_fresh":
@@ -830,10 +881,15 @@ def execute(action, p, profile, machine, emit):
                 raise ValueError("Cụm đã có arbiter.")
             if arbiter and "defaultWriteConcern" not in db.admin.command("getDefaultRWConcern"):
                 raise ValueError("Hãy chọn write concern rõ ràng trước khi thêm arbiter.")
-            member = {"_id": max(m["_id"] for m in cfg["members"]) + 1, "host": p["host"], "priority": p.get("priority", 0), "votes": p.get("votes", 1 if arbiter else 0)}
+            member_id = p.get("_member_id", max(m["_id"] for m in cfg["members"]) + 1)
+            if any(m["_id"] == member_id for m in cfg["members"]):
+                raise ValueError("ID thành viên đã được sử dụng.")
+            member = {"_id": member_id, "host": p["host"], "priority": p.get("priority", 0 if arbiter else p.get("votes", 1)), "votes": p.get("votes", 1)}
             if arbiter:
                 member["arbiterOnly"] = True
             cfg["members"].append(member)
+        elif "_expected_version" in p and cfg["version"] != p["_expected_version"]:
+            raise ValueError("Cấu hình cụm đã thay đổi. Mở lại thao tác.")
         elif not member:
             if action == "remove_member":
                 emit("Endpoint đã rời cấu hình. Tiếp tục xác minh tài nguyên trên VPS.")
@@ -845,7 +901,7 @@ def execute(action, p, profile, machine, emit):
             remaining = {i: state for i, state in states.items() if i != member["_id"]}
             check_quorum(cfg, remaining)
             emit("Đủ quorum khi dừng node. Đang dừng mongod và tắt tự khởi động…")
-            cleanup = stop_member_service(profile, machine, p["host"], True)
+            cleanup = stop_member_service(profile, machine, p["host"], True, p["_storage_pid"]) if "_storage_pid" in p else stop_member_service(profile, machine, p["host"], True)
             emit("Đã xác minh dịch vụ dừng. Đang gỡ node khỏi cấu hình cụm…")
             cfg["members"].remove(member)
             check_quorum(cfg, states)

@@ -233,7 +233,10 @@ function replicaMemberActions(member){
   const election=member.votes!=null&&['PRIMARY','SECONDARY'].includes(member.state)
     ?button(dataLabel('Votes / Ưu tiên','Votes / Priority'),'member-edit','','small',hostAttrs):'';
   const remove=member.state==='PRIMARY'?'':button(uiText('Gỡ'),'member-remove','trash','small danger',hostAttrs);
-  return `<div class="actions">${election}${remove}</div>`;
+  const role=member.state==='ARBITER'?'SECONDARY':member.state==='SECONDARY'?'ARBITER':'';
+  const roleTone=role==='SECONDARY'?'info':'configure';
+  const convert=role?button(dataLabel('Chuyển sang ','Convert to ')+role,'member-convert','','small',hostAttrs+` data-role="${role}" data-tone="${roleTone}"`):'';
+  return `<div class="actions">${election}${convert}${remove}</div>`;
 }
 function memberTable(s,full=false){
   if(!s?.members.length)return empty(uiText("Chưa đọc được thành viên"),uiText("Kiểm tra kết nối và quyền xem replica set."),'','');
@@ -663,24 +666,35 @@ function showRecord(kind,record=null,draft={}){
     const address=mongoHost.replace(/^\[|\]$/g,'');
     const sshOverride=record?.host&&record.host!==address?record.host:'';
     const t=dataLabel;
-    fields=field('name',uiText("Tên máy chủ"),record?.name||nextMachineName(recordContext.profileId),'text',t('Để trống để tự đọc hostname.','Leave blank to detect the hostname.'),true)
+    const arbiter=pendingJoin&&pendingJoinOptions.arbiter===true;
+    fields=field('name',uiText("Tên máy chủ"),record?.name||nextMachineName(recordContext.profileId),'text',t('Để trống để tự đọc hostname.','Leave blank to detect the hostname.'))
+      +field('service',uiText("Tên service"),record?.service||'mongod')
       +field('mongo_host',mode==='ssh'?t('Địa chỉ IP public','Public IP address'):t('Địa chỉ MongoDB','MongoDB address'),address)
       +field('mongo_port',t('Cổng MongoDB','MongoDB port'),mongoPort,'number')
+      +field('votes','Votes',arbiter?1:Number(record?.votes??pendingJoinOptions?.votes??1),'select','',false,[0,1])
+      +field('priority',uiText('Ưu tiên bầu primary'),arbiter?0:record?.priority??pendingJoinOptions?.priority??1,'number',arbiter?t('Arbiter chỉ bỏ phiếu.','An arbiter only votes.'):t('Áp dụng khi thêm Secondary.','Used when adding a secondary.'))
       +`<input type="hidden" name="mode" value="${mode}">`
       +field('user','User SSH',record?.user||'root')
       +field('port','Port SSH',record?.port||22,'number')
-      +field('ssh_auth',uiText("Xác thực SSH"),record?.ssh_auth||draft.ssh_auth||'key','select','',true,[{value:'key',label:'SSH key / Agent'},{value:'password',label:uiText("Mật khẩu SSH")}])
-      +field('ssh_password',uiText("Mật khẩu SSH"),'','password',record?.has_ssh_password?uiText("Đã lưu mật khẩu. Để trống để giữ nguyên."):'' ,true)
-      +field('identity',uiText("SSH private key (tùy chọn)"),record?.identity||'','text',uiText("Để trống để dùng SSH agent hoặc ~/.ssh/config."),true)
+      +field('ssh_auth',uiText("Xác thực SSH"),record?.ssh_auth||draft.ssh_auth||'key','select','',false,[{value:'key',label:'SSH key / Agent'},{value:'password',label:uiText("Mật khẩu SSH")}])
+      +field('ssh_password',uiText("Mật khẩu SSH"),'','password',record?.has_ssh_password?uiText("Đã lưu mật khẩu. Để trống để giữ nguyên."):'')
+      +field('identity',uiText("SSH private key (tùy chọn)"),record?.identity||'','text',uiText("Để trống để dùng SSH agent hoặc ~/.ssh/config."))
       +`<details class="field wide" ${mode==='local'?'hidden':''} ${sshOverride?'open':''}><summary>${t('Địa chỉ SSH riêng','Separate SSH address')}</summary>
-          ${field('host',t('Địa chỉ SSH (nếu khác)','SSH address (if different)'),sshOverride,'text',t('Để trống để dùng địa chỉ IP public ở trên.','Leave blank to use the public address above.'))}</details>`
-      +field('service',uiText("Tên service"),record?.service||'mongod','text','',true);
+          ${field('host',t('Địa chỉ SSH (nếu khác)','SSH address (if different)'),sshOverride,'text',t('Để trống để dùng địa chỉ IP public ở trên.','Leave blank to use the public address above.'))}</details>`;
   }
   modal(record?uiText("Chỉnh sửa hồ sơ"):kind==='profiles'?uiText("Kết nối cụm MongoDB"):uiText("Thêm máy chủ"),`<form id="record-form"><div class="modal-body"><div class="form-grid">${fields}</div>${kind==='profiles'?("<div id=\"probe-result\"></div><details class=\"cluster-ssh\"><summary>"+uiText("SSH cho các VPS trong cụm (tùy chọn)")+"</summary><p>"+uiText("Tài khoản SSH dùng để đọc log, điều khiển service, cài đặt và xử lý trên VPS. Mỗi VPS có thông tin SSH riêng; tài khoản này khác tài khoản MongoDB ở trên. Lưu hồ sơ không tự chạy lệnh trên VPS.")+"</p><div id=\"cluster-ssh-list\"></div>")+button(uiText("Thêm VPS bằng SSH"),'cluster-ssh-add','plus')+' '+button(uiText("Lưu SSH"),'cluster-ssh-save')+("<p>"+uiText("Có thể lưu SSH trước để kiểm tra VPS khi MongoDB chưa kết nối được. Sau đó tiếp nhận cụm khi đã xử lý xong.")+"</p></details>"):''}<div id="form-error"></div></div><div class="modal-footer">${kind==='profiles'?button(uiText("Kiểm tra kết nối"),'profile-probe'):''}${kind==='machines'&&record?.mode==='ssh'&&record.ssh_auth==='password'&&!demo?sshKeyButton(record.id):''}${record?button(uiText("Xóa hồ sơ"),'record-delete','trash','danger'):''}${button(uiText("Hủy"),'modal-close')}<button class="button primary" type="submit">${icon('check')}${kind==='profiles'?uiText("Kiểm tra & lưu cụm"):uiText("Lưu hồ sơ")}</button></div></form>`,'',kind==='profiles'?uiText("Tiếp nhận cụm đang chạy: chỉ đọc và kiểm tra kết nối, không cài đặt hay khởi tạo lại."):uiText("Với mật khẩu SSH, Manager tự lưu khóa VPS ở lần kết nối đầu tiên. Với key/agent, cần thêm VPS vào known_hosts trước."));
   if(record?.has_password || record?.has_ssh_password){
     markSavedPassword($('#record-form .password-control input'),'/'+kind+'/'+record.id+'/reveal-password');
   }
-  if(kind==='machines'){hostnameField($('#record-form').elements.name,record);syncSSHFields();$('#record-form').addEventListener('change',syncSSHFields);}
+  if(kind==='machines'){
+    const {votes,priority}=$('#record-form').elements;
+    priority.min=0;
+    priority.max=1000;
+    votes.disabled=pendingJoin&&pendingJoinOptions.arbiter===true;
+    const syncPriority=()=>{priority.readOnly=votes.disabled||votes.value==='0';if(priority.readOnly)priority.value=0;};
+    votes.addEventListener('change',syncPriority);
+    syncPriority();
+    hostnameField($('#record-form').elements.name,record);syncSSHFields();$('#record-form').addEventListener('change',syncSSHFields);}
   // Anonymous MongoDB connections are valid.
   if(kind==='profiles'){
     const linked=machines().filter(m=>record?.id&&m.profile_id===record.id&&m.mode==='ssh');linked.forEach(addClusterSSH);if(linked.length)$('.cluster-ssh').open=true;
@@ -720,6 +734,7 @@ const schemas={
     ]]]
   },
   add_member:{title:uiText("Thêm thành viên"),profile:true,note:uiText("Node đích phải chạy mongod với cùng replSetName và keyfile. Web thêm membership; không ghi đè cấu hình node đích. Chọn Votes và Ưu tiên khi thêm secondary."),fields:[['host',uiText("Địa chỉ node"),'','text',uiText("IP hoặc hostname:port"),true],['arbiter',uiText("Thêm dưới vai trò Arbiter"),false,'checkbox','',true]]},
+  convert_role:{title:dataLabel('Đổi vai trò thành viên','Convert member role'),profile:true,note:dataLabel('Dừng mongod trên VPS đã chọn và thêm lại với thư mục dữ liệu mới.','Stop mongod on this VPS and rejoin with a fresh data directory.'),fields:[['host','Endpoint'],['role',dataLabel('Vai trò mới','New role')]]},
   remove_member:{title:uiText("Gỡ node khỏi cụm"),profile:true,note:uiText("Giữ nguyên dữ liệu trên máy đích. Gỡ bằng reconfig thông thường và kiểm tra quorum trước khi áp dụng."),fields:[['host',uiText("Node cần gỡ"),'','text','',true]]},
   member_options:{title:uiText("Sửa cấu hình member"),profile:true,fields:[['host',uiText("Địa chỉ node"),'','text','',true],['priority',uiText("Ưu tiên bầu primary"),1,'number',uiText("Giá trị cao hơn được ưu tiên. Đặt 0 để node không thể làm primary.")],['votes','Votes',1,'select','',false,[0,1]],['hidden','Hidden member',false,'checkbox',uiText("Hidden hoặc votes=0 cần priority=0."),true]]},
   step_down:{title:'Step down Primary',profile:true,note:uiText("Cần secondary sẵn sàng. Thao tác chờ primary mới, không force bầu chọn."),fields:[]},
@@ -776,8 +791,8 @@ schemas.ubuntu_upgrade={title:dataLabel('Quản lý Ubuntu','Manage Ubuntu'),hos
 schemas.provision={...schemas.setup,title:uiText("Cài và tạo cụm mới"),note:uiText("Dành cho VPS chưa có cụm ở port này. Kiểm tra đích, cài package nếu thiếu, tạo keyfile và replica set, lưu hồ sơ và xác minh kết nối."),fields:[['series',uiText("Nhánh MongoDB"),'9.0','select','',true,['9.0','8.0']],...schemas.setup.fields]};
 schemas.join_fresh={title:uiText("Kiểm tra VPS và thêm member"),host:true,profile:true,note:uiText("Mọi chế độ đều kiểm tra SSH, phiên bản và keyfile. Chế độ cài mới cần port/thư mục trống hoặc instance manager khớp cấu hình để tái sử dụng. Manager dùng SSH của primary hiện tại để đọc keyfile. Tài khoản MongoDB cần quyền getCmdLineOpts và quản lý cụm. Không tạo replica set/user riêng trên Secondary. Cụm TLS cần chuẩn bị node riêng."),fields:[['mode',uiText("Cách xử lý VPS"),'prepare','select',uiText("Cài khi thiếu; instance manager khớp cấu hình được tái sử dụng. Không tự cài đè dữ liệu."),true,[{value:'prepare',label:uiText("Kiểm tra và cài/cấu hình instance manager")},{value:'prepared',label:uiText("Kiểm tra node đã cấu hình sẵn (giữ nguyên)")}]],['arbiter',uiText("Thêm dưới vai trò Arbiter"),false,'checkbox',uiText("Bỏ chọn để thêm Secondary."),true],['target_keyfile',uiText("Keyfile trên node đã chuẩn bị"),'','text',uiText("Chỉ bắt buộc với chế độ node đã chuẩn bị; nhập đường dẫn thực tế để đối chiếu nguồn."),true],['instance',uiText("Tên instance mới"),'secondary'],['port','Port MongoDB',27017,'number'],['advertise',uiText("Địa chỉ MongoDB của VPS mới (tùy chọn)"),'','text',uiText("Để trống để dùng địa chỉ MongoDB đã lưu hoặc IP public của VPS cùng cổng đã chọn."),true],['bind_ip','Bind address','0.0.0.0','text',uiText("Kiểm tra firewall giữa các VPS trước khi chạy."),true]]};
 for(const schema of [schemas.add_member,schemas.join_fresh]){
-  schema.fields.push(['votes','Votes',0,'select','',false,[0,1]],
-    ['priority',uiText("Ưu tiên bầu primary"),0,'number',uiText("Giá trị cao hơn được ưu tiên. Đặt 0 để node không thể làm primary.")]);
+  schema.fields.push(['votes','Votes',1,'select','',false,[0,1]],
+    ['priority',uiText("Ưu tiên bầu primary"),1,'number',uiText("Giá trị cao hơn được ưu tiên. Đặt 0 để node không thể làm primary.")]);
 }
 function openAction(action,overrides={}){
   jobId=null;const schema=schemas[action];
@@ -795,6 +810,7 @@ function openAction(action,overrides={}){
     ?m.mode==='ssh'&&(!m.profile_id||m.profile_id===cluster.id)&&!memberEndpoints.has(m.mongo_endpoint)
     :cluster?m.profile_id===cluster.id:!m.profile_id);
   const selectedHost=joining&&hosts.find(m=>m.id===overrides.machine_id);
+  if(selectedHost)overrides={votes:selectedHost.votes??1,priority:selectedHost.priority??1,...overrides};
   if(joining&&overrides.machine_id&&!selectedHost){
     toast(dataLabel('VPS đã chọn không còn đủ điều kiện để thêm. Kiểm tra danh sách thành viên và hồ sơ SSH.','The selected VPS is no longer eligible. Check replica set membership and its SSH profile.'),true);
     return;
@@ -915,12 +931,12 @@ async function runPlan(action,plan,confirmation){
   catch(error){if(await followBusyJob(error))return;throw error;}
   await refreshState();
 }
-async function checkMachine(machineId){
+async function runMachineRead(machineId, action){
   const machine=machines().find(item=>item.id===machineId);
   if(!machine)return;
-  const plan=demo?{label:schemas.preflight.title,target:machine.name,params:{},notices:[],confirmation:''}:
-    await api('/plans',{method:'POST',body:JSON.stringify({action:'preflight',machine_id:machineId,profile_id:'',params:{}})});
-  await runPlan('preflight',plan,'');
+  const plan=demo?{label:schemas[action].title,target:machine.name,params:{},notices:[],confirmation:''}:
+    await api('/plans',{method:'POST',body:JSON.stringify({action,machine_id:machineId,profile_id:'',params:{}})});
+  await runPlan(action,plan,'');
 }
 function showPreview(plan){
   previewPlan=plan;
@@ -946,6 +962,20 @@ function showPreview(plan){
       back+(!i.blocked&&i.path.length?button(dataLabel('Nâng Ubuntu','Upgrade Ubuntu'),'action-apply','arrow','primary'):(i.version||i.blocked)?'':install));
     return;
   }
+  if(actionContext.action==='convert_role'){
+    const {host,role}=plan.params;
+    const secondary=role==='SECONDARY';
+    const source=secondary?'ARBITER':'SECONDARY';
+    const title=dataLabel('Xác nhận chuyển sang ','Confirm conversion to ')+role;
+    const details=secondary
+      ?dataLabel('Secondary sẽ đồng bộ lại dữ liệu của cụm từ đầu.','The secondary will perform a full initial sync.')
+      :dataLabel('Arbiter chỉ bỏ phiếu. Cụm sẽ có ít hơn một bản sao dữ liệu đang hoạt động.','The arbiter only votes. The cluster will have one fewer active data copy.');
+    const note=dataLabel('Manager sẽ kiểm tra quorum, dừng mongod trên VPS này và giữ thư mục dữ liệu cũ.','Manager will check quorum, stop mongod on this VPS and retain the old data directory.');
+    const submit=demo?uiText('Chạy mô phỏng'):dataLabel('Chuyển sang ','Convert to ')+role;
+    modal(title,`<div class="modal-body"><div class="review-params"><div class="review-row"><span>${uiText('Endpoint')}</span><strong>${esc(host)}</strong></div><div class="review-row"><span>${esc(plan.target)}</span><strong>${source} → ${esc(role)}</strong></div></div><p>${note} ${details}</p><div id="form-error"></div></div>`,
+      button(uiText('Hủy'),'modal-close')+button(submit,'action-apply','check','primary'));
+    return;
+  }
   let electionPicker='';
   if(actionContext.action==='step_down'){
     const options=[{value:'',label:uiText("Để MongoDB tự bầu")}];
@@ -958,7 +988,7 @@ function showPreview(plan){
     }
     electionPicker=field('next_primary',uiText("Primary mong muốn"),'','select',uiText("Chỉ secondary khỏe có Votes = 1 và Ưu tiên > 0 mới xuất hiện."),true,options);
   }
-  modal(uiText("Xác nhận thao tác"),`<div class="modal-body"><div class="review-params"><div class="review-row"><span>${uiText("Tác vụ")}</span><span>${esc(plan.label)}</span></div><div class="review-row"><span>${uiText("Máy / cụm đích")}</span><span>${esc(plan.target)}</span></div>${Object.entries(plan.params).map(([k,v])=>`<div class="review-row"><span>${esc(labels[k]||k)}</span><span>${esc(k==='operation'&&actionContext.action==='service'?(schema.fields[0][6].find(option=>option.value===v)?.label||v):k==='destination_id'?(profiles().find(p=>p.id===v)?.name||v):k==='databases'?(v.join(', ')||uiText('Tất cả')):typeof v==='boolean'?(v?uiText("Bật"):uiText("Tắt")):v||'—')}</span></div>`).join('')}</div>${electionPicker}${plan.notices.map(n=>`<div class="callout">${esc(n)}</div>`).join('')}${demo?("<div class=\"callout neutral\">"+uiText("Đây là mô phỏng. Không có lệnh nào được gửi đến máy chủ.")+"</div>"):''}<div id="form-error"></div></div>`,(['remove_member','step_down','arbiter_upgrade'].includes(actionContext.action)?button(uiText("Hủy"),'modal-close'):button(uiText("Quay lại"),'action-back'))+button(demo?uiText("Chạy mô phỏng"):uiText("Thực hiện"),'action-apply','check','primary'));
+  modal(uiText("Xác nhận thao tác"),`<div class="modal-body${electionPicker?' step-down-review':''}"><div class="review-params"><div class="review-row"><span>${uiText("Tác vụ")}</span><span>${esc(plan.label)}</span></div><div class="review-row"><span>${uiText("Máy / cụm đích")}</span><span>${esc(plan.target)}</span></div>${Object.entries(plan.params).map(([k,v])=>`<div class="review-row"><span>${esc(labels[k]||k)}</span><span>${esc(k==='operation'&&actionContext.action==='service'?(schema.fields[0][6].find(option=>option.value===v)?.label||v):k==='destination_id'?(profiles().find(p=>p.id===v)?.name||v):k==='databases'?(v.join(', ')||uiText('Tất cả')):typeof v==='boolean'?(v?uiText("Bật"):uiText("Tắt")):v||'—')}</span></div>`).join('')}</div>${electionPicker}${plan.notices.map(n=>`<div class="callout">${esc(n)}</div>`).join('')}${demo?("<div class=\"callout neutral\">"+uiText("Đây là mô phỏng. Không có lệnh nào được gửi đến máy chủ.")+"</div>"):''}<div id="form-error"></div></div>`,(['remove_member','step_down','arbiter_upgrade'].includes(actionContext.action)?button(uiText("Hủy"),'modal-close'):button(uiText("Quay lại"),'action-back'))+button(demo?uiText("Chạy mô phỏng"):uiText("Thực hiện"),'action-apply','check','primary'));
 }
 function sshKeyButton(id){
   return button(dataLabel('Xác minh khóa SSH','Verify SSH host key'),'ssh-key','shield','',`data-id="${esc(id)}"`);
@@ -979,7 +1009,7 @@ async function verifySSHKey(id){
       if(save.isConnected){
         $('#modal').close();
         if(fromCatalog&&currentRoute==='backup'&&selectedArchiveHost()?.id===id)await render();
-        else await checkMachine(id);
+        else await runMachineRead(id,'preflight');
       }
     }
     catch(error){if(save.isConnected){formError(error);save.disabled=false;}else toast(error.message,true);}
@@ -1032,6 +1062,8 @@ async function saveRecord(form){
   if(ctx.kind==='profiles'){data=profileFormData(form);data.machines=clusterSSHData();}
   else {
     data.name=data.name.trim();
+    data.votes=Number(form.elements.votes.value);
+    data.priority=Number(data.priority);
     data.auto_name=!data.name;
     data.name||=form.elements.name.dataset.fallback;
     data.profile_id=ctx.profileId;
@@ -1062,6 +1094,7 @@ async function saveRecord(form){
   await render();
   if(next){
     const {action='join_fresh',...options}=next;
+    Object.assign(options,{votes:data.votes,priority:data.priority});
     if(action==='add_member')openAction(action,{...options,host:saved.mongo_endpoint||options.host});
     else {
       if(saved.mongo_endpoint&&!options.advertise){
@@ -1193,7 +1226,7 @@ document.addEventListener('click',async event=>{
     if(act==='ubuntu-recheck'){openAction('ubuntu_upgrade',{machine_id:target.dataset.id,series:target.dataset.series});return;}
     if(act==='password-toggle'){event.preventDefault();await togglePassword(target);return;}
     if(act==='ssh-key'){await verifySSHKey(target.dataset.id);return;}
-    if(act==='preflight'&&target.dataset.id){target.disabled=true;await checkMachine(target.dataset.id);return;}
+    if(['preflight','logs'].includes(act)&&target.dataset.id){target.disabled=true;await runMachineRead(target.dataset.id,act);return;}
     if(act==='ssh-bulk'){openBulkSSH();return;}
     if(act==='logout'){await api('/auth/logout',{method:'POST',body:'{}'});showLogin();return;}
     if(act==='sidebar'){
@@ -1296,12 +1329,13 @@ document.addEventListener('click',async event=>{
     if(act==='job-open'){await openJob(target.dataset.id);return;}
     if(act==='diagnose'){target.disabled=true;await runDiagnostics();return;}
     if(act==='collections'){await openDataExplorer(target.dataset.db);return;}
-    if(act==='member-remove'||act==='step-down'){
+    if(['member-remove','member-convert','step-down'].includes(act)){
       target.disabled=true;
       const cluster=profile();
       if(!cluster){showRecord('profiles');return;}
-      const action=act==='step-down'?'step_down':'remove_member';
+      const action={'step-down':'step_down','member-remove':'remove_member','member-convert':'convert_role'}[act];
       const params=action==='step_down'?{}:{host:target.dataset.host};
+      if(action==='convert_role')params.role=target.dataset.role;
       const plan=demo?{label:schemas[action].title,target:cluster.name,params,notices:[schemas[action].note],confirmation:cluster.name}:
         await api('/plans',{method:'POST',body:JSON.stringify({action,profile_id:cluster.id,params})});
       actionContext={action,profileId:cluster.id,overrides:params};

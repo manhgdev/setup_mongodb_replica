@@ -229,3 +229,15 @@ td .password-control input[readonly] { min-width:9rem; padding-block:7px; border
 
 #modal:has(#manager-admin-form) { width: min(560px, calc(100vw - 24px)); }
 #manager-admin-form .form-error:empty { display: none; }
+
+.step-down-review { display:grid; align-content:start; gap:14px; }
+.step-down-review .review-params,
+.step-down-review .callout { margin:0; }
+.step-down-review .review-row {
+  display:grid;
+  grid-template-columns:minmax(0, 32%) minmax(0, 1fr);
+  align-items:baseline;
+}
+.step-down-review .review-row span:last-child { text-align:start; }
+.step-down-review .callout { padding:10px 14px; line-height:1.55; }
+.step-down-review #form-error:empty { display:none; }

@@ -87,6 +87,8 @@ class Profile(StrictModel):
 
 
 class Machine(StrictModel):
+    votes: int = Field(default=1, strict=True, ge=0, le=1)
+    priority: float = Field(default=1, ge=0, le=1000)
     auto_name: bool = False
     name: str = Field(min_length=1, max_length=80)
     mode: Literal["local", "ssh"] = "ssh"
