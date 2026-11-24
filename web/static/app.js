@@ -1057,6 +1057,12 @@ function showPreview(plan){
     modal(dataLabel('MongoDB đã cập nhật','MongoDB is up to date'),`<div class="modal-body"><strong>${esc(plan.target)}</strong><p>${esc(dataLabel('Phiên bản đã cài khớp với bản mới nhất trong kho của nhánh đã chọn.','The installed version matches the latest package in this series.'))}</p><p>${plan.notices.map(esc).join('<br>')}</p></div>`,button(uiText('Đóng'),'modal-close'));
     return;
   }
+  if(plan.install_required){
+    modal(dataLabel('Chưa cài MongoDB','MongoDB is not installed'),
+      `<div class="modal-body"><strong>${esc(plan.target)}</strong><p>${dataLabel('Máy chưa có mongod. Bạn có thể xem kế hoạch cài MongoDB Community trên máy này.','This server has no mongod installation. You can preview a MongoDB Community installation on this server.')}</p></div>`,
+      button(uiText('Đóng'),'modal-close')+button(dataLabel('Xem kế hoạch cài','Preview installation'),'mongo-install-preview','db','primary'));
+    return;
+  }
   if(plan.install_blocked){
     modal(uiText('Cài MongoDB'),`<div class="modal-body"><strong>${esc(plan.target)}</strong><p>${esc(plan.install_blocked)}</p></div>`,
       button(uiText('Quay lại'),'action-back')+button(dataLabel('Quản lý Ubuntu','Manage Ubuntu'),'ubuntu-install-plan','server','primary'));
@@ -1399,6 +1405,12 @@ document.addEventListener('click',async event=>{
       return;
     }
     if(act==='compatibility-refresh'){await loadCompatibility();return;}
+    if(act==='mongo-install-preview'){
+      const machine_id=actionContext.overrides.machine_id,params={series:previewPlan.params.series};
+      const plan=await api('/plans',{method:'POST',body:JSON.stringify({action:'install',machine_id,profile_id:'',params})});
+      if(target.isConnected){actionContext={action:'install',overrides:{machine_id,...params},profileId:''};showPreview(plan);}
+      return;
+    }
     if(act==='ubuntu-install-plan'){openAction('ubuntu_upgrade',actionContext.overrides);return;}
     if(act==='ubuntu-from-install'){
       const form=$('#action-form');

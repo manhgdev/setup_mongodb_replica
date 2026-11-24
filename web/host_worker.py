@@ -1473,6 +1473,10 @@ def stopped_mongo_package(p):
     if state != "inactive":
         return {}
     if run(["systemctl", "show", "-p", "LoadState", "--value", service]) != "loaded":
+        package = run(["dpkg-query", "-W", "-f=${db:Status-Abbrev}", "mongodb-org-server"], check=False)
+        if (not shutil.which("mongod") and package.strip() not in {"ii", "hi"}
+                and not run(["pgrep", "-x", "mongod"], check=False)):
+            return {"role": "NOT_INSTALLED"}
         raise ValueError("Không tìm thấy dịch vụ MongoDB đã cấu hình trên VPS.")
     status = run(["dpkg-query", "-W", "-f=${db:Status-Abbrev} ${Version}", "mongodb-org-server"], check=False).split()
     if len(status) != 2 or status[0] not in {"ii", "hi"}:

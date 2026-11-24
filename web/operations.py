@@ -543,6 +543,8 @@ def mongo_upgrade_node(profile, machine, series):
     if not endpoint or machine.get("profile_id") != profile["id"]:
         raise ValueError("Cần liên kết VPS với đúng endpoint và hồ sơ MongoDB.")
     stopped = host_run(machine, "mongo_stopped_package", {"port": int(endpoint.rsplit(":", 1)[1])}, lambda _: None)
+    if stopped.get("role") == "NOT_INSTALLED":
+        return stopped
     if stopped:
         if stopped["current"].rsplit(".", 1)[0] != series:
             raise ValueError("Dịch vụ đã dừng. Chọn cùng nhánh để nâng gói. Đổi nhánh cần xác minh FCV của dữ liệu.")

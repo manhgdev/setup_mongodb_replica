@@ -767,7 +767,12 @@ def create_app(data_dir=None):
         package_wait = False
         mongo_current = False
         if body.action == "mongo_upgrade":
-            node = mongo_upgrade_node(profile, machine, params["series"])
+            try:
+                node = mongo_upgrade_node(profile, machine, params["series"])
+            except (RuntimeError, OSError) as exc:
+                raise ValueError(redact(str(exc), machine.get("ssh_password") or "")) from exc
+            if node.get("role") == "NOT_INSTALLED":
+                return {"install_required": True, "target": target, "params": {"series": params["series"]}}
             def inspect_host(action, arguments):
                 try:
                     return host_run(machine, action, arguments, lambda _: None)

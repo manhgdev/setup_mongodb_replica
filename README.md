@@ -2,7 +2,7 @@
 
 Quản trị MongoDB Community trên VPS Ubuntu từ một giao diện web tiếng Việt hoặc tiếng Anh. Mỗi workspace tương ứng với một cụm. Manager kết nối MongoDB để đọc dữ liệu và quản lý replica set. Khi cần cài gói, điều khiển dịch vụ hoặc đọc nhật ký, Manager dùng SSH của VPS được chọn.
 
-[Chạy Manager](#quickstart) · [Kết nối cụm có sẵn](#connect) · [Dựng cụm mới](#bootstrap) · [Thêm Secondary](#secondary) · [Backup và restore](#backup)
+[Tra cứu chức năng theo màn hình](#manual) · [Chạy Manager](#quickstart) · [Kết nối cụm có sẵn](#connect) · [Dựng cụm mới](#bootstrap) · [Thêm Secondary](#secondary) · [Backup và restore](#backup)
 
 <a id="quickstart"></a>
 
@@ -69,23 +69,93 @@ Mở đúng workspace. Nếu đã lưu hồ sơ máy, bấm **Thêm làm Seconda
 
 Kiểm tra **Votes** và **Ưu tiên bầu primary** trước khi xác nhận. Secondary mới mặc định là **1 / 1**. Theo dõi tác vụ đến khi node đạt **SECONDARY**. Nếu tác vụ báo member đã được thêm và đang đồng bộ, mở **Replica Set** để theo dõi tiến độ.
 
-## Quản trị hằng ngày
+<a id="manual"></a>
 
-| Muốn làm gì? | Mở ở đâu? |
+## Sổ tay theo màn hình
+
+| Trang trong thanh bên | Công việc chính |
 | --- | --- |
-| Xem topology, độ trễ và vai trò | **Tổng quan**. Bấm node để mở đúng VPS. Nhấp đúp tên để đổi nhãn hiển thị. |
-| Thêm arbiter, sửa Votes hoặc ưu tiên, bàn giao primary | **Replica Set**. Trong **Step down Primary**, chọn secondary đủ điều kiện hoặc để MongoDB tự bầu. |
-| Kiểm tra VPS, đọc journal, xử lý lỗi khởi động | **Máy chủ → Dịch vụ**. Manager kiểm tra trạng thái systemd, PID và cổng của instance đã chọn. |
-| Gỡ node hoặc xóa hồ sơ VPS | **Gỡ** kiểm tra quorum, dừng dịch vụ và gỡ membership, giữ hồ sơ SSH cùng dữ liệu. **Xóa** bỏ hồ sơ quản trị sau khi kiểm tra dịch vụ. |
-| Xem hoặc sửa document | **Dữ liệu → database → collection**. Bấm vào giá trị để sửa, kể cả trường con, rồi bấm **Lưu**. Có bộ lọc, phân trang và chế độ Extended JSON. |
-| Quản lý tài khoản database | **User & phân quyền**. Chọn database xác thực và role. Tài khoản đăng nhập web được quản lý riêng qua avatar. |
+| [Tổng quan](#overview), [Các cụm MongoDB](#clusters) | Chọn workspace, theo dõi topology, thêm hoặc chỉnh hồ sơ cụm |
+| [Máy chủ](#machines), [Replica Set](#replica) | Quản trị VPS qua SSH, thêm/gỡ member, cấu hình bầu chọn và write concern |
+| [User & phân quyền](#users), [Dữ liệu](#data) | Tạo tài khoản database, duyệt collection và chỉnh document |
+| [Backup & restore](#backup) | Sao lưu một phần hoặc toàn cụm, duyệt archive, lập lịch và chọn đích restore |
+| [Cấu hình](#settings), [Chẩn đoán](#diagnostics) | Sửa kết nối, cấu hình SSH, kiểm tra MongoDB và dịch vụ hệ điều hành |
+| [Phiên bản & nâng cấp](#upgrade), [Lịch sử tác vụ](#jobs) | Kiểm tra điều kiện, chọn phạm vi nâng cấp và đọc tiến độ theo VPS |
 
-<details>
-<summary>Xem ảnh trang Máy chủ</summary>
+<a id="overview"></a>
 
-![Danh sách VPS, endpoint MongoDB và thao tác theo từng máy](previews/guide-machines.jpg)
+### Tổng quan
 
-</details>
+Chọn workspace ở thanh bên. Sơ đồ ở đầu README thể hiện các vai trò mà MongoDB đang báo. Bấm một node để mở đúng dòng VPS ở **Máy chủ**. Nhấp đúp tên để sửa nhãn hiển thị. Tên riêng giúp nhận diện cùng một VPS khi replica set đổi primary.
+
+Các thẻ trạng thái, member, độ trễ và backup dẫn đến phần quản trị tương ứng. **Hoạt động gần đây** giúp mở lại tác vụ vừa chạy để xem kết quả. Khi cần xác minh sau khi thêm node, kiểm tra cả vai trò **SECONDARY** và trạng thái sức khỏe trong bảng member.
+
+<a id="clusters"></a>
+
+### Các cụm MongoDB
+
+Mỗi hồ sơ lưu tên hiển thị, seed list, tên replica set, database xác thực và tùy chọn TLS. Seed có thể là địa chỉ của primary hoặc secondary. Có thể để trống tên replica set để Manager nhận diện khi kết nối. Khi bật TLS, nhập đường dẫn CA trên **máy chạy Manager** nếu cần CA riêng.
+
+- **Kiểm tra kết nối** dùng thông tin đang nhập để thử đọc cụm. **Kiểm tra & lưu cụm** lưu hồ sơ và các liên kết VPS đã khai báo. Manager thử lấy hostname cho những máy dùng tên tự động.
+- **Chỉnh kết nối** dùng khi đổi endpoint, tài khoản hoặc thiết lập TLS. **Xóa hồ sơ** bỏ kết nối đã lưu trong Manager. Để thay đổi membership thật, dùng **Gỡ** trên member của replica set.
+- **SSH cho tất cả các cụm** cho phép đánh dấu những VPS thực sự dùng chung tài khoản. Việc lưu cập nhật thông tin đăng nhập của Manager. Mật khẩu Linux trên VPS chỉ thay đổi khi quản trị viên thay đổi trên chính VPS.
+
+![Trang Các cụm MongoDB trong workspace minh họa](previews/guide-clusters.jpg)
+
+<a id="machines"></a>
+
+### Máy chủ
+
+Thêm VPS bằng **IP public** hoặc DNS public, **cổng MongoDB** (thường là 27017), **user SSH** và **port SSH** (thường là 22). Nếu SSH dùng hostname khác endpoint MongoDB, mở **Địa chỉ SSH riêng**. Kiểm tra **Tên service** khi một VPS có nhiều instance. Ô này phải trỏ tới systemd unit quản lý đúng tiến trình.
+
+| Thao tác | Kết quả và điều cần kiểm tra |
+| --- | --- |
+| Lấy tên từ VPS | Đọc hostname qua SSH cho các máy thuộc workspace. Có thể nhập tên riêng trong **Sửa**. |
+| Kiểm tra | Chạy kiểm tra môi trường trên đúng VPS của dòng đã bấm. Kết quả cho biết công cụ MongoDB và dịch vụ hiện có. |
+| Đọc nhật ký | Mở journal của service trong hồ sơ. Dùng khi cài đặt, khởi động hoặc chuẩn bị node gặp lỗi. |
+| Dịch vụ | Chọn khởi động, dừng, khởi động lại, bật hoặc tắt tự chạy khi boot. Dừng service sẽ ngắt các kết nối tới instance đó. |
+| Thêm làm Secondary / Arbiter | Mở biểu mẫu với VPS đã chọn. Dòng máy chưa thuộc cụm nằm sau các member hiện có. |
+| Gỡ | Kiểm tra quorum, xác minh tiến trình, dừng service, tắt tự khởi động và gỡ membership. Giữ hồ sơ SSH và dữ liệu để có thể thêm lại. Với primary, bàn giao vai trò trước. |
+| Xóa | Xóa hồ sơ VPS khỏi Manager sau khi kiểm tra lại trạng thái dịch vụ. Dùng khi muốn bỏ máy khỏi danh sách quản trị. |
+
+SSH hỗ trợ mật khẩu và key/agent. Với mật khẩu, Manager lưu host key ở lần kết nối đầu. Nếu khóa thay đổi, đối chiếu fingerprint từ console VPS rồi cập nhật qua **Xác minh khóa SSH**. Khi chạy Manager dưới systemd, SSH dùng home và known_hosts của tài khoản chạy dịch vụ.
+
+![Máy chủ và các thao tác riêng cho từng VPS](previews/guide-machines.jpg)
+
+<a id="replica"></a>
+
+### Replica Set
+
+**PRIMARY** nhận ghi. **SECONDARY** đồng bộ dữ liệu và có thể ứng cử nếu đủ điều kiện. **ARBITER** bỏ phiếu và không lưu bản sao dữ liệu ứng dụng. Bảng **Thành viên** hiển thị endpoint và cấu hình bầu chọn để đối chiếu trước khi sửa.
+
+- **Votes, ưu tiên, Hidden.** Votes nhận 0 hoặc 1. Ưu tiên 0 loại node khỏi danh sách ứng cử primary. Node hidden hoặc có Votes = 0 cần ưu tiên 0. Secondary mặc định Votes = 1, ưu tiên = 1. Arbiter dùng Votes = 1, ưu tiên = 0.
+- **Đổi primary / Step down Primary.** Để MongoDB tự bầu hoặc chọn một secondary khỏe có quyền bỏ phiếu và ưu tiên dương. Manager kiểm tra đồng bộ và quorum trước khi bàn giao. Xem lại endpoint **PRIMARY** sau khi tác vụ kết thúc. Trong lúc bầu, ghi có thể gián đoạn ngắn.
+- **Chuyển sang SECONDARY / ARBITER.** Kiểm tra endpoint và vai trò đích trong popup. Luồng chuyển vai trò dừng service trên VPS đã chọn rồi thêm lại với thư mục dữ liệu mới. Khi chuyển thành Secondary cần chờ đồng bộ ban đầu. Kiểm tra dung lượng trống trước khi chạy.
+- **Write Concern.** Chọn mức xác nhận ghi mặc định của cụm. Với `w=1`, primary xác nhận ghi. Với `majority`, việc xác nhận phụ thuộc số member dữ liệu có quyền bỏ phiếu. Trong cụm một primary, một secondary và một arbiter, cả hai node dữ liệu cần sẵn sàng để xác nhận ghi majority.
+
+![Bảng member, cấu hình bầu chọn và các thao tác Replica Set](previews/guide-replica.jpg)
+
+<a id="users"></a>
+
+### User & phân quyền
+
+**Tạo user** yêu cầu username, mật khẩu, database xác thực và role. Với tài khoản ứng dụng, chọn database ứng dụng cùng `read`, `readWrite` hoặc `dbAdmin` theo nhu cầu. Biểu mẫu dùng database `admin` cho các role `backup`, `clusterMonitor` và `root`.
+
+Bảng định danh user bằng cả **username và database xác thực**. Bấm **Đổi mật khẩu** ở đúng dòng. Nếu đó là tài khoản kết nối hiện tại, Manager cập nhật mật khẩu hồ sơ sau khi MongoDB chấp nhận thay đổi. **Lưu mật khẩu** dành cho tài khoản đã có: nhập mật khẩu biết trước để Manager xác thực và lưu mã hóa. Biểu tượng mắt hiển thị giá trị đã lưu. **Xóa** thu hồi user trong database xác thực đã chọn.
+
+![Danh sách user, database xác thực, role và thao tác mật khẩu](previews/guide-users.jpg)
+
+<a id="data"></a>
+
+### Dữ liệu
+
+1. Chọn database rồi mở **Collections**. Tìm collection bằng tên trong panel trái. Kéo đường phân cách để chỉnh chiều rộng, hoặc thu gọn panel khi cần thêm chỗ xem document.
+2. Chọn **Bảng gọn** để so sánh các dòng hoặc **Chi tiết** để mở cấu trúc lồng nhau. Chọn 5, 10 hoặc 25 document mỗi trang. Có thể cuộn trong khung và dùng nút phân trang. Mở **Indexes** để xem tên và khóa index của collection.
+3. Để lọc, nhập đường dẫn trường và giá trị. Ví dụ `metadata.sequence` với `42` tìm giá trị số, còn `"42"` tìm chuỗi. Với ObjectId, dùng Extended JSON, ví dụ `{"$oid":"507f1f77bcf86cd799439011"}`.
+4. Mở một document, bấm trực tiếp giá trị cần sửa rồi **Lưu**. Dùng **Sửa JSON** khi cần sửa nhiều trường cùng lúc. Khi thêm document có thể bỏ `_id` để MongoDB tự sinh. Khi cập nhật, giữ nguyên `_id`.
+5. **Backup collection** điền sẵn database và collection đang xem. **Xóa** trong popup document tác động một document. **Xóa database** ở danh sách database tác động toàn bộ database ứng dụng đã chọn.
+
+![Trình duyệt dữ liệu mở đến collection với bộ lọc và danh sách document](previews/guide-data.jpg)
 
 <a id="backup"></a>
 
@@ -97,6 +167,44 @@ Kiểm tra **Votes** và **Ưu tiên bầu primary** trước khi xác nhận. S
 2. **Kiểm tra bản sao.** Trong **Các bản backup**, đối chiếu ID, thời điểm, nguồn và phạm vi. Bấm **Xem dữ liệu** để duyệt collection trong archive.
 3. **Khôi phục.** Bấm **Restore** trên dòng bản sao, chọn cụm đích hoặc một endpoint standalone có thể ghi. Khi chọn thay thế collection, kiểm tra kỹ database và đích nhận trước khi thực hiện.
 4. **Lặp lại theo lịch.** Mở **Lịch backup**, chọn phạm vi và giờ chạy. Ví dụ cron `0 2 * * *` chạy lúc 02:00 hằng ngày theo giờ Việt Nam khi Manager đang hoạt động. **Đồng bộ ngay** tạo backup mới rồi restore một lần vào cụm độc lập.
+
+### Đọc và kiểm chứng bản backup
+
+Trên mỗi dòng, dùng **ID backup**, thời gian, phạm vi và tên máy lưu để nhận diện đúng bản. Hai VPS có thể cùng có thư mục `/var/backups/mongodb-manager` nhưng chứa các archive khác nhau. Nếu danh sách trống hoặc thiếu manifest, kiểm tra lại máy lưu trước khi chạy lại restore.
+
+- **Xem dữ liệu** mở danh sách collection trong archive. Với backup một phần, nhóm **Từ bản backup khác** cho biết collection đang được đọc từ bản sao khác của cùng nguồn. Đối chiếu thời điểm trước khi dùng dữ liệu để kiểm chứng.
+- **Backup lại** tạo một bản mới. **Xóa** trên dòng backup xóa bản lưu trên máy chứa archive. Cột lịch sử restore cho biết những lần Manager đã khôi phục thành công và đích nhận.
+- **Restore** kiểm tra checksum trước khi ghi. Nếu gặp khóa trùng, kiểm tra đích đã có dữ liệu chưa. Với backup theo collection, Manager có thể đối chiếu BSON, cấu hình và index để nhận ra bản đã khôi phục trùng khớp. Chỉ bật thay thế collection nếu muốn bỏ nội dung hiện có ở đích.
+- **Lịch backup** thuộc từng workspace. Sau khi bật, kiểm tra giờ chạy kế tiếp trên giao diện. **Tạm dừng lịch** ngừng các lượt tiếp theo. Đóng tab vẫn chạy lịch khi tiến trình Manager còn hoạt động. Lịch sử từng lượt nằm trong **Lịch sử tác vụ**.
+
+![Trang Backup và restore với lựa chọn máy lưu và danh sách archive](previews/guide-backup.jpg)
+
+<a id="settings"></a>
+
+## Cấu hình workspace
+
+Mở **Cấu hình** để đối chiếu tên cụm, seed list, replica set, username, auth database và TLS. **Chuỗi kết nối** hiển thị thông tin kết nối của workspace. **Chỉnh kết nối** mở hồ sơ hiện tại. Phần **SSH cho cụm hiện tại** áp dụng thông tin SSH cho những máy được đánh dấu. Khi thêm VPS mới sau đó, cấu hình SSH cho VPS mới riêng.
+
+Tài khoản trong **Sửa tài khoản quản trị** dùng để đăng nhập web. Khi đổi tên hoặc mật khẩu, nhập mật khẩu Manager hiện tại, lưu và đăng nhập lại. Lưu mã khôi phục mới. Có thể đổi ngôn ngữ Việt/English từ màn hình đăng nhập hoặc thanh trên cùng.
+
+![Cấu hình workspace với hồ sơ MongoDB và SSH cho cụm](previews/guide-settings.jpg)
+
+<a id="diagnostics"></a>
+
+## Chẩn đoán theo triệu chứng
+
+| Hiện tượng | Kiểm tra trong Manager |
+| --- | --- |
+| MongoDB chạy nhưng Manager không kết nối được | **Chẩn đoán → Kiểm tra kết nối**. Đọc kết quả theo từng endpoint. Đối chiếu IP public, cổng, TLS và database xác thực. |
+| Arbiter báo giới hạn quyền đọc phiên bản | Kiểm tra vai trò qua `hello` và xem nguồn phiên bản trong bảng VPS. Phiên bản lấy từ binary trên VPS có thể vẫn đọc được qua SSH. |
+| `mongod` khởi động thất bại | **Máy chủ → Dịch vụ → Chẩn đoán dịch vụ**. Xem trạng thái systemd, PID, listener và journal. Nếu MongoDB ghi file log riêng, đọc thêm đường dẫn `systemLog.path`. |
+| Cổng bị chiếm khi thêm Secondary | Đối chiếu tên tiến trình, PID và địa chỉ bind. Nếu là standalone trống trên loopback, xem lựa chọn ở mục [Thêm Secondary](#secondary). |
+| Keyfile sai quyền | Với instance Manager đã dừng, chọn **Sửa quyền keyfile và khởi động instance Manager**. Manager xác minh unit, cấu hình và owner trước khi đặt mode 0400 và khởi động. |
+| Thiếu dung lượng hoặc có dấu hiệu lỗi WiredTiger | Kiểm tra nơi chứa dbPath và log. Giữ bản sao có thể phục hồi trước khi xử lý lưu trữ. Trang dịch vụ đưa kết quả chẩn đoán cho quản trị viên. |
+
+![Ba phép kiểm tra kết nối MongoDB, môi trường VPS và nhật ký dịch vụ](previews/guide-diagnostics.jpg)
+
+<a id="upgrade"></a>
 
 ## Kiểm tra phiên bản và nâng cấp
 
@@ -111,6 +219,22 @@ Ba nút **Nâng cấp Ubuntu**, **Nâng cấp MongoDB** và **Nâng cả hai** m
 
 </details>
 
+### Đọc kế hoạch trước khi nâng
+
+**Kiểm tra điều kiện** đọc phiên bản MongoDB, FCV và sức khỏe cụm. Khi chọn **Nâng cấp Ubuntu**, xem bản hiện tại, bản đích, các chặng LTS, kiến trúc và gói MongoDB có trong kho. Khi chọn **Nâng cấp MongoDB**, kiểm tra nhánh đích, phiên bản gói, service, vai trò node và điều kiện FCV. **Nâng cả hai** dùng cho kế hoạch thay đổi cả hệ điều hành lẫn MongoDB trên VPS đang chọn. Bấm xem kế hoạch trước khi xác nhận chạy.
+
+Trong lúc nâng Ubuntu, theo dõi gói đang xử lý và giai đoạn chờ VPS reboot. Khi máy quay lại, chạy **Kiểm tra lại** để xác minh Ubuntu, phiên bản binary, trạng thái service và vai trò MongoDB. Với nâng cả cụm, theo dõi từng node trở lại trạng thái khỏe trước khi chuyển sang node tiếp theo.
+
+<a id="jobs"></a>
+
+## Lịch sử tác vụ
+
+Mở **Lịch sử tác vụ → Chi tiết** để xem tên thao tác, VPS hoặc cụm đích, thời điểm, nhật ký các bước và kết quả. Popup cập nhật trong khi tác vụ chạy. Có thể đóng popup rồi mở lại cùng tác vụ.
+
+Nếu một thao tác đang giữ đúng VPS hoặc tài nguyên cụm mà thao tác mới cần, Manager mở nhật ký của tác vụ đang giữ tài nguyên. Công việc độc lập trên VPS khác có thể chạy song song. Sau lỗi, đọc bước cuối đã hoàn tất trước khi thử lại. Ví dụ, nếu membership đã được ghi nhưng hết thời gian chờ đồng bộ, kiểm tra node trên **Replica Set** trước khi thêm lần nữa.
+
+![Lịch sử tác vụ của workspace với trạng thái và nút mở chi tiết](previews/guide-jobs.jpg)
+
 ## Vận hành Manager
 
 - **Chuyển máy quản trị.** Sao lưu toàn bộ `.web-data/`, hoặc thư mục cấu hình qua `MONGO_MANAGER_DATA`, gồm cơ sở dữ liệu và khóa mã hóa. Archive của các cụm được lưu riêng trên máy thực thi backup.
@@ -121,6 +245,10 @@ Ba nút **Nâng cấp Ubuntu**, **Nâng cấp MongoDB** và **Nâng cả hai** m
 Trong bảng theo dõi Ubuntu, dòng **SSH** hiển thị lần thử kết nối gần nhất khi VPS tạm ngắt. Khi kết nối lại, bảng cập nhật chặng và tiến độ, còn nhật ký giữ thời điểm ngắt để đối chiếu.
 
 ![Theo dõi kết nối SSH khi nâng Ubuntu](previews/ubuntu-ssh-status.jpg)
+
+Nếu bước nâng MongoDB phát hiện VPS chưa cài mongod, bấm **Xem kế hoạch cài** để kiểm tra bản cài mới trên đúng máy và nhánh đã chọn.
+
+![Bước MongoDB trên máy chưa cài](previews/mongo-install-required.jpg)
 
 ## Cập nhật tài liệu
 
