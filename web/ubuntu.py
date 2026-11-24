@@ -4,7 +4,7 @@ import time
 from pymongo import ReadPreference
 from pymongo.errors import AutoReconnect, PyMongoError
 
-from .host_worker import LTS
+from .releases import catalog
 from .operations import check_quorum, client, healthy_config, host_run
 
 
@@ -21,6 +21,8 @@ def inspect(machine, params):
 
 
 def mongo_state(machine, profile, info, handoff=False, verify=False):
+    if info.get("offline"):
+        return "MongoDB đang dừng. Manager giữ phiên bản gói và không khởi động dịch vụ.", {}
     if not info["version"]:
         return "Máy chưa cài MongoDB", {}
     if not profile or not machine.get("mongo_endpoint"):
@@ -74,11 +76,11 @@ def mongo_state(machine, profile, info, handoff=False, verify=False):
 
 
 def advance(store, job, machine, profile, ctx, stop, emit):
-    p = ctx["params"]
     expected = ctx["info"]
+    p = dict(ctx["params"], target=expected["target"])
     for index in range(ctx.get("index", 0), len(expected["path"])):
         stage = expected["path"][index]
-        args = dict(job_id=job["id"], stage=stage, series=expected["series"], version=expected["version"])
+        args = dict(job_id=job["id"], stage=stage, series=expected["series"], version=expected["version"], offline=expected.get("offline", False))
         while not stop.is_set():
             try:
                 state = host_run(machine, "ubuntu_status", args, lambda _: None)
@@ -103,17 +105,33 @@ def advance(store, job, machine, profile, ctx, stop, emit):
                 emit("Đã kết nối lại VPS và đọc trạng thái tác vụ.")
                 store.save("ubuntu-jobs", ctx, job["id"])
             phase = state["phase"]
-            if state.get("detail") and state["detail"] != ctx.get("detail") and time.time() - ctx.get("last_log", 0) >= 60:
+            progress = state.get("progress") or {}
+            sampled = time.time()
+            previous = ctx.get("download_sample", {})
+            unit = "bytes" if progress.get("bytes_total") else "packages"
+            total = progress.get(unit + "_total", 0)
+            done = progress.get(unit + "_done", 0)
+            sample_key = (stage, phase, unit, progress.get("package", ""), total)
+            if total and previous.get("key") == list(sample_key):
+                delta = done - previous["done"]
+                interval = sampled - previous["time"]
+                if delta > 0 and interval > 0:
+                    progress["eta_seconds"] = round((total - done) * interval / delta)
+            if total and (previous.get("key") != list(sample_key) or done != previous.get("done")):
+                ctx["download_sample"] = dict(key=list(sample_key), done=done, time=sampled)
+            job["upgrade_progress"] = dict(phase=PHASE_LABELS.get(phase, phase), detail=state.get("detail", ""), checked_at=sampled, **progress)
+            store.save("jobs", job, job["id"])
+            if state.get("detail") and state["detail"] != ctx.get("detail") and time.time() - ctx.get("last_log", 0) >= 10:
                 emit(state["detail"])
                 ctx.update(detail=state["detail"], last_log=time.time())
                 store.save("ubuntu-jobs", ctx, job["id"])
             if phase != ctx.get("phase"):
-                emit("Ubuntu " + LTS[stage] + " · " + PHASE_LABELS.get(phase, phase) + (" · " + state["log"] if state.get("log") else ""))
+                emit("Ubuntu " + catalog()["lts"][stage] + " · " + PHASE_LABELS.get(phase, phase) + (" · " + state["log"] if state.get("log") else ""))
                 ctx["phase"] = phase
                 store.save("ubuntu-jobs", ctx, job["id"])
             if phase in {"apt", "release", "reboot"}:
                 ctx.pop("launch_error", None)
-            if phase in {"prepare-reboot", "reboot"} and state["rebooted"] and expected["version"] and expected.get("machine_token"):
+            if phase in {"prepare-reboot", "reboot"} and state["rebooted"] and expected["version"] and not expected.get("offline") and expected.get("machine_token"):
                 source = expected["path"][index - 1] if index else expected["current"]
                 identity = {"machine_token": expected["machine_token"], "current": stage if phase == "reboot" else source}
                 host_run(machine, "ubuntu_restore_service", identity, emit)
@@ -145,7 +163,8 @@ def advance(store, job, machine, profile, ctx, stop, emit):
                     continue
                 if expected.get("machine_token") and expected["machine_token"] != info.get("machine_token"):
                     raise ValueError("Danh tính máy sau khi khởi động lại đã thay đổi.")
-                if info["version"] != expected["version"] or info["current"] != stage:
+                if (info["version"] != expected["version"] or info["current"] != stage
+                        or bool(info.get("offline")) != bool(expected.get("offline"))):
                     raise ValueError("Ubuntu hoặc phiên bản mongod sau reboot khác kế hoạch.")
                 if config != ctx.get("config", {}):
                     raise ValueError("Cấu hình mongod sau reboot khác cấu hình đã ghi nhận.")
@@ -158,6 +177,8 @@ def advance(store, job, machine, profile, ctx, stop, emit):
                     raise ValueError(ctx["launch_error"])
                 try:
                     info = inspect(machine, p)
+                    if ctx.get("plan", {}).get("public", {}).get("package_wait"):
+                        host_run(machine, "package_recover", {}, emit)
                     host_run(machine, "ubuntu_precheck", args, emit)
                     if phase == "prepare-reboot":
                         mongo_state(machine, profile, info)
@@ -169,7 +190,7 @@ def advance(store, job, machine, profile, ctx, stop, emit):
                         return None
                     continue
                 ctx.pop("ready_until", None)
-                if (info["path"] != expected["path"][index:] or info["version"] != expected["version"]
+                if (bool(info.get("offline")) != bool(expected.get("offline")) or info["path"] != expected["path"][index:] or info["version"] != expected["version"]
                         or (expected.get("machine_token") and info.get("machine_token") != expected["machine_token"])):
                     raise ValueError("Máy hoặc lộ trình nâng đã thay đổi. Kiểm tra lại.")
                 _, config = mongo_state(machine, profile, info, handoff=True)
@@ -185,4 +206,9 @@ def advance(store, job, machine, profile, ctx, stop, emit):
                 return None
         if stop.is_set():
             return None
-    return {"ubuntu": LTS[expected["target"]], "series": expected["series"], "version": expected["version"]}
+    if expected.get("machine_token") and expected["path"]:
+        emit("Kiểm tra zip, unzip, Node.js và PM2 sau nâng Ubuntu.")
+        tools = host_run(machine, "ubuntu_tools", dict(job_id=job["id"], stage=expected["target"],
+                         machine_token=expected["machine_token"]), emit)
+        emit("Đã kiểm tra " + ", ".join(f"{name} {version}" for name, version in tools.items()))
+    return {"ubuntu": catalog()["lts"][expected["target"]], "series": expected["series"], "version": expected["version"]}

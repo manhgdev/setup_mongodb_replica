@@ -1,0 +1,55 @@
+{
+  "lts": {
+    "dapper": "6.06",
+    "hardy": "8.04",
+    "lucid": "10.04",
+    "precise": "12.04",
+    "trusty": "14.04",
+    "xenial": "16.04",
+    "bionic": "18.04",
+    "focal": "20.04",
+    "jammy": "22.04",
+    "noble": "24.04",
+    "resolute": "26.04"
+  },
+  "supported": {
+    "9.0": [
+      "jammy",
+      "noble",
+      "resolute"
+    ],
+    "8.3": [
+      "focal",
+      "jammy",
+      "noble"
+    ],
+    "8.2": [
+      "focal",
+      "jammy",
+      "noble"
+    ],
+    "8.0": [
+      "focal",
+      "jammy",
+      "noble"
+    ],
+    "7.0": [
+      "focal",
+      "jammy"
+    ],
+    "6.0": [
+      "bionic",
+      "focal",
+      "jammy"
+    ],
+    "5.0": [
+      "bionic",
+      "focal"
+    ],
+    "4.4": [
+      "xenial",
+      "bionic",
+      "focal"
+    ]
+  }
+}

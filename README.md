@@ -156,7 +156,7 @@ Khi kết quả là **Cần nâng Ubuntu**, nhấn **Nâng Ubuntu lên …** nga
 
 Bản xem trước hiển thị hệ điều hành, kiến trúc, phiên bản MongoDB và các chặng nâng. Với máy có dữ liệu, gắn đúng hồ sơ, endpoint và service, chuẩn bị bản sao lưu có thể phục hồi rồi xác nhận trong popup. Máy cần systemd, quyền root hoặc sudo không hỏi mật khẩu, update-manager-core, chính sách nâng LTS và tối thiểu 5 GiB trống trên phân vùng gốc. Trình nâng Ubuntu kiểm tra thêm dung lượng thực tế cần cho từng chặng.
 
-Manager cho các VPS độc lập chạy song song. Các lần nâng có thể làm gián đoạn thành viên của cùng replica set chạy lần lượt để bảo toàn quorum. Mỗi chặng chạy trên VPS, có thể reboot sau khi cập nhật gói và sau khi nâng bản phát hành. Mở **Tác vụ** để theo dõi hoặc xem lại sau khi khởi động Manager. Nếu nâng bị gián đoạn, xem đường dẫn log của chặng trên VPS rồi bấm **Kiểm tra lại**. Khi hệ điều hành đã nâng xong và bước cài gói MongoDB bị lỗi, Manager có thể tiếp tục từ bước cài gói sau khi xác nhận. Khi máy mới đã sẵn sàng, bấm **Cài MongoDB** trong kết quả để tiếp tục với đúng máy và nhánh đã chọn.
+Manager cho các VPS độc lập chạy song song. Các lần nâng có thể làm gián đoạn thành viên của cùng replica set chạy lần lượt để bảo toàn quorum. Mỗi chặng chạy trên VPS, có thể reboot sau khi cập nhật gói và sau khi nâng bản phát hành. Mở **Tác vụ** để theo dõi hoặc xem lại sau khi khởi động Manager. Nếu nâng bị gián đoạn, xem đường dẫn log của chặng trên VPS rồi bấm **Kiểm tra lại**. Khi hệ điều hành đã nâng xong và bước cài gói MongoDB bị lỗi, Manager có thể tiếp tục từ bước cài gói sau khi xác nhận. Kết quả nâng Ubuntu có hai lựa chọn **Đóng** và **Kiểm tra lại Ubuntu**. Muốn thay phiên bản MongoDB, mở **Nâng cấp MongoDB** từ trang **Phiên bản & nâng cấp**.
 
 Kiểm chứng ngày 23/11/2026 trên VM ARM64 có snapshot. Máy trống nâng từ Ubuntu 24.04.5 lên 26.04.1, sau đó cài MongoDB 9.0.8 từ giao diện và trả lời ping. Một replica một node trở lại PRIMARY với cùng phiên bản MongoDB và đọc được document đã ghi trước khi nâng. Kiểm thử riêng trên replica set ba node kiểm tra quorum và bàn giao primary.
 
@@ -191,3 +191,55 @@ Mỗi lần sửa dự án, cập nhật README này trong cùng thay đổi. N�
 Trong bảng **Ubuntu và MongoDB trên máy**, bấm **Kiểm tra lại** để lấy mức sử dụng CPU trong khoảng lấy mẫu 0,3 giây và số CPU logic, RAM đang dùng/tổng và khả dụng, dung lượng đã dùng/tổng và còn trống của filesystem `/`. Đơn vị dung lượng là GiB. SSD/HDD dựa trên thuộc tính rotational mà Linux trên VPS nhìn thấy. Thiết bị chưa nhận diện hiển thị **Chưa rõ loại ổ**.
 
 Nếu `hello` xác nhận đúng arbiter nhưng `buildInfo` trả code 13, bảng kiểm tra máy ghi rõ giới hạn quyền đọc phiên bản. Cột chi tiết cho biết khi nào phiên bản được đọc từ binary mongod trên VPS.
+
+Khi thêm VPS trong giao diện, **Xác thực SSH** mặc định chọn **Mật khẩu SSH**. Khi sửa VPS, biểu mẫu hiển thị phương thức đã lưu trong hồ sơ.
+
+Bảng kiểm tra VPS đọc SSH và endpoint MongoDB song song. Bảng hiện các hàng đã đọc ngay khi từng nguồn trả lời, sau đó cập nhật kết luận tương thích khi kho gói phản hồi. Nếu một bước lỗi, kết quả từ nguồn còn lại vẫn hiển thị.
+
+Khi thêm instance gặp cổng bận, Manager đọc listener trên VPS và hiển thị tiến trình, PID và địa chỉ bind nếu Linux cung cấp. Việc kiểm tra cùng nhánh MongoDB với primary là bước riêng.
+
+Trong **Phiên bản & nâng cấp**, chọn máy rồi bấm **Nâng cấp Ubuntu** hoặc **Nâng cấp MongoDB** cạnh **Kiểm tra lại**. Hai nút mở kế hoạch hoặc hiển thị điều kiện của máy. Chọn nhánh MongoDB trong danh mục phát hành để kiểm tra gói mới hơn và xem phiên bản đích. Sau khi xác nhận backup, Manager tải gói, cập nhật dịch vụ và kiểm tra lại phiên bản cùng vai trò. Với replica set nhiều node, nâng secondary trước và chuyển primary trước khi nâng máy đang giữ vai trò primary.
+
+Trên hàng chọn máy, **Kiểm tra lại** có nền xanh dương nhạt, **Nâng cấp Ubuntu** nền vàng cam nhạt và **Nâng cấp MongoDB** nền xanh lá nhạt.
+
+**Nâng cả hai** mở kế hoạch Ubuntu trên máy đã chọn. Khi Ubuntu đã phù hợp hoặc tác vụ hoàn tất, chọn **Tiếp tục nâng MongoDB** để kiểm tra kho gói trên hệ điều hành thực tế và xác nhận bước MongoDB. Mở lại **Nâng cả hai** trong cùng trình duyệt để theo dõi tác vụ đang chạy.
+
+![Luồng nâng cả hai](previews/upgrade-both.jpg)
+
+![Các nút nâng cấp theo máy](previews/upgrade-actions.jpg)
+
+![Chọn máy và nhánh MongoDB trước khi xem kế hoạch](previews/mongodb-upgrade-plan.jpg)
+
+Khi thêm Secondary qua SSH, chọn **Dừng standalone trống để dùng lại cổng** nếu VPS đã có service `mongod` trên loopback. Manager kiểm tra PID, cổng, cùng nhánh phiên bản và danh sách database trước khi dừng service cũ. Instance mới dùng thư mục riêng. Chế độ này yêu cầu đọc được danh sách database và VPS chưa có cấu hình instance Manager.
+
+**Ubuntu đích** và **Nhánh MongoDB** dùng chung danh mục với bộ cài. Manager làm mới mỗi giờ từ [danh mục Ubuntu LTS](https://changelogs.ubuntu.com/meta-release-lts) và [danh mục MongoDB Community](https://downloads.mongodb.org/current.json), rồi kiểm tra gói cho kiến trúc VPS khi lập kế hoạch. Nếu nguồn tạm mất kết nối, popup báo đang dùng danh mục đã lưu.
+
+![Danh mục phiên bản trong popup Ubuntu](previews/release-catalog.jpg)
+
+Trong popup **Nâng cấp Ubuntu**, chọn Ubuntu LTS đích. Với máy đang có MongoDB, Manager kiểm tra khả năng giữ đúng phiên bản đã cài. Trong popup **Nâng cấp MongoDB**, chọn nhánh MongoDB trên hệ điều hành hiện tại. Bấm **Xem kế hoạch nâng** để kiểm tra trước khi xác nhận.
+
+![Chọn Ubuntu đích](previews/upgrade-ubuntu-dialog.jpg) · ![Chọn nhánh MongoDB](previews/upgrade-mongo-dialog.jpg)
+
+Nếu **Xem kế hoạch nâng** báo không kết nối được endpoint đích, vào **Máy chủ → Dịch vụ** để kiểm tra trạng thái dịch vụ và cổng trên đúng VPS.
+
+Trong kế hoạch Ubuntu, **MongoDB đã cài** là phiên bản trên máy. **Trạng thái dịch vụ** cho biết dịch vụ có hoạt động hay không. Khi dịch vụ đã dừng và VPS không có tiến trình mongod nào, Manager cho phép nâng Ubuntu độc lập. Manager giữ phiên bản gói MongoDB, bỏ qua kết nối replica set và kiểm tra lại trạng thái sau reboot.
+
+![Kế hoạch Ubuntu khi dịch vụ đang dừng](previews/ubuntu-service-inactive.jpg)
+
+Với máy đã gỡ khỏi replica set và dịch vụ đang dừng, **Nâng cấp MongoDB** đọc phiên bản gói qua SSH. Khi gói đã mới nhất, popup hiển thị kết quả. Nâng bản vá cùng nhánh giữ dịch vụ ở trạng thái dừng.
+
+![Phiên bản gói trên máy đã dừng](previews/mongodb-inactive-current.jpg)
+
+![Kế hoạch chỉ nâng Ubuntu](previews/ubuntu-only-plan.jpg)
+
+Khi tác vụ đang chờ hoặc đang chạy, bấm lại **Nâng cấp Ubuntu** hoặc **Nâng cấp MongoDB** trên cùng máy để mở nhật ký của đúng tác vụ, kể cả sau khi đóng và mở lại tab.
+
+![Theo dõi tác vụ nâng cấp đang chạy](previews/active-upgrade-monitor.jpg)
+
+Trong bảng theo dõi Ubuntu, **Đã chạy** tính từ lúc tác vụ bắt đầu. Khi đo được số byte tải ở hai lần kiểm tra liên tiếp, Manager ước tính thời gian còn lại của gói APT hiện tại. Các chặng giải nén, cấu hình và reboot hiển thị hoạt động mới nhất cùng giờ kiểm tra.
+
+Sau chặng cuối, Manager kiểm tra zip, unzip, Node.js và PM2, dùng bản hiện có trong PATH, NVM hoặc Bun và cài công cụ còn thiếu. Danh sách gói APT đã cài thủ công trước mỗi chặng nằm trong manual-packages.before cạnh log của chặng.
+
+![Tiến độ và thời gian nâng Ubuntu](previews/ubuntu-upgrade-progress.jpg)
+
+Nếu APT đang bận khi lập kế hoạch, popup Ubuntu và MongoDB cập nhật tiến trình dpkg qua SSH. Khi xác nhận, tác vụ chờ tiến trình hiện tại rồi hoàn tất cấu hình dở. Với MongoDB, nhật ký tác vụ ghi thêm gói đang tải, giải nén và cấu hình.

@@ -272,3 +272,8 @@ td .password-control input[readonly] { min-width:9rem; padding-block:7px; border
 #admin-username { max-width:14ch; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
 .account-actions #logout-button { margin-inline-start:6px; border-inline-start:1px solid var(--line); padding:6px 0 6px 12px; }
 @media(max-width:680px){.account-profile #admin-username{display:none}.account-profile{padding:3px}.account-actions #logout-button{padding-inline-start:8px}}
+
+#modal:has(.upgrade-form) { max-width: min(30rem, calc(100vw - 2rem)); }
+.upgrade-form .form-grid { grid-template-columns: minmax(0,1fr); }
+.upgrade-host { display: grid; gap: .25rem; border-bottom: 1px solid var(--line); padding-bottom: .8rem; }
+.upgrade-host span { color: var(--muted); font-size: .9rem; overflow-wrap: anywhere; }

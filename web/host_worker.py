@@ -79,8 +79,11 @@ def preflight(p):
             "recommendation": "Đã phát hiện MongoDB. Tiếp nhận cụm hiện có bằng endpoint và tài khoản MongoDB; không chạy khởi tạo lại." if installed else "Chưa phát hiện package/service MongoDB trên máy. Có thể cài cụm mới hoặc chuẩn bị node cho cụm đang có. Docker/container cần kiểm tra riêng."}
 
 
-LTS = {"bionic": "18.04", "focal": "20.04", "jammy": "22.04", "noble": "24.04", "resolute": "26.04"}
-SUPPORTED = {"8.0": ("focal", "jammy", "noble"), "9.0": ("jammy", "noble", "resolute")}
+if __package__:
+    from .releases import _catalog
+    LTS, SUPPORTED = _catalog["lts"], _catalog["supported"]
+else:
+    LTS, SUPPORTED = {}, {}
 MONGO_PACKAGES = ["mongodb-org", "mongodb-org-database", "mongodb-org-server", "mongodb-org-shell", "mongodb-org-mongos", "mongodb-org-tools", "mongodb-org-database-tools-extra"]
 
 
@@ -101,7 +104,7 @@ def package_version(series, codename, arch, exact=""):
         raise RuntimeError("Tạm thời không đọc được kho MongoDB.") from exc
     version = install_version(packages, MONGO_PACKAGES, series, codename)
     if exact and (not all(exact in package_versions(packages, n) for n in MONGO_PACKAGES)
-                  or (codename == "resolute" and int(exact.split(".")[-1]) < 4)):
+                  or (codename == "resolute" and series == "9.0" and int(exact.split(".")[-1]) < 4)):
         raise ValueError("Kho đích thiếu bản MongoDB đang chạy: " + exact)
     return exact or version
 
@@ -133,9 +136,17 @@ def configure_mongo_repo(series, codename, arch):
 
 
 def write_mongo_repo(series, codename, arch, repo, keyfile, keypath):
-    key_version = "9" if series == "9.0" else "8.0"
-    with urllib.request.urlopen(f"https://pgp.mongodb.com/server-{key_version}.asc", timeout=30) as response:
-        key_data = response.read()
+    major = series.split(".")[0]
+    for key_version in dict.fromkeys((series, major, major + ".0")):
+        try:
+            with urllib.request.urlopen(f"https://pgp.mongodb.com/server-{key_version}.asc", timeout=30) as response:
+                key_data = response.read()
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                raise
+    else:
+        raise ValueError("Chưa tìm thấy khóa ký chính thức cho MongoDB " + series)
     with tempfile.TemporaryDirectory() as tmp:
         asc = Path(tmp) / "key.asc"
         asc.write_bytes(key_data)
@@ -147,7 +158,7 @@ def write_mongo_repo(series, codename, arch, repo, keyfile, keypath):
 def install_version(packages, names, series, codename):
     common = set.intersection(*(set(package_versions(packages, name)) for name in names))
     stable = [v for v in common if re.fullmatch(re.escape(series) + r"\.\d+", v)]
-    if codename == "resolute":
+    if codename == "resolute" and series == "9.0":
         stable = [v for v in stable if int(v.split(".")[-1]) >= 4]
     if not stable:
         raise ValueError(f"Repository chưa có đủ bộ package MongoDB {series} tương thích với Ubuntu {codename}.")
@@ -228,25 +239,31 @@ def host_resources():
     return resources
 
 
-def ubuntu_compatibility(p):
+def ubuntu_inventory(p):
     host = preflight(p)
     pid = run(["systemctl", "show", "-p", "MainPID", "--value", p["service"]], check=False) if host["tools"]["systemctl"] else ""
     processes = run(["pgrep", "-x", "mongod"], check=False).split() if shutil.which("pgrep") else []
     binary = re.search(r"db version v(\d+\.\d+\.\d+)\b", host["version"])
-    version = p.get("live_version") or (binary[1] if binary else "")
+    return dict(resources=host_resources(), os=host["os"], arch=host["architecture"], hostname=host["hostname"],
+                current=host["codename"], version=binary[1] if binary else "", service=host["service"],
+                service_state=host["service_state"], services=host["services"], processes=len(processes),
+                pid=pid, mongodb_detected=host.get("mongodb_detected", bool(binary or host["services"])))
+
+
+def ubuntu_compatibility(p):
+    result = dict(p.get("inventory") or ubuntu_inventory(p))
+    version = p.get("live_version") or result["version"]
     series = version.rsplit(".", 1)[0] if version else p["series"]
-    result = dict(resources=host_resources(), os=host["os"], arch=host["architecture"], hostname=host["hostname"], current=host["codename"],
-                  version=version, series=series, service=host["service"], service_state=host["service_state"],
-                  services=host["services"], processes=len(processes), pid=pid, path=[], target="", package="")
+    result.update(version=version, series=series, path=[], target="", package="")
     try:
         if linux_info().get("ID") != "ubuntu":
             raise ValueError("Máy đã chọn cần chạy Ubuntu.")
         result["arch"] = ubuntu_architecture()
         if series not in SUPPORTED:
             raise ValueError("Bộ cài chưa hỗ trợ nhánh MongoDB " + series)
-        if not version and (host["mongodb_detected"] or processes):
+        if not version and (result["mongodb_detected"] or result["processes"]):
             raise ValueError("Đã phát hiện MongoDB nhưng chưa xác minh được phiên bản.")
-        if host["codename"] == "resolute" and series == "8.0":
+        if result["current"] == "resolute" and series == "8.0":
             package = package_version("9.0", "resolute", result["arch"])
             result.update(status="mongo_upgrade" if version else "change_series",
                           package=package, target=LTS["resolute"],
@@ -254,7 +271,7 @@ def ubuntu_compatibility(p):
             return result
         def lookup(branch, codename, arch, exact):
             result["package"] = package_version(branch, codename, arch, exact)
-        target, path = release_path(host["codename"], series, result["arch"], version, "auto", lookup)
+        target, path = release_path(result["current"], series, result["arch"], version, "auto", lookup)
         result.update(status="upgrade" if path else "compatible", target=LTS[target], target_codename=target, path=[LTS[c] for c in path])
     except ValueError as exc:
         result.update(status="unsupported", package="", reason=str(exc))
@@ -263,30 +280,123 @@ def ubuntu_compatibility(p):
     return result
 
 
-def ubuntu_inspect(p):
+def ubuntu_inspect(p, preview=False):
     info = linux_info()
     if info.get("ID") != "ubuntu":
         raise ValueError("Máy đã chọn cần chạy Ubuntu.")
     current = info.get("VERSION_CODENAME", "")
-    arch = ubuntu_architecture()
+    arch = run(["dpkg", "--print-architecture"])
     exact = ""
     pid = 0
+    blocked = ""
+    state = ""
+    offline = False
     if shutil.which("mongod"):
-        match = re.search(r"db version v(\d+\.\d+\.\d+)\b", run(["mongod", "--version"]))
-        if not match:
-            raise ValueError("Không xác định được phiên bản mongod.")
-        exact = match[1]
         pid = int(run(["systemctl", "show", "-p", "MainPID", "--value", p["service"]]) or 0)
-        if not pid or run(["pgrep", "-x", "mongod"], check=False).split() != [str(pid)]:
-            raise ValueError("Cần xác định một instance mongod đang chạy khớp với service của máy.")
+        state = run(["systemctl", "is-active", p["service"]], check=False)
+        processes = run(["pgrep", "-x", "mongod"], check=False).split()
+        offline = state == "inactive" and pid == 0 and not processes
+        if offline:
+            exact = run(["dpkg-query", "-W", "-f=${Version}", "mongodb-org-server"])
+        else:
+            match = re.search(r"db version v(\d+\.\d+\.\d+)\b", run(["mongod", "--version"]))
+            if not match:
+                raise ValueError("Không xác định được phiên bản mongod.")
+            exact = match[1]
+        if not offline and (not pid or processes != [str(pid)]):
+            blocked = (f"Dịch vụ {p['service']} đang ở trạng thái {state or 'unknown'}. "
+                       "Chưa thể xác minh instance MongoDB trước khi nâng Ubuntu.")
+            if not preview:
+                raise ValueError(blocked)
     elif shutil.which("pgrep") and run(["pgrep", "-x", "mongod"], check=False):
         raise ValueError("Phát hiện mongod ngoài bộ cài trên host. Kiểm tra instance trước.")
-    series = exact.rsplit(".", 1)[0] if exact else p["series"]
-    if series not in SUPPORTED:
-        raise ValueError("Bộ cài chưa hỗ trợ nhánh MongoDB " + series)
-    target, path = release_path(current, series, arch, exact, p["target"], package_version)
+    series = exact.rsplit(".", 1)[0] if exact else p.get("series", "")
+    target = p["target"]
+    if not p.get("series"):
+        releases = list(LTS)
+        if current not in releases or (target != "auto" and target not in releases):
+            raise ValueError("Cần chọn bản Ubuntu LTS có đường nâng chính thức.")
+        index = releases.index(current)
+        if target == "auto":
+            target = releases[min(index + 1, len(releases) - 1)]
+        if releases.index(target) < index:
+            raise ValueError("Ubuntu đích cũ hơn bản đang chạy.")
+        path = releases[index + 1:releases.index(target) + 1]
+    if series and (not offline or p.get("series")):
+        arch = ubuntu_architecture()
+        if series not in SUPPORTED:
+            raise ValueError("Chưa xác minh được gói cho MongoDB " + series)
+        target, path = release_path(current, series, arch, exact, target, package_version)
     return dict(current=current, arch=arch, version=exact, series=series, target=target, path=path,
+                service_state=state, offline=offline, blocked=blocked,
                 pid=pid, machine_token=hashlib.sha256(Path("/etc/machine-id").read_bytes()).hexdigest(), hostname=socket.gethostname(), os=info["PRETTY_NAME"])
+
+
+def package_activity():
+    active = set()
+    for proc in Path("/proc").glob("[0-9]*/comm"):
+        try:
+            name = proc.read_text().strip()
+        except OSError:
+            continue
+        if name == "unattended-upgr":
+            try:
+                if b"unattended-upgrade-shutdown" in proc.with_name("cmdline").read_bytes():
+                    continue
+            except OSError:
+                continue
+        if name in {"apt", "apt-get", "dpkg", "unattended-upgr", "do-release-upgr"}:
+            active.add(name)
+    audit = run(["dpkg", "--audit"])
+    log = Path("/var/log/dpkg.log")
+    detail = ""
+    if log.is_file():
+        with log.open("rb") as stream:
+            stream.seek(max(0, log.stat().st_size - 4096))
+            for line in reversed(stream.read().decode(errors="replace").splitlines()):
+                if re.search(r" (status|install|upgrade|configure|trigproc) ", line):
+                    detail = line[:220]
+                    break
+    return {"processes": sorted(active), "pending": bool(audit), "detail": detail}
+
+
+def package_run(args, timeout):
+    # Stream only package names and operations, never raw hook output or repository credentials.
+    import threading
+    def read_output(stream):
+        previous = 0
+        for line in stream:
+            match = re.search(r"(Unpacking|Setting up|Processing triggers for) ([a-z0-9][a-z0-9.+:-]*)", line)
+            download = re.match(r"Get:(\d+)\s+\S+\s+.*?\s+(\S+)\s+(?:amd64|arm64|all)\s+\S+\s+\[([^\]]+)\]", line)
+            if (match or download) and time.monotonic() - previous >= 2:
+                event(" ".join(match.groups()) if match else f"APT tải gói {download[1]} · {download[2]} ({download[3]})")
+                previous = time.monotonic()
+    with subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                          errors="replace", env=dict(os.environ, LC_ALL="C", DEBIAN_FRONTEND="noninteractive")) as proc:
+        reader = threading.Thread(target=read_output, args=(proc.stdout,), daemon=True)
+        reader.start()
+        try:
+            code = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            event("Quá thời gian dự kiến. Tiếp tục chờ thao tác gói đang chạy.")
+            code = proc.wait()
+        reader.join()
+        if code:
+            raise RuntimeError(f"{args[0]} thất bại (exit {code}). Kiểm tra nhật ký APT/dpkg.")
+
+
+def recover_packages():
+    status = package_activity()
+    while status["processes"]:
+        event("Chờ " + ", ".join(status["processes"]) + " · " + status["detail"])
+        time.sleep(10)
+        status = package_activity()
+    if status["pending"]:
+        event("Đang hoàn tất cấu hình dpkg bị gián đoạn.")
+        package_run(["dpkg", "--force-confold", "--configure", "-a"], 900)
+        if run(["dpkg", "--audit"]):
+            raise ValueError("dpkg vẫn còn gói cấu hình dở sau khi khôi phục.")
+    return {}
 
 
 def check_upgrade(stage):
@@ -359,6 +469,8 @@ systemctl reboot
 
 
 def ubuntu_action(action, p):
+    if action == "ubuntu_inventory":
+        return ubuntu_inventory(p)
     if action == "ubuntu_compatibility":
         return ubuntu_compatibility(p)
     if action == "ubuntu_restore_service":
@@ -370,7 +482,7 @@ def ubuntu_action(action, p):
         return {}
     if action == "ubuntu_assess":
         try:
-            return ubuntu_inspect(p)
+            return ubuntu_inspect(p, preview=True)
         except (ValueError, OSError, RuntimeError) as exc:
             info = linux_info()
             version = ""
@@ -379,7 +491,7 @@ def ubuntu_action(action, p):
                 if len(package) == 2 and package[0] in {"ii", "hi"}:
                     version = package[1]
             return dict(os=info.get("PRETTY_NAME", platform.system()), arch=platform.machine(),
-                        series=p["series"], version=version, path=[], blocked=str(exc))
+                        series=p.get("series", ""), version=version, path=[], blocked=str(exc))
     if action == "ubuntu_precheck":
         check_upgrade(p["stage"])
         return {}
@@ -406,6 +518,10 @@ def ubuntu_action(action, p):
                 stream.seek(max(0, logfile.stat().st_size - 4096))
                 lines = stream.read(4096).decode(errors="replace").splitlines()
             for line in reversed(lines):
+                download = re.match(r"Get:(\d+)\s+\S+\s+.*?\s+(\S+)\s+(?:amd64|arm64|all)\s+\S+\s+\[([^\]]+)\]", line)
+                if download:
+                    detail = f"APT tải gói {download[1]} · {download[2]} ({download[3]})"
+                    break
                 match = re.search(r"(Setting up|Unpacking|status installed|status unpacked) ([a-z0-9][a-z0-9.+:-]{0,100})(?: |$)", line)
                 if match:
                     detail = " ".join(match.groups())
@@ -419,8 +535,105 @@ def ubuntu_action(action, p):
             active = run(["systemctl", "is-active", unit], check=False)
             if active == "failed" or (active in {"inactive", "unknown"} and time.time() - phase.stat().st_mtime > 60):
                 status = "failed"
-        return dict(phase=status, last_phase=last_phase, detail=detail, can_finalize=(directory / "release-complete").exists(), rebooted=boot != (directory / "boot").read_text(),
+        progress = {}
+        if status == "apt" and detail.startswith("APT tải"):
+            unit_size = re.fullmatch(r"([\d.]+) (B|kB|MB|GB)", download[3])
+            if unit_size:
+                scale = {"B": 1, "kB": 1000, "MB": 1000000, "GB": 1000000000}
+                size = int(float(unit_size[1]) * scale[unit_size[2]])
+                for item in Path("/var/cache/apt/archives/partial").glob("*.deb"):
+                    if item.name.split("_", 1)[0] == download[2]:
+                        try:
+                            progress = dict(bytes_done=min(item.stat().st_size, size), bytes_total=size, package=download[2])
+                        except FileNotFoundError:
+                            pass
+                        break
+        if status == "apt" and detail.startswith("Setting up") and logfile.stat().st_size < 4 * 1024**2:
+            content = logfile.read_text(errors="replace")
+            counts = re.findall(r"(\d+) upgraded, (\d+) newly installed", content)
+            if counts:
+                total = sum(map(int, counts[-1]))
+                done = len(set(re.findall(r"^Setting up ([^ ]+)", content, re.M)))
+                if 0 < done <= total:
+                    progress = dict(packages_done=done, packages_total=total)
+        if status == "release":
+            mainlog = Path("/var/log/dist-upgrade/main.log")
+            if mainlog.is_file() and mainlog.stat().st_mtime >= phase.stat().st_mtime:
+                with mainlog.open("rb") as stream:
+                    stream.seek(max(0, mainlog.stat().st_size - 256000))
+                    text = stream.read().decode(errors="replace")
+                lists = re.findall(r"DEBUG (toinstall|toupgrade): '(\[[^\n]*\])'", text)
+                planned = {pkg for _, group in lists for pkg in re.findall(r"'([a-z0-9+.-]+)'", group)}
+                if planned:
+                    if detail:
+                        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(phase.stat().st_mtime))
+                        finished = set()
+                        with logfile.open(errors="replace") as stream:
+                            for row in stream:
+                                if row[:19] < stamp:
+                                    continue
+                                fields = row.split()
+                                if len(fields) >= 6 and fields[2] == "status" and fields[3] in {"unpacked", "installed"}:
+                                    pkg = fields[4].split(":")[0]
+                                    if pkg in planned:
+                                        finished.add((pkg, fields[3]))
+                        progress = dict(packages_done=len(finished), packages_total=2 * len(planned), configuring=True)
+                    elif not detail:
+                        files = {item.name.split("_", 1)[0] for item in Path("/var/cache/apt/archives").glob("*.deb")
+                                 if item.stat().st_ctime >= phase.stat().st_mtime}
+                        detail = "APT tải bộ gói Ubuntu mới"
+                        progress = dict(packages_done=len(planned & files), packages_total=len(planned), downloading=True)
+        return dict(phase=status, last_phase=last_phase, detail=detail, progress=progress, can_finalize=(directory / "release-complete").exists(), rebooted=boot != (directory / "boot").read_text(),
                     current=linux_info().get("VERSION_CODENAME"), log=str(directory / "upgrade.log"))
+    if action == "ubuntu_tools":
+        if (linux_info().get("VERSION_CODENAME") != stage
+                or hashlib.sha256(Path("/etc/machine-id").read_bytes()).hexdigest() != p["machine_token"]):
+            raise ValueError("Máy hoặc bản Ubuntu khác chặng cần xác minh.")
+        packages = [name for name in ("zip", "unzip") if not shutil.which(name)]
+        baseline = directory / "manual-packages.before"
+        unavailable = []
+        if baseline.is_file():
+            installed = run(["dpkg-query", "-W", "-f=${db:Status-Abbrev} ${binary:Package}\\n"])
+            present = {line.split()[1].split(":")[0] for line in installed.splitlines()
+                       if len(line.split()) == 2 and line.split()[0] in ("ii", "hi")}
+            for name in baseline.read_text().splitlines():
+                if not re.fullmatch(r"[a-z0-9][a-z0-9+.-]*(?::[a-z0-9]+)?", name) or name.split(":")[0] in present:
+                    continue
+                policy = run(["apt-cache", "policy", name], check=False)
+                if re.search(r"Candidate: (?!\(none\))\S+", policy):
+                    packages.append(name)
+                else:
+                    unavailable.append(name)
+        node = shutil.which("node")
+        pm2 = shutil.which("pm2")
+        home = Path.home()
+        if not node:
+            candidates = sorted((home / ".nvm/versions/node").glob("*/bin/node"), key=lambda path: path.stat().st_mtime)
+            if candidates:
+                node = str(candidates[-1])
+                os.environ["PATH"] = str(candidates[-1].parent) + ":" + os.environ["PATH"]
+        if not pm2:
+            pm2 = shutil.which("pm2") or next((str(path) for path in [home / ".bun/bin/pm2"] if path.is_file()), None)
+        if not node:
+            packages.append("nodejs")
+        if not pm2 and not shutil.which("npm"):
+            packages.append("npm")
+        if packages:
+            run(["apt-get", "-o", "DPkg::Lock::Timeout=120", "--no-remove", "install", "-y", *packages], timeout=900)
+        if not pm2:
+            run(["npm", "install", "--global", "pm2"], timeout=600)
+            pm2 = shutil.which("pm2")
+        if not pm2 or not all(shutil.which(name) for name in ("zip", "unzip", "node")):
+            raise ValueError("Chưa xác minh được zip, unzip, Node.js và PM2.")
+        # Read the CLI package version without starting a new PM2 daemon.
+        manifest = Path(pm2).resolve().parent.parent / "package.json"
+        meta = json.loads(manifest.read_text())
+        if meta.get("name") != "pm2":
+            raise ValueError("Không xác minh được gói PM2 tại " + pm2)
+        result = {"node": run(["node", "--version"]), "pm2": meta["version"], "zip": run(["zip", "-v"]).splitlines()[1]}
+        if unavailable:
+            result["Gói cũ thiếu ứng viên trong kho Ubuntu mới"] = ", ".join(unavailable)
+        return result
     if action == "ubuntu_finalize":
         if (not (directory / "release-complete").is_file() or linux_info().get("VERSION_CODENAME") != stage
                 or hashlib.sha256(Path("/etc/machine-id").read_bytes()).hexdigest() != p["machine_token"]):
@@ -442,6 +655,9 @@ def ubuntu_action(action, p):
     if resumed and (phase.read_text().strip() != "prepare-reboot" or boot == (directory / "boot").read_text()):
         return {"started": True}
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    manual = directory / "manual-packages.before"
+    if not manual.exists():
+        manual.write_text(run(["apt-mark", "showmanual"]) + "\n")
     script = directory / "upgrade.sh"
     script.write_text(UPGRADE_SCRIPT)
     if p["version"]:
@@ -457,11 +673,12 @@ def ubuntu_action(action, p):
             installed.append(name)
         if "mongodb-org-server" not in installed:
             raise ValueError("Cần mongod được quản lý bởi gói mongodb-org-server.")
-        arch = run(["dpkg", "--print-architecture"])
-        repo = directory / "mongo-target.list"
-        keyring = directory / "mongo-key.gpg"
-        write_mongo_repo(p["series"], stage, arch, repo, keyring, "/usr/share/keyrings/mongodb-server-" + p["series"] + ".gpg")
-        (directory / "mongo-packages").write_text("\n".join(n + "=" + p["version"] for n in installed))
+        if not p.get("offline"):
+            arch = run(["dpkg", "--print-architecture"])
+            repo = directory / "mongo-target.list"
+            keyring = directory / "mongo-key.gpg"
+            write_mongo_repo(p["series"], stage, arch, repo, keyring, "/usr/share/keyrings/mongodb-server-" + p["series"] + ".gpg")
+            (directory / "mongo-packages").write_text("\n".join(n + "=" + p["version"] for n in installed))
         held = set(run(["apt-mark", "showhold"]).split())
         newly_held = directory / "package-holds"
         if not newly_held.exists():
@@ -495,6 +712,19 @@ def shell_js(source, values, timeout=120):
         return json.loads(result.splitlines()[-1])
 
 
+def port_conflict(port):
+    details = []
+    if shutil.which("ss"):
+        listeners = run(["ss", "-Hlntp", f"sport = :{port}"], check=False)
+        for line in listeners.splitlines():
+            owner = re.search(r'\("([^"]+)",pid=(\d+)', line)
+            fields = line.split()
+            if owner and len(fields) >= 4:
+                details.append(f"{owner[1]} (PID {owner[2]}) tại {fields[3]}")
+    owner_info = ", ".join(details) or "chưa xác định được tiến trình"
+    return f"Cổng {port} đang được sử dụng: {owner_info}. Dùng node đã chuẩn bị đúng replica set và keyfile, giải phóng cổng hoặc chọn port khác cho instance mới."
+
+
 def check_instance_target(p):
     instance = p["instance"]
     for base in ("/etc/mongodb-manager", "/var/lib/mongodb-manager", "/var/log/mongodb-manager"):
@@ -505,7 +735,7 @@ def check_instance_target(p):
             listener.bind(("0.0.0.0", p["port"]))
         except OSError as exc:
             if exc.errno == 98:
-                raise RuntimeError('Port ' + str(p['port']) + ' đang được service khác sử dụng. Kiểm tra MongoDB đang chạy; dùng chế độ node đã chuẩn bị nếu cấu hình đúng, hoặc chọn port khác để tạo instance riêng. Không tự dừng/xóa instance đang có.') from None
+                raise RuntimeError(port_conflict(p["port"])) from None
             raise
 
 
@@ -718,6 +948,43 @@ def check_service_stopped(p):
 
 
 def prepare_member(p):
+    if not p.get("replace_empty"):
+        return prepare_instance(p)
+    if p.get("service") != "mongod":
+        raise ValueError("Chọn đúng service mongod của standalone.")
+    port = int(p["port"])
+    pid = run(["systemctl", "show", "mongod", "-p", "MainPID", "--value"])
+    listeners = run(["ss", "-Hlntp", f"sport = :{port}"]).splitlines()
+    if not listeners:
+        return prepare_instance(p)
+    if not pid.isdigit() or not all(len(row.split()) >= 4 and row.split()[3] == f"127.0.0.1:{port}"
+                                    and f'("mongod",pid={pid},' in row for row in listeners):
+        raise ValueError(port_conflict(port))
+    if not re.search(r"\bv" + re.escape(p["series"]) + r"\.", run(["mongod", "--version"])):
+        raise ValueError("Standalone đang dùng cổng và khác nhánh MongoDB của primary. Kiểm tra phiên bản trước khi dừng.")
+    if any(Path("/etc/mongodb-manager").glob("*/mongod.conf")):
+        raise ValueError("Đã có instance Manager. Kiểm tra cấu hình trước khi thay standalone.")
+    check = shell_js("""
+const a=new Mongo("mongodb://127.0.0.1:"+input.port+"/?directConnection=true").getDB("admin");
+const h=a.runCommand({hello:1}), d=a.runCommand({listDatabases:1,nameOnly:true});
+print(JSON.stringify({empty:!!(h.ok && h.isWritablePrimary && !h.setName && !h.isreplicaset && !h.msg && d.ok &&
+  d.databases.every(x=>["local","config","admin"].includes(x.name)))}));
+""", {"port": port})
+    if not check["empty"]:
+        raise ValueError("Chưa xác minh được standalone trống. Giữ nguyên service.")
+    enabled = run(["systemctl", "is-enabled", "mongod"], check=False) == "enabled"
+    run(["systemctl", "disable", "--now", "mongod"])
+    try:
+        return prepare_instance(p)
+    except Exception:
+        if not run(["ss", "-Hlnt", f"sport = :{port}"]):
+            run(["systemctl", "start", "mongod"])
+            if enabled:
+                run(["systemctl", "enable", "mongod"])
+        raise
+
+
+def prepare_instance(p):
     # A removed node can still own the port under its original service name.
     service = p.get('service', '')
     match = re.fullmatch(r'mongod-manager-([a-z][a-z0-9-]{0,30})', service)
@@ -1159,18 +1426,41 @@ def restore(p):
     return {"restored": True, "backup_id": p["backup_id"], "message": "mongorestore hoàn tất. Kiểm tra dữ liệu ứng dụng trên cụm đích."}
 
 
+def stopped_mongo_package(p):
+    service = p["service"]
+    state = run(["systemctl", "is-active", service], check=False)
+    if state != "inactive":
+        return {}
+    if run(["systemctl", "show", "-p", "LoadState", "--value", service]) != "loaded":
+        raise ValueError("Không tìm thấy dịch vụ MongoDB đã cấu hình trên VPS.")
+    status = run(["dpkg-query", "-W", "-f=${db:Status-Abbrev} ${Version}", "mongodb-org-server"], check=False).split()
+    if len(status) != 2 or status[0] not in {"ii", "hi"}:
+        raise ValueError("Không tìm thấy gói mongodb-org-server đã cài.")
+    return dict(current=status[1], role="INACTIVE", port=p["port"],
+                machine_token=hashlib.sha256(Path("/etc/machine-id").read_bytes()).hexdigest())
+
+
 def arbiter_packages(action, p):
     service = p["service"]
-    if linux_info().get("VERSION_CODENAME") != "resolute" or not re.fullmatch(r"9\.0\.\d+", p["version"]):
-        raise ValueError("Cần Ubuntu 26.04 và gói MongoDB 9.0.")
-    pid = run(["systemctl", "show", "-p", "MainPID", "--value", service])
-    listeners = run(["ss", "-Hlnpt", f"sport = :{int(p['port'])}"])
-    if not pid.isdigit() or run(["pgrep", "-x", "mongod"]).split() != [pid] or f'"mongod",pid={pid},' not in listeners:
-        raise ValueError("Cổng endpoint và service phải thuộc cùng một instance mongod duy nhất.")
-    process_id = run(["mongosh", "--quiet", "--host", "127.0.0.1", "--port", str(p["port"]), "--eval",
-                      "db.hello().topologyVersion.processId.toHexString()"])
-    if process_id != p["process_id"]:
-        raise ValueError("Instance trên kết nối SSH khác arbiter của endpoint.")
+    codename = linux_info().get("VERSION_CODENAME", "")
+    series = p["version"].rsplit(".", 1)[0]
+    if codename not in SUPPORTED.get(series, ()) or not re.fullmatch(r"\d+\.\d+\.\d+", p["version"]):
+        raise ValueError("Không có gói MongoDB cho Ubuntu và nhánh đã chọn.")
+    offline = p.get("role") == "INACTIVE"
+    if offline:
+        state = stopped_mongo_package(p)
+        if (state.get("current") != p["current"] or state.get("machine_token") != p["machine_token"]
+                or run(["pgrep", "-x", "mongod"], check=False)):
+            raise ValueError("Phiên bản gói, máy hoặc tiến trình mongod đã đổi. Kiểm tra lại VPS.")
+    else:
+        pid = run(["systemctl", "show", "-p", "MainPID", "--value", service])
+        listeners = run(["ss", "-Hlnpt", f"sport = :{int(p['port'])}"])
+        if not pid.isdigit() or run(["pgrep", "-x", "mongod"]).split() != [pid] or f'"mongod",pid={pid},' not in listeners:
+            raise ValueError("Cổng endpoint và service phải thuộc cùng một instance mongod duy nhất.")
+        process_id = run(["mongosh", "--quiet", "--host", "127.0.0.1", "--port", str(p["port"]), "--eval",
+                          "db.hello().topologyVersion.processId.toHexString()"])
+        if process_id != p["process_id"]:
+            raise ValueError("Instance trên kết nối SSH khác arbiter của endpoint.")
     packages = []
     for name in MONGO_PACKAGES:
         status = run(["dpkg-query", "-W", "-f=${db:Status-Abbrev} ${Version}", name], check=False).split()
@@ -1186,16 +1476,27 @@ def arbiter_packages(action, p):
     pinned = [name + "=" + p["version"] for name in packages]
     if action in {"arbiter_check", "arbiter_packages"}:
         arch = ubuntu_architecture()
-        package_version("9.0", "resolute", arch, p["version"])
+        package_version(series, codename, arch, p["version"])
         if action == "arbiter_check":
             return {"service": service, "packages": packages}
-        configure_mongo_repo("9.0", "resolute", arch)
-        run(["apt-get", "update"], timeout=600)
-        run([*args, "--download-only", "install", *pinned], timeout=1200)
+        configure_mongo_repo(series, codename, arch)
+        package_run(["apt-get", "-o", "Acquire::Retries=3", "update"], timeout=600)
+        package_run([*args, "--download-only", "install", *pinned], timeout=1200)
+    elif offline:
+        masked = run(["systemctl", "is-enabled", "mongod.service"], check=False) in {"masked", "masked-runtime"}
+        if not masked:
+            run(["systemctl", "mask", "--runtime", "mongod.service"])
+        try:
+            if run(["systemctl", "show", "-p", "LoadState", "--value", "mongod.service"]) != "masked":
+                raise ValueError("Chưa khóa được dịch vụ mặc định trong khi cập nhật gói.")
+            package_run([*args, "--no-download", "install", *pinned], timeout=1200)
+        finally:
+            if not masked:
+                run(["systemctl", "unmask", "--runtime", "mongod.service"])
     else:
         run(["systemctl", "stop", service])
         try:
-            run([*args, "--no-download", "install", *pinned], timeout=1200)
+            package_run([*args, "--no-download", "install", *pinned], timeout=1200)
         finally:
             run(["systemctl", "start", service])
     return {"service": service}
@@ -1295,6 +1596,14 @@ def service_operation(p):
 def main(request):
     p = request["params"]
     action = request["action"]
+    if action == "package_activity":
+        return package_activity()
+    if action == "package_recover":
+        return recover_packages()
+    if action == "mongo_stopped_package":
+        return stopped_mongo_package(p)
+    if action == "mongo_latest":
+        return {"version": package_version(p["series"], linux_info().get("VERSION_CODENAME", ""), ubuntu_architecture())}
     if action in {"arbiter_check", "arbiter_packages", "arbiter_install"}:
         return arbiter_packages(action, p)
     if action.startswith("ubuntu_"):
@@ -1327,6 +1636,10 @@ def main(request):
 
 
 def serve(request):
+    global LTS, SUPPORTED
+    if "release_catalog" in request:
+        data = request["release_catalog"]
+        LTS, SUPPORTED = data["lts"], data["supported"]
     try:
         result = main(request)
         print(json.dumps({"result": result}, ensure_ascii=False), flush=True)

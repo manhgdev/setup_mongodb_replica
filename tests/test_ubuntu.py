@@ -146,12 +146,13 @@ def test_retry_after_distribution_upgrade_only_finishes_packages(monkeypatch):
         {"phase": "failed", "log": "upgrade.log", "can_finalize": True},
         {"started": True},
         {"phase": "reboot", "rebooted": True, "current": "resolute"},
+        {"pm2": "6.0.0"},
     ])
     monkeypatch.setattr(ubuntu, "host_run", remote)
     monkeypatch.setattr(ubuntu, "inspect", lambda *_: dict(expected, current="resolute"))
     result = ubuntu.advance(Mock(), {"id": "123"}, {}, None, ctx, threading.Event(), Mock())
     assert result["ubuntu"] == "26.04"
-    assert [call.args[1] for call in remote.call_args_list] == ["ubuntu_status", "ubuntu_finalize", "ubuntu_status"]
+    assert [call.args[1] for call in remote.call_args_list] == ["ubuntu_status", "ubuntu_finalize", "ubuntu_status", "ubuntu_tools"]
 
 
 def test_compatibility_uses_endpoint_version_on_multi_instance_host(monkeypatch):
@@ -224,10 +225,10 @@ def test_arbiter_upgrade_rechecks_before_install(monkeypatch, quorum_lost):
     if quorum_lost:
         with pytest.raises(ValueError, match="quorum"):
             operations.execute(*args)
-        assert [c.args[1] for c in remote.call_args_list] == ["arbiter_packages"]
+        assert [c.args[1] for c in remote.call_args_list] == ["package_recover", "arbiter_packages"]
     else:
         assert operations.execute(*args)["role"] == "ARBITER"
-        assert [c.args[1] for c in remote.call_args_list] == ["arbiter_packages", "arbiter_install"]
+        assert [c.args[1] for c in remote.call_args_list] == ["package_recover", "arbiter_packages", "arbiter_install"]
 
 
 def test_arbiter_version_restricted(tmp_path, monkeypatch, sign_in_new_manager):
@@ -252,3 +253,99 @@ def test_arbiter_version_restricted(tmp_path, monkeypatch, sign_in_new_manager):
         result = api.get(f"/api/machines/{machine['id']}/compatibility").json()
         assert result["role"] == "ARBITER" and result["arbiter_version_restricted"]
         assert result["version"] == "9.0.8" and not result["live"] and not result["endpoint_error"]
+
+
+def test_compatibility_stream(tmp_path, monkeypatch, sign_in_new_manager):
+    import json
+    from fastapi.testclient import TestClient
+    from web.app import create_app
+
+    def inspect(machine, action, params, emit):
+        if action == "ubuntu_inventory":
+            return {"hostname": "linux1929", "version": "8.0.32"}
+        assert params["inventory"]["hostname"] == "linux1929"
+        return {"status": "compatible", "version": "8.0.32"}
+
+    monkeypatch.setattr("web.app.host_run", inspect)
+    app = create_app(tmp_path)
+    with TestClient(app, base_url="http://127.0.0.1", headers={"X-MongoDB-Manager": "1"}) as api:
+        sign_in_new_manager(api)
+        machine = app.state.store.save("machines", {"name": "linux1929"})
+        response = api.get(f"/api/machines/{machine['id']}/compatibility?stream=true")
+        updates = [json.loads(line) for line in response.iter_lines()]
+        assert {u["stage"] for u in updates[:2]} == {"endpoint", "host"}
+        assert updates[2]["stage"] == "complete"
+        assert updates[2]["value"]["status"] == "compatible"
+
+
+def test_data_node_upgrade_rechecks_before_install(monkeypatch):
+    from web import operations
+    node = dict(role="SECONDARY", current="8.0.15", port=27017, process_id="a")
+    plan = dict(node=node, version="9.0.8", series="9.0")
+    probe = Mock(side_effect=[node, node, node, dict(node, current="9.0.8")])
+    worker = Mock()
+    monkeypatch.setattr(operations, "mongo_upgrade_node", probe)
+    monkeypatch.setattr(operations, "host_run", worker)
+    machine = {"mongo_endpoint": "host:27017"}
+    result = operations.execute("mongo_upgrade", plan, {}, machine, Mock())
+    assert result["version"] == "9.0.8" and result["role"] == "SECONDARY"
+    assert [call.args[1] for call in worker.call_args_list] == ["package_recover", "arbiter_packages", "arbiter_install"]
+    worker.reset_mock()
+    probe.side_effect = [node, node, dict(node, role="PRIMARY")]
+    with pytest.raises(ValueError, match="đã đổi"):
+        operations.execute("mongo_upgrade", plan, {}, machine, Mock())
+    assert [call.args[1] for call in worker.call_args_list] == ["package_recover", "arbiter_packages"]
+
+
+def test_release_catalog_accepts_future_community_release():
+    from web.releases import parse
+    ubuntu = "Dist: future\nVersion: 28.04.1 LTS\n"
+    pkg = "https://repo.mongodb.org/apt/ubuntu/dists/future/mongodb-org/10.0/multiverse/binary-arm64/mongodb-org-server_10.0.1_arm64.deb"
+    mongo = {"versions": [{"version": "10.0.1", "downloads": [{"packages": [pkg]}]}]}
+    assert parse(ubuntu, mongo) == {"lts": {"future": "28.04"}, "supported": {"10.0": ["future"]}}
+
+
+def test_os_only_plan_without_mongodb(monkeypatch):
+    monkeypatch.setattr(worker, "linux_info", lambda: {"ID": "ubuntu", "VERSION_CODENAME": "jammy", "PRETTY_NAME": "Ubuntu 22.04"})
+    monkeypatch.setattr(worker.shutil, "which", lambda _: None)
+    monkeypatch.setattr(worker, "run", lambda *_: "amd64")
+    monkeypatch.setattr(worker.Path, "read_bytes", lambda _: b"machine")
+    result = worker.ubuntu_inspect({"target": "noble"})
+    assert (result["series"], result["version"], result["path"]) == ("", "", ["noble"])
+
+
+def test_find_active_upgrade_by_host_and_kind(tmp_path, sign_in_new_manager):
+    from fastapi.testclient import TestClient
+    from web.app import create_app
+
+    app = create_app(tmp_path)
+    with TestClient(app, base_url="http://127.0.0.1", headers={"X-MongoDB-Manager": "1"}) as api:
+        sign_in_new_manager(api)
+        store = app.state.store
+        for ident, machine, kind, status in [
+            ("a", "one", "mongo_upgrade", "running"), ("b", "two", "ubuntu_upgrade", "queued"),
+            ("c", "one", "ubuntu_upgrade", "failed"), ("d", "two", "arbiter_upgrade", "running"),
+        ]:
+            store.save("jobs", dict(machine_id=machine, action=kind, status=status), ident)
+        def find(machine, action):
+            return api.get(f"/api/machines/{machine}/active-upgrade", params={"action": action}).json()
+        assert find("one", "mongo_upgrade")["id"] == "a"
+        assert find("one", "ubuntu_upgrade") is None
+        assert find("two", "ubuntu_upgrade")["id"] == "b"
+        assert find("two", "mongo_upgrade")["id"] == "d"
+
+
+def test_inactive_mongo_allows_ubuntu_without_replica_connection(monkeypatch):
+    monkeypatch.setattr(worker, "linux_info", lambda: {"ID": "ubuntu", "VERSION_CODENAME": "noble", "PRETTY_NAME": "Ubuntu 24.04"})
+    monkeypatch.setattr(worker.shutil, "which", lambda name: name)
+    def read(cmd, **kwargs):
+        if cmd[0] == "systemctl":
+            return "inactive" if cmd[1] == "is-active" else "0"
+        return {"dpkg": "amd64", "pgrep": "", "dpkg-query": "9.0.8"}[cmd[0]]
+    monkeypatch.setattr(worker, "run", read)
+    monkeypatch.setattr(worker.Path, "read_bytes", lambda _: b"machine")
+    params = {"target": "resolute", "service": "mongod-test"}
+    for preview in (True, False):
+        result = worker.ubuntu_inspect(params, preview=preview)
+        assert result["offline"] and not result["blocked"] and result["path"] == ["resolute"]
+        assert ubuntu.mongo_state({}, None, result, verify=True)[1] == {}

@@ -18,6 +18,7 @@ from bson.errors import BSONError
 from pymongo import MongoClient
 from pymongo.errors import AutoReconnect, OperationFailure, PyMongoError
 
+from .releases import catalog
 from .models import endpoint, public_endpoint
 
 
@@ -256,9 +257,11 @@ def query(profile, section, database="", collection=""):
 
 def host_run(machine, action, params, emit):
     worker = Path(__file__).with_name("host_worker.py")
-    elevated = action in {"role_storage", "role_restart", "retire_member", "check_service_stopped", "arbiter_check", "arbiter_packages", "arbiter_install", "ubuntu_start", "ubuntu_finalize", "ubuntu_status", "ubuntu_precheck", "ubuntu_restore_service", "install", "setup", "provision", "prepare_member", "read_keyfile", "service", "backup", "backups", "restore", "preview_backup", "delete_backup", "logs"}
+    elevated = action in {"package_recover", "role_storage", "role_restart", "retire_member", "check_service_stopped", "arbiter_check", "arbiter_packages", "arbiter_install", "ubuntu_start", "ubuntu_finalize", "ubuntu_status", "ubuntu_precheck", "ubuntu_tools", "ubuntu_restore_service", "install", "setup", "provision", "prepare_member", "read_keyfile", "service", "backup", "backups", "restore", "preview_backup", "delete_backup", "logs"}
     params = dict(params, service=machine["service"])
     payload = {"action": action, "params": params}
+    if action.startswith(("ubuntu_", "arbiter_")) or action in {"mongo_latest", "install", "prepare_member", "provision", "setup"}:
+        payload["release_catalog"] = catalog()
     if machine["mode"] == "local":
         cmd = [sys.executable, "-u", str(worker)]
         if elevated and os.geteuid() != 0:
@@ -329,15 +332,15 @@ def host_run(machine, action, params, emit):
 
 LABELS = {
     "convert_role": "Đổi vai trò thành viên",
-    "arbiter_upgrade": "Nâng MongoDB trên arbiter", "ubuntu_upgrade": "Kiểm tra và nâng Ubuntu",
+    "mongo_upgrade": "Nâng cấp MongoDB", "arbiter_upgrade": "Nâng MongoDB trên arbiter", "ubuntu_upgrade": "Kiểm tra và nâng Ubuntu",
     "preflight": "Kiểm tra môi trường", "logs": "Đọc nhật ký", "install": "Cài MongoDB", "setup": "Tạo replica set một node",
     "service": "Điều khiển dịch vụ MongoDB", "add_member": "Thêm thành viên", "remove_member": "Gỡ thành viên",
     "member_options": "Sửa cấu hình thành viên", "step_down": "Step down Primary", "create_user": "Tạo user", "password": "Đổi mật khẩu",
     "drop_user": "Xóa user", "write_concern": "Đặt write concern", "backup": "Tạo backup", "backups": "Liệt kê backup",
     "sync_backup": "Đồng bộ bản mới từ nguồn", "restore": "Restore backup", "drop_database": "Xóa database", "upgrade_check": "Kiểm tra nâng cấp 9.0",
     "provision": "Cài và tạo cụm mới", "join_fresh": "Kiểm tra VPS và thêm member"}
-HOST_ACTIONS = {"arbiter_upgrade", "ubuntu_upgrade", "preflight", "logs", "install", "setup", "provision", "join_fresh", "service", "backup", "backups", "restore", "sync_backup"}
-PROFILE_ACTIONS = set(LABELS) - HOST_ACTIONS | {"arbiter_upgrade", "backup", "restore", "sync_backup", "join_fresh"}
+HOST_ACTIONS = {"mongo_upgrade", "arbiter_upgrade", "ubuntu_upgrade", "preflight", "logs", "install", "setup", "provision", "join_fresh", "service", "backup", "backups", "restore", "sync_backup"}
+PROFILE_ACTIONS = set(LABELS) - HOST_ACTIONS | {"mongo_upgrade", "arbiter_upgrade", "backup", "restore", "sync_backup", "join_fresh"}
 READ_ACTIONS = {"preflight", "logs", "backups", "upgrade_check"}
 
 
@@ -371,6 +374,9 @@ def validate_params(action, params, machine=None):
         "password": ["username", "password", "database"], "drop_user": ["username", "database"],
         "write_concern": ["w"], "backup": ["database", "databases", "collection", "collections", "application_only"], "restore": ["backup_id", "drop", "destination_id", "destination_machine_id"], "drop_database": ["database"]}
     allowed["convert_role"] = ["host", "role"]
+    allowed["mongo_upgrade"] = ["series"]
+    if action == "mongo_upgrade" and params.get("series") not in catalog()["supported"]:
+        raise ValueError("Chọn nhánh trong danh mục MongoDB.")
     allowed["arbiter_upgrade"] = ["version"]
     allowed["ubuntu_upgrade"] = ["series", "target"]
     allowed["sync_backup"] = allowed["backup"] + ["destination_id", "drop"]
@@ -388,12 +394,12 @@ def validate_params(action, params, machine=None):
     if action == "convert_role" and p.get("role") not in ("ARBITER", "SECONDARY"):
         raise ValueError("Chọn vai trò ARBITER hoặc SECONDARY.")
     required.update(provision=allowed["provision"], join_fresh=["instance", "port", "bind_ip"])
-    if action == "ubuntu_upgrade" and (p.get("series") not in ("8.0", "9.0") or p.get("target") not in ("auto", "focal", "jammy", "noble", "resolute")):
+    if action == "ubuntu_upgrade" and ((p.get("series") and p["series"] not in catalog()["supported"]) or p.get("target") not in {"auto", *catalog()["lts"]}):
         raise ValueError("Chọn nhánh MongoDB và bản Ubuntu đích hợp lệ.")
     if action == 'join_fresh':
         p.setdefault('arbiter', False)
         p.setdefault('mode', 'prepare')
-        if p['mode'] not in {'prepare', 'prepared'}:
+        if p['mode'] not in {'prepare', 'prepared', 'replace_empty'}:
             raise ValueError('Chọn chuẩn bị instance mới hoặc kiểm tra node đã chuẩn bị.')
         if p['mode'] == 'prepared' and (not isinstance(p.get('target_keyfile'), str) or not p['target_keyfile'].startswith('/')):
             raise ValueError('Nhập đường dẫn keyfile thực tế trên node đã chuẩn bị để đối chiếu nguồn.')
@@ -439,8 +445,8 @@ def validate_params(action, params, machine=None):
         raise ValueError("Không cho xóa database hệ thống.")
     if action in {"backup", "sync_backup"} and p.get("collection") and not (p.get("database") or p.get("databases")):
         raise ValueError("Chọn database trước khi backup collection.")
-    if action in {"install", "provision"} and p["series"] not in {"8.0", "9.0"}:
-        raise ValueError("Chỉ hỗ trợ nhánh 8.0 hoặc 9.0.")
+    if action in {"install", "provision"} and p["series"] not in catalog()["supported"]:
+        raise ValueError("Nhánh chưa có trong danh mục MongoDB cho Ubuntu.")
     if action == "service" and p["operation"] not in {"diagnose", "repair_keyfile", "start", "stop", "restart", "enable", "disable"}:
         raise ValueError("Thao tác dịch vụ không hợp lệ.")
     if action in {"setup", "provision", "join_fresh"}:
@@ -532,6 +538,83 @@ def arbiter_upgrade_target(profile, machine):
                     current=db.admin.command("buildInfo")["version"])
 
 
+def mongo_upgrade_node(profile, machine, series):
+    endpoint = machine.get("mongo_endpoint")
+    if not endpoint or machine.get("profile_id") != profile["id"]:
+        raise ValueError("Cần liên kết VPS với đúng endpoint và hồ sơ MongoDB.")
+    stopped = host_run(machine, "mongo_stopped_package", {"port": int(endpoint.rsplit(":", 1)[1])}, lambda _: None)
+    if stopped:
+        if stopped["current"].rsplit(".", 1)[0] != series:
+            raise ValueError("Dịch vụ đã dừng. Chọn cùng nhánh để nâng gói. Đổi nhánh cần xác minh FCV của dữ liệu.")
+        return stopped
+    try:
+        with client(dict(profile, username="", password=""), direct=endpoint) as probe:
+            hello = probe.admin.command("hello")
+    except AutoReconnect as exc:
+        raise ValueError(f"Không kết nối được endpoint đích {endpoint}. Kiểm tra dịch vụ "
+                         f"{machine.get('service', 'mongod')} và cổng MongoDB trên máy đã chọn.") from exc
+    if hello.get("arbiterOnly"):
+        node = arbiter_upgrade_target(profile, machine)
+        source = node["current"].rsplit(".", 1)[0]
+        if source != series and (source, series) != ("8.0", "9.0"):
+            raise ValueError("Chưa hỗ trợ đường nâng nhánh này trên arbiter.")
+        return dict(node, role="ARBITER")
+    if hello.get("msg") == "isdbgrid" or hello.get("isreplicaset") or hello.get("setName", "") != (profile.get("replica_set") or ""):
+        raise ValueError("Endpoint chưa sẵn sàng hoặc không khớp replica set trong hồ sơ.")
+    with client(profile, direct=endpoint) as db:
+        current = db.admin.command("buildInfo")["version"]
+        options = db.admin.command("getCmdLineOpts")["parsed"]
+        if options.get("sharding", {}).get("clusterRole"):
+            raise ValueError("Node thuộc sharded cluster cần quy trình nâng riêng.")
+        fcv = db.admin.command({"getParameter": 1, "featureCompatibilityVersion": 1})["featureCompatibilityVersion"]
+        source = current.rsplit(".", 1)[0]
+        if source != series and (source, series) != ("8.0", "9.0"):
+            raise ValueError("Chưa hỗ trợ tự động chuyển giữa hai nhánh này. Có thể cập nhật trong cùng nhánh.")
+        if source != series and fcv != {"version": "8.0"}:
+            raise ValueError("Nâng nhánh yêu cầu FCV 8.0 ổn định.")
+    role = "STANDALONE"
+    if hello.get("setName"):
+        with client(profile) as cluster:
+            cfg, states = healthy_config(cluster)
+        member = next((m for m in cfg["members"] if m["host"] == endpoint), None)
+        state = states.get(member["_id"], {}) if member else {}
+        if state.get("state") not in (1, 2) or not state.get("health"):
+            raise ValueError("Cần member PRIMARY hoặc SECONDARY khỏe mạnh.")
+        role = "PRIMARY" if state["state"] == 1 else "SECONDARY"
+        if len(cfg["members"]) > 1:
+            if role == "PRIMARY":
+                raise ValueError("Nâng secondary trước, sau đó chuyển primary trong mục Replica rồi thử lại.")
+            check_quorum(cfg, {i: m for i, m in states.items() if i != member["_id"] and m.get("state") in (1, 2, 7)})
+    return dict(current=current, role=role, port=int(endpoint.rsplit(":", 1)[1]),
+                process_id=str(hello["topologyVersion"]["processId"]))
+
+
+def upgrade_mongo(p, profile, machine, emit):
+    node = mongo_upgrade_node(profile, machine, p["series"])
+    if node != p["node"]:
+        raise ValueError("Instance, phiên bản hoặc vai trò đã đổi. Mở lại kế hoạch.")
+    host_run(machine, "package_recover", {}, emit)
+    if mongo_upgrade_node(profile, machine, p["series"]) != node:
+        raise ValueError("Instance hoặc vai trò đã đổi sau khi kiểm tra dpkg.")
+    args = dict(node, version=p["version"])
+    emit("Tải trước các gói đã chọn.")
+    host_run(machine, "arbiter_packages", args, emit)
+    if mongo_upgrade_node(profile, machine, p["series"]) != node:
+        raise ValueError("Trạng thái máy đã đổi trong lúc tải gói.")
+    emit("Cập nhật gói và giữ dịch vụ đang dừng." if node["role"] == "INACTIVE" else "Dừng dịch vụ, cập nhật gói và khởi động lại MongoDB.")
+    host_run(machine, "arbiter_install", args, emit)
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        try:
+            observed = mongo_upgrade_node(profile, machine, p["series"])
+            if observed["current"] == p["version"] and observed["role"] == node["role"]:
+                return dict(version=p["version"], role=node["role"], endpoint=machine["mongo_endpoint"])
+        except (ValueError, PyMongoError):
+            pass
+        time.sleep(2)
+    raise ValueError("Chưa xác minh được phiên bản hoặc vai trò sau khi khởi động lại.")
+
+
 def upgrade_arbiter(p, profile, machine, emit):
     target = arbiter_upgrade_target(profile, machine)
     if target["current"] != p["version"]:
@@ -539,6 +622,7 @@ def upgrade_arbiter(p, profile, machine, emit):
             raise ValueError("Tác vụ dành cho arbiter đang chạy MongoDB 8.0.")
         params = dict(target, version=p["version"])
         emit("Kiểm tra instance và tải trước các gói MongoDB.")
+        host_run(machine, "package_recover", {}, emit)
         host_run(machine, "arbiter_packages", params, emit)
         if arbiter_upgrade_target(profile, machine) != target:
             raise ValueError("Arbiter đã đổi trong khi tải gói. Vui lòng kiểm tra lại.")
@@ -635,6 +719,8 @@ def execute(action, p, profile, machine, emit):
         if not result.get("ready"):
             raise RuntimeError("Membership đã đổi đồng thời. Kiểm tra vai trò thực tế.")
         return {**result, **restarted, "role": p["role"]}
+    if action == "mongo_upgrade":
+        return upgrade_mongo(p, profile, machine, emit)
     if action == "arbiter_upgrade":
         return upgrade_arbiter(p, profile, machine, emit)
     if action == "join_fresh":
@@ -663,8 +749,8 @@ def execute(action, p, profile, machine, emit):
                 raise ValueError('Đặt default write concern rõ ràng trước khi thêm arbiter.')
             version = db.admin.command("buildInfo")["version"]
             series = ".".join(version.split(".")[:2])
-            if series not in {"8.0", "9.0"}:
-                raise ValueError("Wizard node mới hỗ trợ nguồn Community 8.0/9.0.")
+            if series not in catalog()["supported"]:
+                raise ValueError("Nhánh của nguồn chưa có trong danh mục Community cho Ubuntu.")
         with client(profile, direct=p["source_endpoint"]) as node:
             if not node.admin.command("hello").get("isWritablePrimary"):
                 raise ValueError("VPS nguồn đã nhường primary. Mở lại thao tác để chọn nguồn hiện tại.")

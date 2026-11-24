@@ -4,10 +4,11 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,13 +19,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from bson import BSON, json_util
 from fastapi import Query, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pymongo.errors import OperationFailure, PyMongoError
 
 from .models import Action, Apply, Machine, Profile, ProfileProbe, ProfileAdopt, AttachedMachine, DocumentPage, DocumentWrite, public_endpoint, public_host
-from .operations import (HOST_ACTIONS, LABELS, PROFILE_ACTIONS, READ_ACTIONS, execute, arbiter_upgrade_target,
+from .operations import (HOST_ACTIONS, LABELS, PROFILE_ACTIONS, READ_ACTIONS, execute, arbiter_upgrade_target, mongo_upgrade_node,
                          client, discover, host_run, mongo_error, read_documents, write_document, query, redact, snapshot, validate_params)
+from .releases import catalog
 from . import ubuntu
 from .job_slots import Busy, JobSlots, job_scope, machine_keys
 from .store import Store
@@ -285,6 +287,10 @@ def create_app(data_dir=None):
         value.setdefault("ssh_auth", "key")
         return value
 
+    @app.get("/api/releases")
+    def releases():
+        return catalog()
+
     @app.get("/api/state")
     def state():
         store = app.state.store
@@ -493,10 +499,8 @@ def create_app(data_dir=None):
             raise HTTPException(409, "Hồ sơ máy đã thay đổi. Kiểm tra lại trước khi lấy tên.")
         return public_machine(saved)
 
-    @app.get("/api/machines/{record_id}/compatibility")
-    def machine_compatibility(record_id: str, series: str = Query("9.0", pattern=r"^(8|9)\.0$")):
+    def compatibility_endpoint(machine):
         store = app.state.store
-        machine = store.get("machines", record_id)
         endpoint = machine.get("mongo_endpoint")
         version, role, live_pid = "", "", None
         endpoint_error = ""
@@ -531,14 +535,54 @@ def create_app(data_dir=None):
                         if role == "ARBITER":
                             arbiter_version_restricted = isinstance(probe_error, OperationFailure) and probe_error.code == 13
                             endpoint_error = "" if arbiter_version_restricted else mongo_error(probe_error)
+        return dict(endpoint=endpoint, live_version=version, live_pid=live_pid, role=role,
+                    live=bool(version), endpoint_error=endpoint_error, arbiter_version_restricted=arbiter_version_restricted)
+
+    def compatibility_result(machine, series, probe, inventory=None):
+        params = {"series": series, "live_version": probe["live_version"]}
+        if inventory is not None:
+            params["inventory"] = inventory
         try:
-            result = host_run(machine, "ubuntu_compatibility", {"series": series, "live_version": version}, lambda _: None)
+            result = host_run(machine, "ubuntu_compatibility", params, lambda _: None)
         except (RuntimeError, OSError) as exc:
             raise ValueError(redact(str(exc), machine.get("ssh_password") or "")) from exc
-        if live_pid and str(live_pid) != result["pid"]:
+        pid = probe["live_pid"]
+        match = str(pid) == result["pid"] if pid else None
+        if match is False:
             result.update(status="unknown", reason="Endpoint và dịch vụ đã chọn có PID khác nhau.")
-        return dict(result, endpoint=endpoint, endpoint_error=endpoint_error, arbiter_version_restricted=arbiter_version_restricted, live=bool(version), role=role,
-                    pid_match=str(live_pid) == result["pid"] if live_pid else None)
+        return dict(result, **probe, pid_match=match)
+
+    @app.get("/api/machines/{record_id}/compatibility")
+    def machine_compatibility(record_id: str, series: str | None = Query(None, pattern=r"^\d+\.\d+$"), stream: bool = False):
+        machine = app.state.store.get("machines", record_id)
+        if series is None:
+            series = max(catalog()["supported"], key=lambda s: tuple(map(int, s.split("."))))
+        if not stream:
+            return compatibility_result(machine, series, compatibility_endpoint(machine))
+
+        def updates():
+            def line(stage, value):
+                return json.dumps({"stage": stage, "value": value}) + "\n"
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                pending = {pool.submit(compatibility_endpoint, machine): "endpoint",
+                           pool.submit(host_run, machine, "ubuntu_inventory", {}, lambda _: None): "host"}
+                parts = {}
+                for future in as_completed(pending):
+                    stage = pending[future]
+                    try:
+                        parts[stage] = future.result()
+                        yield line(stage, parts[stage])
+                    except Exception as exc:
+                        yield line("error", redact(str(exc), machine.get("ssh_password") or ""))
+                if len(parts) == 2:
+                    try:
+                        yield line("complete", compatibility_result(machine, series, parts["endpoint"], parts["host"]))
+                    except Exception as exc:
+                        yield line("error", redact(str(exc), machine.get("ssh_password") or ""))
+
+        return StreamingResponse(updates(), media_type="application/x-ndjson",
+                                 headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
     def verify_machine_deletion(machine, precheck=False):
         store = app.state.store
@@ -715,6 +759,32 @@ def create_app(data_dir=None):
             params["source_endpoint"] = primary
         notices = []
         ubuntu_info = None
+        package_wait = False
+        mongo_current = False
+        if body.action == "mongo_upgrade":
+            node = mongo_upgrade_node(profile, machine, params["series"])
+            def inspect_host(action, arguments):
+                try:
+                    return host_run(machine, action, arguments, lambda _: None)
+                except (RuntimeError, OSError) as exc:
+                    raise ValueError(redact(str(exc), machine.get("ssh_password") or "")) from exc
+            latest = inspect_host("mongo_latest", params)["version"]
+            current = node["current"]
+            if not re.fullmatch(r"\d+\.\d+\.\d+", current):
+                raise ValueError("Không xác định được phiên bản Community ổn định.")
+            if latest == current:
+                mongo_current = True
+            elif tuple(map(int, latest.split("."))) < tuple(map(int, current.split("."))):
+                raise ValueError(f"Đã cài {current}. Phiên bản {latest} trong kho thấp hơn.")
+            else:
+                activity = inspect_host("package_activity", {})
+                package_wait = bool(activity.get("pending") or activity.get("processes"))
+                if not package_wait:
+                    inspect_host("arbiter_check", dict(node, version=latest))
+            params.update(node=node, version=latest)
+            notices.append(f'{machine["mongo_endpoint"]} · {node["role"]} · {current} → {latest}. '
+                           + ("Dịch vụ đang dừng và sẽ được giữ ở trạng thái dừng." if node["role"] == "INACTIVE"
+                              else "Manager giữ FCV hiện tại."))
         if body.action == "arbiter_upgrade":
             node = arbiter_upgrade_target(profile, machine)
             if not node["current"].startswith("8.0."):
@@ -731,21 +801,24 @@ def create_app(data_dir=None):
                 ubuntu_info = host_run(machine, "ubuntu_assess", params, lambda _: None)
                 i = ubuntu_info
                 route = [i["current"], *i["path"]] if i.get("current") else []
-                i["route"] = " → ".join(ubuntu.LTS[c] for c in route)
-                if i["path"]:
+                i["route"] = " → ".join(catalog()["lts"][c] for c in route)
+                if i.get("blocked"):
+                    notices.append(i["blocked"])
+                elif i["path"]:
                     try:
-                        ubuntu.host_run(machine, "ubuntu_precheck", {"stage": i["path"][0]}, lambda _: None)
+                        activity = ubuntu.host_run(machine, "package_activity", {}, lambda _: None)
+                        package_wait = bool(activity.get("pending") or activity.get("processes"))
+                        if not package_wait:
+                            ubuntu.host_run(machine, "ubuntu_precheck", {"stage": i["path"][0]}, lambda _: None)
                         role, _ = ubuntu.mongo_state(machine, profile, i)
                     except (ValueError, RuntimeError, OSError, PyMongoError) as exc:
                         i["blocked"] = mongo_error(exc) if isinstance(exc, PyMongoError) else redact(str(exc), machine.get("ssh_password") or "")
                         notices.append(i["blocked"])
                     else:
-                        notices.extend(["Kho MongoDB có bộ gói phù hợp với bản LTS đích và kiến trúc của máy.",
+                        notices.extend(["Sẽ kiểm tra lại đường nâng sau khi APT sẵn sàng." if package_wait else "Đã kiểm tra đường nâng Ubuntu trên máy đích.",
                                         role, "Mỗi chặng cập nhật gói, nâng hệ điều hành và khởi động lại."])
-                elif i.get("blocked"):
-                    notices.append(i["blocked"])
                 else:
-                    notices.append("Bản Ubuntu hiện tại đã có gói phù hợp.")
+                    notices.append("Máy đang ở bản Ubuntu đích hoặc đã đáp ứng kế hoạch.")
             except (RuntimeError, OSError, PyMongoError) as exc:
                 raise ValueError(redact(str(exc), machine.get("ssh_password") or "")) from exc
         install_check = None
@@ -786,9 +859,14 @@ def create_app(data_dir=None):
         if body.action in {"drop_database", "drop_user"}:
             notices.append("Thao tác xóa không thể hoàn tác từ giao diện. Kiểm tra bản backup trước khi xác nhận.")
         plan_id = secrets.token_urlsafe(24)
-        display = {k: ("••••••••" if k == "password" else v) for k, v in params.items() if k not in {"source_endpoint", "source_machine_id"}}
+        display = {k: ("••••••••" if k == "password" else v) for k, v in params.items() if k not in {"node", "source_endpoint", "source_machine_id"}}
         plan = {"id": plan_id, "action": body.action, "label": LABELS[body.action], "target": target, "params": display,
                 "notices": notices, "confirmation": "" if body.action in READ_ACTIONS else target, "expires_in": 600}
+        if package_wait:
+            plan["package_wait"] = True
+            notices.append("Sau khi xác nhận, Manager chờ APT và hoàn tất cấu hình dpkg trước khi nâng.")
+        if mongo_current:
+            plan["already_current"] = True
         if install_check and (install_check.get("blocked") or install_check["path"] or install_check["version"]):
             plan["install_blocked"] = install_check.get("blocked") or ("Máy đã có mongod." if install_check["version"] else "Ubuntu hiện tại chưa có bộ gói phù hợp.")
         if ubuntu_info:
@@ -912,7 +990,7 @@ def create_app(data_dir=None):
         records = [("jobs", job, job["id"])]
         if public["action"] == "ubuntu_upgrade":
             records.append(("ubuntu-jobs", {"params": plan["params"], "info": plan["ubuntu_info"], "plan": plan}, job["id"]))
-            job["series"] = plan["params"]["series"]
+            job["series"] = plan["params"].get("series", "")
         if schedule:
             job["scheduled"] = True
             records.append((SCHEDULES, schedule, schedule["id"]))
@@ -940,9 +1018,13 @@ def create_app(data_dir=None):
         plan = app.state.plans.get(body.plan_id)
         if not plan or plan["expires"] < time.monotonic():
             raise HTTPException(409, "Bản xem trước đã hết hạn. Tạo lại trước khi chạy.")
+        if plan["public"].get("already_current"):
+            raise ValueError("MongoDB đã ở bản mới nhất của nhánh.")
         if plan["public"].get("install_blocked"):
             raise ValueError(plan["public"]["install_blocked"])
-        if plan["public"]["action"] == "arbiter_upgrade" and app.state.store.get("machines", plan["machine"]["id"]) != plan["machine"]:
+        if plan["public"]["action"] == "mongo_upgrade" and not body.backup_confirmed:
+            raise ValueError("Cần xác nhận bản sao lưu trước khi nâng MongoDB.")
+        if plan["public"]["action"] in {"mongo_upgrade", "arbiter_upgrade"} and app.state.store.get("machines", plan["machine"]["id"]) != plan["machine"]:
             raise HTTPException(409, "Hồ sơ VPS đã thay đổi. Kiểm tra lại.")
         if plan["public"]["action"] == "ubuntu_upgrade":
             info = plan["public"]["ubuntu"]
@@ -981,12 +1063,15 @@ def create_app(data_dir=None):
             if store.get("jobs", job_id)["status"] != "failed":
                 raise HTTPException(409, "Tác vụ đã được kiểm tra lại.")
             index = ctx.get("index", 0)
-            args = {"job_id": job_id, "stage": ctx["info"]["path"][index]}
-            state = host_run(plan["machine"], "ubuntu_status", args, lambda _: None)
-            if state["phase"] == "failed" and state.get("can_finalize") and state.get("current") == args["stage"]:
-                ctx["retry_finalize"] = True
-            elif state["phase"] not in {"reboot", "prepare-reboot"} or not state["rebooted"]:
-                raise ValueError("Chặng này chưa hoàn tất reboot. Xem log trên VPS rồi kiểm tra lại kế hoạch.")
+            if index < len(ctx["info"]["path"]):
+                args = {"job_id": job_id, "stage": ctx["info"]["path"][index]}
+                state = host_run(plan["machine"], "ubuntu_status", args, lambda _: None)
+                if state["phase"] == "failed" and state.get("can_finalize") and state.get("current") == args["stage"]:
+                    ctx["retry_finalize"] = True
+                elif ctx.get("launching") and state["phase"] in {"starting", "apt", "release", "packages"}:
+                    pass
+                elif state["phase"] not in {"reboot", "prepare-reboot"} or not state["rebooted"]:
+                    raise ValueError("Chặng này chưa hoàn tất reboot. Xem log trên VPS rồi kiểm tra lại kế hoạch.")
             ctx.pop("verify_until", None)
             ctx.pop("ready_until", None)
             ctx.pop("launch_error", None)
@@ -998,6 +1083,19 @@ def create_app(data_dir=None):
         except Exception:
             app.state.slots.release(job_id)
             raise
+
+    @app.get("/api/machines/{machine_id}/package-activity")
+    def machine_package_activity(machine_id: str):
+        return host_run(app.state.store.get("machines", machine_id), "package_activity", {}, lambda _: None)
+
+    @app.get("/api/machines/{machine_id}/active-upgrade")
+    def active_upgrade(machine_id: str, action: str):
+        kinds = {"ubuntu_upgrade": {"ubuntu_upgrade"}, "mongo_upgrade": {"mongo_upgrade", "arbiter_upgrade"}}
+        if action not in kinds:
+            raise ValueError("Tác vụ nâng cấp không hợp lệ.")
+        jobs = app.state.store.all("jobs")
+        return next((job for job in reversed(jobs) if job.get("machine_id") == machine_id
+                     and job["action"] in kinds[action] and job["status"] in {"queued", "running"}), None)
 
     @app.get("/api/jobs/{job_id}")
     def job_status(job_id: str):
