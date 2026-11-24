@@ -228,9 +228,16 @@ function topology(s){
   if(!primary)return `<div class="topology">${empty(uiText("Chưa có topology"),uiText("Kết nối cụm để xem các thành viên."),'','')}</div>`;
   return `<div class="topology"><div class="topology-tree"><div class="topo-main">${nodeLink(primary)}<span class="node-icon">${icon('db')}</span><div class="node-name">${memberLabel(primary,demo?'mongo-01':'Primary')}</div>${memberBadge('PRIMARY')}<div class="node-address">${esc(primary.host)}</div></div>${others.length?`<div class="branches${others.length>4?' many-members':''}">${others.map((m,i)=>`<div class="topo-child">${nodeLink(m)}<div class="node-name">${memberLabel(m,demo?`mongo-0${i+2}`:`Member ${m.id}`)}</div>${memberBadge(m.state)}<div class="node-address">${esc(m.host)}</div></div>`).join('')}</div>`:("<div class=\"topology-empty\">"+uiText("Thêm secondary để tạo bản sao dữ liệu.")+"</div>")}</div></div><div class="panel-foot"><span class="legend"><span class="dot green"></span> ${s.members.filter(m=>m.health).length} ${uiText("member đang hoạt động")}</span><span>${esc(s.replica_set)}</span></div>`;
 }
+function replicaMemberActions(member){
+  const hostAttrs=`data-host="${esc(member.host)}"`;
+  const election=member.votes!=null&&['PRIMARY','SECONDARY'].includes(member.state)
+    ?button(dataLabel('Votes / Ưu tiên','Votes / Priority'),'member-edit','','small',hostAttrs):'';
+  const remove=member.state==='PRIMARY'?'':button(uiText('Gỡ'),'member-remove','trash','small danger',hostAttrs);
+  return `<div class="actions">${election}${remove}</div>`;
+}
 function memberTable(s,full=false){
   if(!s?.members.length)return empty(uiText("Chưa đọc được thành viên"),uiText("Kiểm tra kết nối và quyền xem replica set."),'','');
-  return table([uiText("THÀNH VIÊN"),uiText("VAI TRÒ"),uiText("TRẠNG THÁI"),uiText("ĐỘ TRỄ"),'VOTES / PRIORITY',full?uiText("THAO TÁC"):'UPTIME'],s.members.map((m,i)=>`<tr><td><div class="host-cell"><span class="server-icon">${icon('server')}</span><div><strong>${memberLabel(m,demo?`mongo-0${i+1}`:`Member ${m.id}`)}</strong><small class="mongo-address"><a href="#machines?member=${encodeURIComponent(m.host)}">${esc(m.host)}</a></small></div></div></td><td>${memberBadge(m.state)}</td><td><span class="legend"><span class="dot ${m.health?'green':''}"></span>${m.health?'Healthy':uiText("Không reachable")}</span></td><td class="mono">${m.lag==null?'—':`${m.lag} s`}</td><td class="mono">${m.votes} / ${m.priority}</td><td>${full?`${button(uiText("Sửa"),'member-edit','','small',`data-host="${esc(m.host)}"`)} ${button(uiText("Gỡ"),'member-remove','','small',`data-host="${esc(m.host)}"`)}`:`${Math.floor(m.uptime/86400)} ${uiText("ngày")}`}</td></tr>`));
+  return table([uiText("THÀNH VIÊN"),uiText("VAI TRÒ"),uiText("TRẠNG THÁI"),uiText("ĐỘ TRỄ"),'VOTES / PRIORITY',full?uiText("THAO TÁC"):'UPTIME'],s.members.map((m,i)=>`<tr><td><div class="host-cell"><span class="server-icon">${icon('server')}</span><div><strong>${memberLabel(m,demo?`mongo-0${i+1}`:`Member ${m.id}`)}</strong><small class="mongo-address"><a href="#machines?member=${encodeURIComponent(m.host)}">${esc(m.host)}</a></small></div></div></td><td>${memberBadge(m.state)}</td><td><span class="legend"><span class="dot ${m.health?'green':''}"></span>${m.health?'Healthy':uiText("Không reachable")}</span></td><td class="mono">${m.lag==null?'—':`${m.lag} s`}</td><td class="mono">${m.votes} / ${m.priority}</td><td>${full?replicaMemberActions(m):`${Math.floor(m.uptime/86400)} ${uiText("ngày")}`}</td></tr>`));
 }
 function overview(){
   const p=profile(),s=currentStatus;
@@ -261,36 +268,27 @@ function clustersPage(){
 const hostnameBatches=new Set();
 function workspaceSSHHosts(){return machines().filter(m=>m.mode==='ssh'&&(m.profile_id||'')===(profile()?.id||''));}
 function machinePage(){
- let html=heading(uiText("Máy chủ"),uiText("Quản lý kết nối SSH, cài đặt và dịch vụ trên từng máy."),button(uiText("Thêm máy chủ"),'machine-new','plus')+(profile()?button(uiText("Thêm Secondary"),'node-add','plus','primary')+button(uiText("Thêm Arbiter"),'add-arbiter','plus'):''));
+ let html=heading(uiText("Máy chủ"),uiText("Quản lý kết nối SSH, cài đặt và dịch vụ trên từng máy."),button(uiText("Thêm máy chủ"),'machine-new','plus'));
  if(!profile())html+=onboardingCards();
  const linked=machines().filter(m=>!profile()||m.profile_id===profile().id);
  const members=profile()?(currentStatus?.members||profile().seeds.map(host=>({host}))):[];
  const memberByHost=new Map(members.map(member=>[member.host,member]));
  linked.sort((a,b)=>Number(memberByHost.has(b.mongo_endpoint))-Number(memberByHost.has(a.mongo_endpoint)));
- const electionActions=member=>{
-   if(member?.votes==null)return '';
-   const settings=`Votes: ${esc(member.votes)} · ${uiText("Ưu tiên:")} ${esc(member.priority??'—')}`;
-   const tone=memberTones.get(member.state)||'';
-   if(!['PRIMARY','SECONDARY'].includes(member.state))return `<span class="button small vote-label ${tone}">${settings}</span>`;
-   return button(settings,'member-edit','','small vote-label '+tone,`data-host="${esc(member.host)}"`);
- };
- const removeAction=member=>member?.state && member.state!=='PRIMARY'
-   ?button(uiText("Gỡ"),'member-remove','trash','small danger',`data-host="${esc(member.host)}"`):'';
  const rows=linked.map((m,index)=>{
    const member=memberByHost.get(m.mongo_endpoint);
-   return `<tr data-node="${esc(m.mongo_endpoint)}" tabindex="-1"><td class="row-number">${index+1}</td><td><div class="host-cell"><span class="server-icon">${icon('server')}</span><div><strong>${member?.id!=null?memberLabel(member,m.name):esc(m.name)}</strong>${m.mongo_endpoint?`<small class="mongo-address">${esc(m.mongo_endpoint)}</small>`:''}${member?.state?memberBadge(member.state):''}</div></div></td><td>${badge(m.mode==='ssh'?'SSH':'LOCAL','dark')} ${m.mode==='ssh'?`<span class="mono ssh-address">${esc(m.user)}@${esc(m.host.includes(':')?'['+m.host+']':m.host)}:${esc(m.port)}</span>`:''}</td><td class="mono">${esc(m.service)}<small>${esc(profiles().find(p=>p.id===m.profile_id)?.name||uiText("Chưa liên kết cụm"))}</small></td><td><div class="actions">${electionActions(member)}${!member&&profile()&&currentStatus&&m.mode==='ssh'?button(uiText("Thêm làm Secondary"),'join-fresh','plus','small',`data-id="${esc(m.id)}"`):''}${button(uiText("Kiểm tra"),'preflight','pulse','small',`data-id="${esc(m.id)}"`)}${button(uiText("Dịch vụ"),'service','','small',`data-id="${esc(m.id)}"`)}${button(uiText("Sửa"),'machine-edit','','small',`data-id="${esc(m.id)}"`)}${button(uiText("Xoá"),'machine-delete','trash','small danger',`data-id="${esc(m.id)}"`)}${removeAction(member)}</div></td></tr>`;
+   return `<tr data-node="${esc(m.mongo_endpoint)}" tabindex="-1"><td class="row-number">${index+1}</td><td><div class="host-cell"><span class="server-icon">${icon('server')}</span><div><strong>${member?.id!=null?memberLabel(member,m.name):esc(m.name)}</strong>${m.mongo_endpoint?`<small class="mongo-address">${esc(m.mongo_endpoint)}</small>`:''}${member?.state?memberBadge(member.state):''}</div></div></td><td>${badge(m.mode==='ssh'?'SSH':'LOCAL','dark')} ${m.mode==='ssh'?`<span class="mono ssh-address">${esc(m.user)}@${esc(m.host.includes(':')?'['+m.host+']':m.host)}:${esc(m.port)}</span>`:''}</td><td class="mono">${esc(m.service)}<small>${esc(profiles().find(p=>p.id===m.profile_id)?.name||uiText("Chưa liên kết cụm"))}</small></td><td><div class="actions">${!member&&profile()&&currentStatus&&m.mode==='ssh'?button(uiText("Thêm làm Secondary"),'join-fresh','plus','small',`data-id="${esc(m.id)}"`):''}${button(uiText("Kiểm tra"),'preflight','pulse','small',`data-id="${esc(m.id)}"`)}${button(uiText("Dịch vụ"),'service','','small',`data-id="${esc(m.id)}"`)}${button(dataLabel('Nhật ký','Logs'),'logs','terminal','small',`data-id="${esc(m.id)}"`)}${button(uiText("Sửa"),'machine-edit','','small',`data-id="${esc(m.id)}"`)}${button(uiText("Xoá"),'machine-delete','trash','small danger',`data-id="${esc(m.id)}"`)}</div></td></tr>`;
  });
  const discovered=[];
  for(const member of members){
    if(linked.some(m=>m.mongo_endpoint===member.host))continue;
    const label=member.id!=null?memberLabel(member,'Member '+member.id):esc(profile()?.member_hostnames?.[member.host]||member.host);
-   discovered.push(`<tr data-node="${esc(member.host)}" tabindex="-1"><td class="row-number">${discovered.length+1}</td><td><strong>${label}</strong><small class="mongo-address">${esc(member.host)}</small>${member.state?memberBadge(member.state):''}</td><td>${uiText("Chưa cấu hình SSH")}</td><td>—</td><td><div class="actions">${electionActions(member)}${button(uiText("Cấu hình SSH"),'member-ssh','','small',`data-host="${esc(member.host)}"`)}${removeAction(member)}</div></td></tr>`);
+   discovered.push(`<tr data-node="${esc(member.host)}" tabindex="-1"><td class="row-number">${discovered.length+1}</td><td><strong>${label}</strong><small class="mongo-address">${esc(member.host)}</small>${member.state?memberBadge(member.state):''}</td><td>${uiText("Chưa cấu hình SSH")}</td><td>—</td><td><div class="actions">${button(uiText("Cấu hình SSH"),'member-ssh','','small',`data-host="${esc(member.host)}"`)}</div></td></tr>`);
  }
  const headers=[uiText("STT"),uiText("MÁY CHỦ"),uiText("KẾT NỐI"),'SERVICE',uiText("THAO TÁC")];
  const fetching=hostnameBatches.has(profile()?.id||'');
  const hostnameAction=workspaceSSHHosts().length?button(fetching?dataLabel('Đang lấy tên…','Reading hostnames…'):dataLabel('Lấy tên từ VPS','Get VPS hostnames'),'machine-hostname','refresh','small',fetching?'disabled':''):'';
- const primaryAction=members.some(m=>m.state==='PRIMARY')?button(uiText("Đổi primary"),'step-down','','small change-primary'):'';
- html+=panel(uiText("Máy chủ của bạn"),rows.length?table(headers,rows):empty(uiText("Thêm máy chủ đầu tiên"),uiText("Kết nối bằng mật khẩu SSH hoặc key/agent."),'machine-new',uiText("Thêm máy chủ"),'server'), '', `<div class="actions">${hostnameAction}${primaryAction}</div>`);
+
+ html+=panel(uiText("Máy chủ của bạn"),rows.length?table(headers,rows):empty(uiText("Thêm máy chủ đầu tiên"),uiText("Kết nối bằng mật khẩu SSH hoặc key/agent."),'machine-new',uiText("Thêm máy chủ"),'server'), '', `<div class="actions">${hostnameAction}</div>`);
  if(discovered.length)html+=panel(uiText("Thành viên chưa lưu hồ sơ máy"),table(headers,discovered));
 
  if(!profile())html+=`<div class="cards">${feature(uiText("Cài MongoDB Server"),uiText("Kiểm tra repository và cài package Community 8.0 hoặc 9.0 đúng phiên bản Ubuntu."),'server','install',uiText("Cài package"))}${feature(uiText("Tạo replica set"),uiText("Tạo instance mới với service riêng, keyfile và tài khoản quản trị."),'cluster','setup',uiText("Bắt đầu setup"))}${feature(uiText("Xem nhật ký dịch vụ"),uiText("Đọc 100 dòng journal gần nhất của service đã cấu hình."),'terminal','logs',uiText("Mở nhật ký"))}</div>`;
@@ -352,7 +350,7 @@ function clusterSSHData(){
 }
 
 function feature(title,desc,glyph,act,label){return `<article class="feature-card"><span class="quick-icon">${icon(glyph)}</span><h2>${title}</h2><p>${desc}</p>${button(label,act,'','')}</article>`;}
-function replicaPage(){return heading('Replica Set',uiText("Quản lý thành viên, vai trò và cấu hình bầu chọn."),button(uiText("Thêm Arbiter"),'add-arbiter','plus')+button(uiText("Node đã chuẩn bị"),'prepared-node','plus')+button(uiText("Thêm Secondary"),'node-add','plus','primary'))+(statusError?errorBox(statusError):'')+panel(uiText("Thành viên"),memberTable(currentStatus,true),uiText("Chọn Votes và Ưu tiên khi thêm secondary."))+`<div class="cards">${feature('Step down Primary',uiText("Chuyển quyền primary qua cơ chế bầu chọn. Cần secondary sẵn sàng và đủ quorum."),'cluster','step-down',uiText("Xem trước"))}${feature('Write Concern',uiText("Xem và đặt mức xác nhận ghi cho replica set."),'shield','write-concern',uiText("Cấu hình"))}</div>`;}
+function replicaPage(){return heading('Replica Set',uiText("Quản lý thành viên, vai trò và cấu hình bầu chọn."),button(uiText("Thêm Arbiter"),'add-arbiter','plus')+button(uiText("Node đã chuẩn bị"),'prepared-node','plus')+button(uiText("Thêm Secondary"),'node-add','plus','primary'))+(statusError?errorBox(statusError):'')+panel(uiText("Thành viên"),memberTable(currentStatus,true),'',currentStatus?.members.some(m=>m.state==='PRIMARY')?button(uiText("Đổi primary"),'step-down','','small change-primary'):'')+`<div class="cards">${feature('Write Concern',uiText("Xem và đặt mức xác nhận ghi cho replica set."),'shield','write-concern',uiText("Cấu hình"))}</div>`;}
 function archiveHosts(){return machines().filter(m=>m.profile_id===profile()?.id);}
 function archiveHostKey(){return 'mongo-backup-host:'+demo+':'+profile()?.id;}
 function selectedArchiveHost(){
