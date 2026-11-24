@@ -87,6 +87,8 @@ def advance(store, job, machine, profile, ctx, stop, emit):
             except (OSError, RuntimeError) as exc:
                 if not ctx.get("launching"):
                     raise
+                job.setdefault("upgrade_progress", {}).update(ssh_waiting=True, ssh_attempt_at=time.time())
+                store.save("jobs", job, job["id"])
                 if not ctx.get("disconnected"):
                     emit("Chờ kết nối lại VPS để đọc chặng đang chạy. " + str(exc))
                     ctx["disconnected"] = True

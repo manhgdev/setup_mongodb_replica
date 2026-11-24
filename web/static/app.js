@@ -1161,9 +1161,11 @@ function showJob(job){
     const elapsed=Math.max(0,((Date.parse(job.finished_at)||Date.now())-Date.parse(job.started_at||job.created_at))/1000);
     const rows=[[dataLabel('Đã chạy','Elapsed'),duration(elapsed)]];
     if(running){
-      const stale=status.checked_at && Date.now()/1000-status.checked_at>35;
+      const stale=status.ssh_waiting || (status.checked_at && Date.now()/1000-status.checked_at>35);
+      if(status.ssh_waiting)rows.push(['SSH',dataLabel('Đang kết nối lại','Reconnecting')+' · '+new Date(status.ssh_attempt_at*1000).toLocaleTimeString()]);
+      else if(job.action==='ubuntu_upgrade'&&status.checked_at&&!stale)rows.push(['SSH',dataLabel('Đã kết nối','Connected')]);
       if(stale)rows.push([dataLabel('Trạng thái theo dõi','Monitor status'),dataLabel('Đang chờ dữ liệu mới từ VPS','Waiting for an update from the host')]);
-      rows.push([dataLabel('Chặng hiện tại','Current phase'),status.phase||job.events.at(-1)?.message||'…']);
+      rows.push([stale?dataLabel('Chặng ghi nhận gần nhất','Last observed phase'):dataLabel('Chặng hiện tại','Current phase'),status.phase||job.events.at(-1)?.message||'…']);
       if(status.bytes_total)rows.push([status.package||'APT',Math.floor(status.bytes_done/1000000)+' / '+Math.ceil(status.bytes_total/1000000)+' MB']);
       if(status.packages_total)rows.push([status.downloading?dataLabel('Đã tải','Downloaded'):status.configuring?dataLabel('Bước giải nén và cấu hình','Unpack and configure steps'):dataLabel('Đã cấu hình','Configured'),status.packages_done+' / '+status.packages_total]);
       rows.push([dataLabel('Còn lại (ước tính)','Estimated remaining'),!stale&&Number.isFinite(status.eta_seconds)?duration(status.eta_seconds)+' · '+(status.downloading?dataLabel('tải gói Ubuntu','Ubuntu downloads'):status.packages_total?dataLabel('cấu hình gói','package configuration'):dataLabel('gói đang tải','current package')):dataLabel('Chưa đủ dữ liệu','Not enough data')]);
