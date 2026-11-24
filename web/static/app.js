@@ -994,9 +994,14 @@ async function followBusyJob(error){
   await openJob(id);
   return true;
 }
-function activeUpgrade(id,action){
-  if(!demo)return api('/machines/'+encodeURIComponent(id)+'/active-upgrade?action='+action);
-  const kinds=action==='mongo_upgrade'?['mongo_upgrade','arbiter_upgrade']:['ubuntu_upgrade'];
+async function activeUpgrade(id,action){
+  if(!demo){
+    const active=await api('/machines/'+encodeURIComponent(id)+'/active-upgrade?action='+action);
+    if(active||action!=='mongo_upgrade')return active;
+    // Managers serving an already-running install may still use the earlier endpoint.
+    return (await api('/state')).jobs.find(j=>j.machine_id===id&&j.action==='install'&&['queued','running'].includes(j.status));
+  }
+  const kinds=action==='mongo_upgrade'?['mongo_upgrade','arbiter_upgrade','install']:['ubuntu_upgrade'];
   return demoJobs.find(j=>j.machine_id===id&&kinds.includes(j.action)&&['running','queued'].includes(j.status));
 }
 function combinedKey(machineId){return 'upgrade-both:'+demo+':'+machineId;}
@@ -1141,12 +1146,13 @@ async function verifySSHKey(id){
     catch(error){if(save.isConnected){formError(error);save.disabled=false;}else toast(error.message,true);}
   };
 }
+let installSample=null;
 function showJob(job){
   const terminal=$('#modal .terminal');
   const sameJob=jobId===job.id&&terminal&&$('#modal').open;
   const top=sameJob?terminal.scrollTop:0;
   const follow=!sameJob||terminal.scrollHeight-terminal.clientHeight-top<8;
-  const revision=JSON.stringify([job.id,job.status,job.events.length,job.events.at(-1),job.upgrade_progress,['ubuntu_upgrade','mongo_upgrade','arbiter_upgrade'].includes(job.action)&&job.status==='running'?Math.floor(Date.now()/10000):0]);
+  const revision=JSON.stringify([job.id,job.status,job.events.length,job.events.at(-1),job.upgrade_progress,['install','ubuntu_upgrade','mongo_upgrade','arbiter_upgrade'].includes(job.action)&&job.status==='running'?Math.floor(Date.now()/10000):0]);
   if(sameJob&&terminal.dataset.revision===revision)return;
   jobId=job.id;
   if(job.status==='succeeded'&&job.action==='backup'&&job.result?.archives&&job.profile_id===profile()?.id){
@@ -1161,7 +1167,7 @@ function showJob(job){
   }
   const running=['queued','running'].includes(job.status);
   let timing='';
-  if(['ubuntu_upgrade','mongo_upgrade','arbiter_upgrade'].includes(job.action)){
+  if(['install','ubuntu_upgrade','mongo_upgrade','arbiter_upgrade'].includes(job.action)){
     const status=job.upgrade_progress||{};
     const duration=seconds=>Math.floor(seconds/60)+'m '+Math.floor(seconds%60)+'s';
     const elapsed=Math.max(0,((Date.parse(job.finished_at)||Date.now())-Date.parse(job.started_at||job.created_at))/1000);
@@ -1171,10 +1177,12 @@ function showJob(job){
       if(status.ssh_waiting)rows.push(['SSH',dataLabel('Đang kết nối lại','Reconnecting')+' · '+new Date(status.ssh_attempt_at*1000).toLocaleTimeString()]);
       else if(job.action==='ubuntu_upgrade'&&status.checked_at&&!stale)rows.push(['SSH',dataLabel('Đã kết nối','Connected')]);
       if(stale)rows.push([dataLabel('Trạng thái theo dõi','Monitor status'),dataLabel('Đang chờ dữ liệu mới từ VPS','Waiting for an update from the host')]);
+      const aptPhase=status.apt_phase==='dlstatus'?dataLabel('Tải gói APT','APT download'):status.apt_phase==='pmstatus'?dataLabel('Cài và cấu hình gói','Install and configure packages'):'';
+      if(aptPhase)rows.push([aptPhase,status.percent+'%']);
       rows.push([stale?dataLabel('Chặng ghi nhận gần nhất','Last observed phase'):dataLabel('Chặng hiện tại','Current phase'),status.phase||job.events.at(-1)?.message||'…']);
       if(status.bytes_total)rows.push([status.package||'APT',Math.floor(status.bytes_done/1000000)+' / '+Math.ceil(status.bytes_total/1000000)+' MB']);
       if(status.packages_total)rows.push([status.downloading?dataLabel('Đã tải','Downloaded'):status.configuring?dataLabel('Bước giải nén và cấu hình','Unpack and configure steps'):dataLabel('Đã cấu hình','Configured'),status.packages_done+' / '+status.packages_total]);
-      rows.push([dataLabel('Còn lại (ước tính)','Estimated remaining'),!stale&&Number.isFinite(status.eta_seconds)?duration(status.eta_seconds)+' · '+(status.downloading?dataLabel('tải gói Ubuntu','Ubuntu downloads'):status.packages_total?dataLabel('cấu hình gói','package configuration'):dataLabel('gói đang tải','current package')):dataLabel('Chưa đủ dữ liệu','Not enough data')]);
+      rows.push([dataLabel('Còn lại (ước tính)','Estimated remaining'),!stale&&Number.isFinite(status.eta_seconds)?duration(status.eta_seconds)+' · '+(aptPhase|| (status.downloading?dataLabel('tải gói Ubuntu','Ubuntu downloads'):status.packages_total?dataLabel('cấu hình gói','package configuration'):dataLabel('gói đang tải','current package'))):dataLabel('Chưa đủ dữ liệu','Not enough data')]);
       if(status.detail)rows.push([dataLabel('Mới nhất','Latest'),status.detail]);
       if(status.checked_at)rows.push([dataLabel('Kiểm tra lúc','Last checked'),new Date(status.checked_at*1000).toLocaleTimeString()]);
     }
@@ -1189,6 +1197,26 @@ function showJob(job){
     footer+=button(dataLabel('Kiểm tra lại Ubuntu','Check Ubuntu again'),action,'','',attrs);
   }
   modal(esc(job.label),`${running?'<div class="progress-track"><i></i></div>':''}<div class="modal-body job-detail"><div class="actions">${jobBadge(job)}<span class="mono">${esc(job.target)}</span></div>${timing}${job.error?errorBox(job.error):''}<pre class="terminal">${job.events.map(e=>`<small>${esc(formatDate(e.time))}</small>  ${esc(e.message)}`).join('\n')||uiText("Đang chờ tác vụ…")}</pre>${job.result?`<div><div class="notice-label">${uiText("Kết quả")}</div><pre>${esc(typeof job.result==='string'?job.result:JSON.stringify(job.result,null,2))}</pre></div>`:''}</div>`,footer);
+  if(running&&!demo&&job.action==='install'&&!job.upgrade_progress?.apt_phase){
+    const detail=document.createElement('div');
+    detail.className='callout neutral';
+    $('#modal .review-params').after(detail);
+    detail.textContent=dataLabel('Đang đọc hoạt động APT trên VPS…','Reading APT activity on the server…');
+    api('/machines/'+encodeURIComponent(job.machine_id)+'/package-activity').then(activity=>{
+      if(!detail.isConnected)return;
+      const dl=activity.download;
+      if(dl){
+        const now=Date.now()/1000, previous=installSample;
+        const bytes=n=>(n/1048576).toFixed(1)+' MiB';
+        detail.textContent=[dataLabel('Đang tải','Downloading'),dl.package,bytes(dl.bytes_done)+(dl.bytes_total?' / '+bytes(dl.bytes_total):'')].join(' · ');
+        if(previous?.job===job.id&&previous.name===dl.package&&dl.bytes_done>previous.done&&dl.bytes_total>dl.bytes_done){
+          const remaining=(dl.bytes_total-dl.bytes_done)*(now-previous.time)/(dl.bytes_done-previous.done);
+          detail.textContent+=' · '+dataLabel('Gói này còn khoảng ','This package has about ')+Math.ceil(remaining)+' s';
+        }
+        installSample={job:job.id,name:dl.package,done:dl.bytes_done,time:now};
+      }else detail.textContent=[activity.processes.join(', ')||dataLabel('APT đang rảnh','APT idle'),activity.detail].filter(Boolean).join(' · ');
+    }).catch(error=>{if(detail.isConnected)detail.textContent=error.message;});
+  }
   const log=$('#modal .terminal');
   log.dataset.revision=revision;
   log.scrollTop=follow?log.scrollHeight:top;

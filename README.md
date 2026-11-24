@@ -250,6 +250,10 @@ Nếu bước nâng MongoDB phát hiện VPS chưa cài mongod, bấm **Xem kế
 
 ![Bước MongoDB trên máy chưa cài](previews/mongo-install-required.jpg)
 
+Nút **Nâng cấp MongoDB** và **Nâng cả hai** mở cả tác vụ cài mới đang chạy trên máy đã chọn. Bảng theo dõi ghi thời gian chạy, hoạt động APT/dpkg và tiến độ tải hoặc cài gói. Ước tính cho từng chặng xuất hiện khi APT đã trả đủ mẫu tiến độ.
+
+![Theo dõi cài MongoDB](previews/mongo-install-progress.jpg)
+
 ## Cập nhật tài liệu
 
 Cập nhật mục hướng dẫn liên quan trong cùng thay đổi mã nguồn. Khi giao diện thay đổi, chụp ảnh bằng workspace minh họa, lưu trong [previews/](previews/) và dùng liên kết tương đối để GitHub hiển thị ảnh.

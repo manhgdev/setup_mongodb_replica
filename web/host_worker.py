@@ -121,11 +121,14 @@ def install(p):
     names = MONGO_PACKAGES
     version = package_version(series, codename, arch)
     event(f"Cài MongoDB {version} cho Ubuntu {codename} / {arch}.")
-    run(["apt-get", "update"], timeout=600)
-    run(["apt-get", "-o", "DPkg::Lock::Timeout=120", "install", "-y", "gnupg", "ca-certificates"], timeout=600)
+    event("Cập nhật danh mục gói Ubuntu.")
+    package_run(["apt-get", "update"], timeout=600)
+    package_run(["apt-get", "-o", "DPkg::Lock::Timeout=120", "install", "-y", "gnupg", "ca-certificates"], timeout=600)
+    event("Cấu hình kho MongoDB chính thức.")
     configure_mongo_repo(series, codename, arch)
-    run(["apt-get", "update"], timeout=600)
-    run(["apt-get", "-o", "DPkg::Lock::Timeout=120", "install", "-y", *[f"{n}={version}" for n in names], "mongodb-mongosh", "mongodb-database-tools"], timeout=1200)
+    package_run(["apt-get", "update"], timeout=600)
+    event("Tải và cài các gói MongoDB.")
+    package_run(["apt-get", "-o", "DPkg::Lock::Timeout=120", "install", "-y", *[f"{n}={version}" for n in names], "mongodb-mongosh", "mongodb-database-tools"], timeout=1200)
     return {"version": version, "message": "Đã cài package. Tiếp tục wizard tạo replica set."}
 
 
@@ -357,15 +360,46 @@ def package_activity():
                 if re.search(r" (status|install|upgrade|configure|trigproc) ", line):
                     detail = line[:220]
                     break
-    return {"processes": sorted(active), "pending": bool(audit), "detail": detail}
+    download = None
+    if "apt-get" in active:
+        for archive in Path("/var/cache/apt/archives/partial").glob("*.deb"):
+            match = re.fullmatch(r"([a-z0-9][a-z0-9+.-]*)_([^/]+)_([a-z0-9]+)\.deb", archive.name)
+            if not match:
+                continue
+            try:
+                done = archive.stat().st_size
+            except FileNotFoundError:
+                continue
+            size = re.search(r"^Size: (\d+)$", run(["apt-cache", "show", match[1] + ":" + match[3] + "=" + match[2].replace("%3a", ":")], check=False), re.M)
+            download = {"package": match[1], "bytes_done": done, "bytes_total": int(size[1]) if size else 0}
+            break
+    return {"processes": sorted(active), "pending": bool(audit), "detail": detail, "download": download}
 
 
 def package_run(args, timeout):
     # Stream only package names and operations, never raw hook output or repository credentials.
     import threading
+    if args[0] == "apt-get":
+        args = [args[0], "-o", "APT::Status-Fd=1", "-o", "Dpkg::Use-Pty=0", *args[1:]]
     def read_output(stream):
         previous = 0
+        phase = None
+        last_update = 0
+        baseline = 0
+        started = 0
         for line in stream:
+            sample = re.match(r"^(dlstatus|pmstatus):.*?:([0-9]+(?:[.][0-9]+)?):", line)
+            if sample:
+                kind, percent = sample[1], min(100, float(sample[2]))
+                now = time.monotonic()
+                if phase != kind or percent < baseline:
+                    phase, baseline, started, last_update = kind, percent, now, 0
+                if now - last_update >= 3:
+                    delta = percent - baseline
+                    eta = round((100-percent)*(now-started)/delta) if delta > 0 and now-started >= 3 else -1
+                    event(f"APT_PROGRESS {kind} {percent:.1f} {eta}")
+                    last_update = now
+                continue
             match = re.search(r"(Unpacking|Setting up|Processing triggers for) ([a-z0-9][a-z0-9.+:-]*)", line)
             download = re.match(r"Get:(\d+)\s+\S+\s+.*?\s+(\S+)\s+(?:amd64|arm64|all)\s+\S+\s+\[([^\]]+)\]", line)
             if (match or download) and time.monotonic() - previous >= 2:

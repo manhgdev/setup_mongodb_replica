@@ -892,6 +892,15 @@ def create_app(data_dir=None):
         store = app.state.store
         secret_values = [(plan.get("destination") or {}).get("password", ""), plan["params"].get("password", ""), (plan["profile"] or {}).get("password", ""), (plan["machine"] or {}).get("ssh_password", ""), (plan.get("source_machine") or {}).get("ssh_password", "")]
         def emit(message):
+            sample = re.fullmatch(r"APT_PROGRESS (dlstatus|pmstatus) ([0-9.]+) (-?\d+)", message)
+            if sample:
+                kind, percent, eta = sample.groups()
+                job["upgrade_progress"] = dict(apt_phase=kind, percent=float(percent),
+                    checked_at=time.time(), eta_seconds=int(eta) if int(eta) >= 0 else None)
+                store.save("jobs", job, job["id"])
+                return
+            if job.get("upgrade_progress", {}).get("apt_phase") and not message.startswith(("APT tải", "Setting up", "Unpacking", "Processing triggers")):
+                job.pop("upgrade_progress", None)
             job["events"].append({"time": now(), "message": redact(message, *secret_values)})
             store.save("jobs", job, job["id"])
         try:
@@ -1034,7 +1043,7 @@ def create_app(data_dir=None):
             raise ValueError(plan["public"]["install_blocked"])
         if plan["public"]["action"] == "mongo_upgrade" and not body.backup_confirmed:
             raise ValueError("Cần xác nhận bản sao lưu trước khi nâng MongoDB.")
-        if plan["public"]["action"] in {"mongo_upgrade", "arbiter_upgrade"} and app.state.store.get("machines", plan["machine"]["id"]) != plan["machine"]:
+        if plan["public"]["action"] in {"mongo_upgrade", "arbiter_upgrade", "install"} and app.state.store.get("machines", plan["machine"]["id"]) != plan["machine"]:
             raise HTTPException(409, "Hồ sơ VPS đã thay đổi. Kiểm tra lại.")
         if plan["public"]["action"] == "ubuntu_upgrade":
             info = plan["public"]["ubuntu"]
@@ -1106,7 +1115,7 @@ def create_app(data_dir=None):
 
     @app.get("/api/machines/{machine_id}/active-upgrade")
     def active_upgrade(machine_id: str, action: str):
-        kinds = {"ubuntu_upgrade": {"ubuntu_upgrade"}, "mongo_upgrade": {"mongo_upgrade", "arbiter_upgrade"}}
+        kinds = {"ubuntu_upgrade": {"ubuntu_upgrade"}, "mongo_upgrade": {"mongo_upgrade", "arbiter_upgrade", "install"}}
         if action not in kinds:
             raise ValueError("Tác vụ nâng cấp không hợp lệ.")
         jobs = app.state.store.all("jobs")
