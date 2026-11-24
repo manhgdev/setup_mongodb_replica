@@ -39,6 +39,17 @@ Bấm avatar để sửa tài khoản web. Nếu mất mật khẩu, chọn **Qu
 
 ## Từ VPS đến replica set
 
+<details>
+<summary>Đăng nhập, thiết lập ban đầu và quản trị tài khoản</summary>
+
+![Đăng nhập MongoDB Manager](previews/login-preview.jpg)
+
+![Hướng dẫn thiết lập ban đầu](previews/onboarding-preview.jpg)
+
+![Quản lý tài khoản quản trị web](previews/manager-admin.jpg)
+
+</details>
+
 <a id="connect"></a>
 
 ### Đã có cụm đang chạy
@@ -91,6 +102,15 @@ Chọn workspace ở thanh bên. Sơ đồ ở đầu README thể hiện các v
 Các thẻ trạng thái, member, độ trễ và backup dẫn đến phần quản trị tương ứng. **Hoạt động gần đây** giúp mở lại tác vụ vừa chạy để xem kết quả. Khi cần xác minh sau khi thêm node, kiểm tra cả vai trò **SECONDARY** và trạng thái sức khỏe trong bảng member.
 
 <a id="clusters"></a>
+
+<details>
+<summary>Giao diện tổng quan và trạng thái cụm</summary>
+
+![Tổng quan MongoDB Manager](previews/web-preview.jpg)
+
+![Trạng thái cụm API Express](previews/api-express-live.jpg)
+
+</details>
 
 ### Các cụm MongoDB
 
@@ -191,6 +211,17 @@ Tài khoản trong **Sửa tài khoản quản trị** dùng để đăng nhập
 
 <a id="diagnostics"></a>
 
+<details>
+<summary>Kết nối SSH của các cụm và từng VPS</summary>
+
+![Hồ sơ SSH trong cụm](previews/cluster-ssh-preview.jpg)
+
+![Danh sách SSH của các cụm](previews/ssh-all-clusters.jpg)
+
+![Cấu hình xác thực SSH bằng mật khẩu](previews/ssh-password-preview.jpg)
+
+</details>
+
 ## Chẩn đoán theo triệu chứng
 
 | Hiện tượng | Kiểm tra trong Manager |
@@ -219,11 +250,50 @@ Ba nút **Nâng cấp Ubuntu**, **Nâng cấp MongoDB** và **Nâng cả hai** m
 
 </details>
 
+<details>
+<summary>Chọn thao tác và kiểm tra phiên bản trên VPS</summary>
+
+![Nút nâng riêng Ubuntu và MongoDB](previews/upgrade-actions.jpg)
+
+![Nâng cả hai trên máy đã chọn](previews/upgrade-both.jpg)
+
+![Danh mục phiên bản](previews/release-catalog.jpg)
+
+![Kiểm tra tương thích Ubuntu và MongoDB](previews/ubuntu-compatibility.jpg)
+
+![Trạng thái khi dịch vụ MongoDB đã dừng](previews/compatibility-stopped.jpg)
+
+</details>
+
 ### Đọc kế hoạch trước khi nâng
 
 **Kiểm tra điều kiện** đọc phiên bản MongoDB, FCV và sức khỏe cụm. Khi chọn **Nâng cấp Ubuntu**, xem bản hiện tại, bản đích, các chặng LTS, kiến trúc và gói MongoDB có trong kho. Khi chọn **Nâng cấp MongoDB**, kiểm tra nhánh đích, phiên bản gói, service, vai trò node và điều kiện FCV. **Nâng cả hai** dùng cho kế hoạch thay đổi cả hệ điều hành lẫn MongoDB trên VPS đang chọn. Bấm xem kế hoạch trước khi xác nhận chạy.
 
 Trong lúc nâng Ubuntu, theo dõi gói đang xử lý và giai đoạn chờ VPS reboot. Khi máy quay lại, chạy **Kiểm tra lại** để xác minh Ubuntu, phiên bản binary, trạng thái service và vai trò MongoDB. Với nâng cả cụm, theo dõi từng node trở lại trạng thái khỏe trước khi chuyển sang node tiếp theo.
+
+<details>
+<summary>Chọn đích và xem kế hoạch Ubuntu</summary>
+
+![Chọn phiên bản Ubuntu đích](previews/upgrade-ubuntu-dialog.jpg)
+
+![Lộ trình nâng Ubuntu](previews/ubuntu-upgrade.jpg)
+
+![Kế hoạch nâng riêng Ubuntu](previews/ubuntu-only-plan.jpg)
+
+![Kiểm tra trước khi nâng Ubuntu trên máy có dịch vụ MongoDB đã dừng](previews/ubuntu-service-inactive.jpg)
+
+</details>
+
+<details>
+<summary>Chọn nhánh và xem kế hoạch MongoDB</summary>
+
+![Chọn nhánh MongoDB](previews/upgrade-mongo-dialog.jpg)
+
+![Xem trước kế hoạch nâng MongoDB](previews/mongodb-upgrade-plan.jpg)
+
+![Phiên bản gói MongoDB khi dịch vụ đã dừng](previews/mongodb-inactive-current.jpg)
+
+</details>
 
 <a id="jobs"></a>
 
@@ -234,6 +304,19 @@ Mở **Lịch sử tác vụ → Chi tiết** để xem tên thao tác, VPS ho�
 Nếu một thao tác đang giữ đúng VPS hoặc tài nguyên cụm mà thao tác mới cần, Manager mở nhật ký của tác vụ đang giữ tài nguyên. Công việc độc lập trên VPS khác có thể chạy song song. Sau lỗi, đọc bước cuối đã hoàn tất trước khi thử lại. Ví dụ, nếu membership đã được ghi nhưng hết thời gian chờ đồng bộ, kiểm tra node trên **Replica Set** trước khi thêm lần nữa.
 
 ![Lịch sử tác vụ của workspace với trạng thái và nút mở chi tiết](previews/guide-jobs.jpg)
+
+<details>
+<summary>Mở lại tác vụ và theo dõi tiến độ gói</summary>
+
+![Bảng theo dõi tác vụ đang chạy](previews/active-upgrade-monitor.jpg)
+
+![Thời gian và tiến độ nâng Ubuntu](previews/ubuntu-upgrade-progress.jpg)
+
+![Hoạt động APT và dpkg trên VPS](previews/upgrade-package-activity.jpg)
+
+![Tiến độ APT sau khi khôi phục kho gói](previews/ubuntu-apt-recovery.jpg)
+
+</details>
 
 ## Vận hành Manager
 
