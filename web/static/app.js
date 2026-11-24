@@ -89,7 +89,9 @@ async function api(path, options={}) {
   try { data=await response.json(); }
   catch(error){
     if(!(error instanceof SyntaxError))throw error;
-    const message=dataLabel('API trả về nội dung không hợp lệ. Kiểm tra đường dẫn /api trên máy chủ web.','Invalid API response. Check the web server route for /api.');
+    const message=[502,503,504].includes(response.status)
+      ?dataLabel('Máy chủ web tạm thời chưa nhận được phản hồi từ MongoDB Manager. Thử lại khi dịch vụ sẵn sàng.','The web server could not reach MongoDB Manager. Retry when the service is available.')
+      :dataLabel('API trả về nội dung không hợp lệ. Kiểm tra đường dẫn /api trên máy chủ web.','Invalid API response. Check the web server route for /api.');
     throw Object.assign(new Error(message+' (HTTP '+response.status+')'),{invalidResponse:true,status:response.status});
   }
   if(!response.ok){

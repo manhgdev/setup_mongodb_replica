@@ -258,6 +258,10 @@ Nếu popup kế hoạch đã mở trước lúc máy bắt đầu cài MongoDB,
 
 ![Tác vụ đang tải gói trước khi tạo mongod](previews/mongo-install-service-pending.jpg)
 
+**Nâng cấp MongoDB** đọc phiên bản gói trên VPS khi unit đã bị mask và mongod đã dừng. Nếu proxy trả HTTP 502, giao diện hiển thị trạng thái kết nối tới Manager.
+
+![Kiểm tra MongoDB trên linux1929](previews/mongo-linux1929-version.jpg)
+
 ## Cập nhật tài liệu
 
 Cập nhật mục hướng dẫn liên quan trong cùng thay đổi mã nguồn. Khi giao diện thay đổi, chụp ảnh bằng workspace minh họa, lưu trong [previews/](previews/) và dùng liên kết tương đối để GitHub hiển thị ảnh.

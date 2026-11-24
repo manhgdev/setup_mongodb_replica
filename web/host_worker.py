@@ -1506,7 +1506,10 @@ def stopped_mongo_package(p):
     state = run(["systemctl", "is-active", service], check=False)
     if state != "inactive":
         return {}
-    if run(["systemctl", "show", "-p", "LoadState", "--value", service]) != "loaded":
+    load_state = run(["systemctl", "show", "-p", "LoadState", "--value", service])
+    if load_state == "masked" and run(["pgrep", "-x", "mongod"], check=False):
+        raise ValueError("Dịch vụ đã chọn bị mask nhưng VPS có mongod đang chạy. Chọn dịch vụ quản lý tiến trình đó.")
+    if load_state not in {"loaded", "masked"}:
         package = run(["dpkg-query", "-W", "-f=${db:Status-Abbrev}", "mongodb-org-server"], check=False)
         if (not shutil.which("mongod") and package.strip() not in {"ii", "hi"}
                 and not run(["pgrep", "-x", "mongod"], check=False)):
