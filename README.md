@@ -20,6 +20,10 @@ Mở [127.0.0.1:8765](http://127.0.0.1:8765) trên máy đang chạy Manager. L�
 
 ![Tổng quan một workspace minh họa với primary và các secondary](previews/guide-overview.jpg)
 
+Trên điện thoại, bấm **☰** cạnh tên màn hình để mở menu. Các nút ngôn ngữ, xem thử và tài khoản nằm ở hàng bên dưới.
+
+![Thanh điều hướng trên điện thoại](previews/mobile-overview.jpg)
+
 <details>
 <summary>Chạy nền bằng PM2, truy cập từ xa và khôi phục tài khoản</summary>
 
