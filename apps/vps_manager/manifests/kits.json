@@ -1,0 +1,70 @@
+{
+  "Web cơ bản": [
+    "nginx",
+    "curl",
+    "git"
+  ],
+  "Công cụ VPS": [
+    "git",
+    "curl",
+    "wget",
+    "unzip",
+    "zip",
+    "vim",
+    "tmux",
+    "htop",
+    "btop",
+    "ncdu",
+    "vnstat-service",
+    "net-tools",
+    "dnsutils",
+    "lsof",
+    "jq",
+    "rsync",
+    "cron-service",
+    "netcat-openbsd",
+    "logrotate",
+    "ca-certificates",
+    "gcc",
+    "g++",
+    "make"
+  ],
+  "Python": [
+    "python3",
+    "python-is-python3",
+    "python3-pip",
+    "python-env"
+  ],
+  "Node.js": [
+    "node-lts",
+    "bun",
+    "yarn",
+    "pm2",
+    "pm2-startup",
+    "pm2-logrotate",
+    "fast-cli"
+  ],
+  "Media": [
+    "ffmpeg",
+    "libavcodec-extra",
+    "aria2",
+    "yt-dlp-nightly"
+  ],
+  "Redis": [
+    "redis-server",
+    "redis-server-service"
+  ],
+  "Docker": [
+    "docker-engine",
+    "docker-service",
+    "docker-compose"
+  ],
+  "SSL & Certbot": [
+    "certbot",
+    "python3-certbot-nginx",
+    "python3-certbot-dns-cloudflare",
+    "certbot-timer",
+    "openssl",
+    "ca-certificates"
+  ]
+}

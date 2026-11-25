@@ -1,8 +1,2 @@
-fastapi>=0.115,<1
-uvicorn>=0.34,<1
-pymongo>=4.11,<5
-cryptography>=44,<48
-paramiko>=3.5,<5
-pytest>=8,<10
-httpx>=0.28,<1
-croniter>=6,<7
+-r apps/mongodb_manager/requirements.txt
+-r apps/vps_manager/requirements.txt

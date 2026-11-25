@@ -22,7 +22,12 @@ with sock:
         response = conn.getresponse()
         status = json.loads(response.read(8192))
         if response.status == 200 and isinstance(status, dict) and {"enabled", "authenticated", "csrf", "public_url"} <= status.keys():
-            print("MongoDB Manager đang chạy: http://127.0.0.1:8765")
+            conn.request("GET", "/vps/")
+            vps = conn.getresponse()
+            if vps.status != 200 or b"ZM VPS Manager" not in vps.read(16384):
+                print("Cổng 8765 đang chạy bản Manager cũ. Chờ tác vụ hoàn tất rồi khởi động lại service.", file=sys.stderr)
+                sys.exit(3)
+            print("Manager đang chạy: http://127.0.0.1:8765/ và http://127.0.0.1:8765/vps/")
             sys.exit(0)
     except (OSError, ValueError, http.client.HTTPException):
         pass
@@ -32,6 +37,7 @@ then
     exit 0
 else
     probe_status=$?
+    if [[ $probe_status == 3 ]]; then exit 3; fi
     if [[ $probe_status != 1 ]]; then
         echo 'Cổng 8765 đang được sử dụng nhưng chưa xác nhận được MongoDB Manager.' >&2
         exit 1
@@ -56,7 +62,8 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 try:
     from packaging.requirements import Requirement
-    for line in Path("requirements-web.txt").read_text().splitlines():
+    manifests = [Path("apps/mongodb_manager/requirements.txt"), Path("apps/vps_manager/requirements.txt")]
+    for line in {line for manifest in manifests for line in manifest.read_text().splitlines()}:
         if line.strip() and not line.startswith("#"):
             req = Requirement(line)
             if version(req.name) not in req.specifier:
@@ -73,4 +80,4 @@ then
 fi
 echo 'MongoDB Manager: http://127.0.0.1:8765'
 echo 'Chỉ lắng nghe trên máy này. Ctrl+C để dừng.'
-exec .venv/bin/python -m uvicorn web.app:app --host 127.0.0.1 --port 8765 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1,::1
+exec .venv/bin/python -m uvicorn gateway.app:app --host 127.0.0.1 --port 8765 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1,::1

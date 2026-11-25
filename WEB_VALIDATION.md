@@ -4,7 +4,7 @@
 
 Binary chính thức MongoDB Community **8.0.16 và 9.0.7 macOS arm64**, tải từ `fastdl.mongodb.org`, chạy tại thư mục tạm, chỉ bind loopback. Test tạo keyfile và credential dùng một lần, không dùng tài khoản hoặc dữ liệu VPS.
 
-`tests/test_live_mongo.py` đã chạy thành công với ba tiến trình mongod:
+`apps/mongodb_manager/tests/test_live_mongo.py` đã chạy thành công với ba tiến trình mongod:
 
 - Khởi tạo cụm có primary và secondary với keyfile/auth.
 - Ghi dữ liệu thật rồi tiếp nhận qua endpoint secondary bằng API của ứng dụng.
@@ -19,7 +19,7 @@ Kết quả: **cùng integration test đạt trên cả hai phiên bản**: 8.0.
 
 ## Các kiểm tra khác
 
-`tests/test_auth.py`, `tests/test_web.py`, `tests/test_ssh.py`: **43 test đạt**. Gồm validation, kế hoạch/xác nhận, mã hóa, che mật khẩu, quorum, phân biệt VPS nguồn/đích, chặn instance đã tồn tại trước khi cài; SSH password chạy qua giao thức SSH thật với server thử local, kiểm tra đúng/sai password và từ chối host key chưa biết.
+`apps/mongodb_manager/tests/test_auth.py`, `apps/mongodb_manager/tests/test_web.py`, `apps/mongodb_manager/tests/test_ssh.py`: **43 test đạt**. Gồm validation, kế hoạch/xác nhận, mã hóa, che mật khẩu, quorum, phân biệt VPS nguồn/đích, chặn instance đã tồn tại trước khi cài; SSH password chạy qua giao thức SSH thật với server thử local, kiểm tra đúng/sai password và từ chối host key chưa biết.
 
 Kiểm tra auth gồm: hash password, cookie HttpOnly/SameSite/Secure, session hết hạn/thu hồi/đổi credential, CSRF, chặn Host/Origin/HTTP sai ở public mode, rate limit và từ chối public startup thiếu admin. Đã đăng nhập bằng tài khoản quản trị trên browser thật, reload giữ phiên và logout trả lại trang đăng nhập.
 
@@ -65,3 +65,11 @@ Theo yêu cầu thêm thử rồi gỡ node của chủ sở hữu:
 - Gỡ membership bằng job `178f8f53e6ce488abf42303938d66246`, xác minh cụm trở lại bốn member khỏe, dừng/disable service thử, thu hồi bảy rule UFW đã thêm. Service mongod cũ vẫn active. Giữ thư mục/config/dữ liệu thử để kiểm tra, không xóa.
 - Không cần cài package mới vì binary đã có; việc apt install trên VPS trắng vẫn chưa được chứng minh bởi lần thử này.
 - Bổ sung kiểm tra đường mạng từ đích tới chính endpoint quảng bá và các member trước reconfig; lỗi chiếm port nêu rõ cách xử lý.
+
+## Gateway và ZM VPS Manager
+
+Trên VM Ubuntu 24.04.5 ARM64 tách biệt, gateway đã kết nối SSH, cài Nginx qua Software Center, nhận diện lại gói đã cài và tạo reverse proxy tới ứng dụng thử ở localhost:3000. Domain thử dùng DNS cục bộ và trả HTTP 200. Upstream sai cổng và cấu hình Nginx không hợp lệ tạo job thất bại; website cũ vẫn trả HTTP 200. Hai yêu cầu cài gói đồng thời trả cùng mã tác vụ đang giữ khóa.
+
+Kiểm thử trình duyệt ở 1280 px và 375 px đã mở hai giao diện trong một phiên, quay lại màn hình MongoDB trước đó và đăng xuất chung. Mỗi ứng dụng cũng chạy bộ test từ bản sao chỉ chứa thư mục ứng dụng và lõi chung.
+
+Bộ test mặc định sau khi tách đạt 113 test, 3 test tích hợp cần binary riêng được bỏ qua. Khi chạy bổ sung với MongoDB 8.0.12 trên loopback, test bàn giao primary đạt. Test tiếp nhận secondary kèm hồ sơ SSH dùng 127.0.0.1 bị quy tắc VPS public từ chối. Đã tái hiện cùng lỗi trên bản mã trước khi di chuyển thư mục.

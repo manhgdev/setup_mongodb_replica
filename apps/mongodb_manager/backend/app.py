@@ -1,0 +1,1056 @@
+import base64
+import copy
+import json
+import os
+import re
+import secrets
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import urlparse
+from uuid import uuid4
+from pydantic import BaseModel, ConfigDict, Field
+
+from bson import BSON, json_util
+from fastapi import Query, FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pymongo import timeout as mongo_timeout
+from pymongo.errors import OperationFailure, PyMongoError
+
+from .models import Action, Apply, Machine, Profile, ProfileProbe, ProfileAdopt, AttachedMachine, DocumentPage, DocumentWrite, public_endpoint, public_host
+from .operations import (HOST_ACTIONS, LABELS, PROFILE_ACTIONS, READ_ACTIONS, execute, arbiter_upgrade_target, mongo_upgrade_node,
+                         client, discover, host_run, mongo_error, read_documents, write_document, query, redact, snapshot, validate_params)
+from .releases import catalog
+from . import ubuntu
+from shared.manager_core.job_slots import Busy, JobSlots, machine_keys
+from shared.manager_core.store import Store
+from shared.manager_core.auth import Auth
+from .backup_schedule import BackupScheduler, KIND as SCHEDULES, ScheduleInput
+
+from shared.manager_core.http import Login, register_auth
+from shared.manager_core.paths import DATA_DIR
+
+ROOT = Path(__file__).resolve().parent
+
+
+class HostFingerprint(BaseModel):
+    fingerprint: str = Field(pattern=r"^SHA256:[A-Za-z0-9+/]{43}$")
+
+
+class MachineName(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    name: str = Field(min_length=1, max_length=80)
+
+
+def job_scope(plan):
+    machine, source = plan.get("machine"), plan.get("source_machine")
+    writes = machine_keys(machine) | machine_keys(source) | machine_keys(plan.get("receiver"))
+    action = plan["public"]["action"]
+    profiles = {m.get("profile_id") for m in (machine, source) if m}
+    for p in (plan.get("profile"), plan.get("destination")):
+        if p:
+            profiles.add(p["id"])
+    reads = {("profile", pid) for pid in profiles if pid}
+    # Maintenance that can stop a voter shares a reservation with replica-set changes.
+    independent = {"preflight", "logs", "backups", "install", "backup", "upgrade_check"}
+    if action not in independent:
+        writes.update(("cluster", pid) for pid in profiles if pid)
+    return reads, writes
+
+
+def rename_generated_machines(store):
+    machines = store.all("machines")
+    for profile in store.all("profiles"):
+        group = [m for m in machines if m.get("profile_id") == profile["id"]]
+        used = {m["name"] for m in group}
+        number = 1
+        for machine in group:
+            if machine["name"] != f"{profile['name']} · {machine['host']}":
+                continue
+            while f"mongo-{number:02}" in used:
+                number += 1
+            name = f"mongo-{number:02}"
+            store.update_fields("machines", machine["id"], {"name": name}, expected={"name": machine["name"]})
+            used.add(name)
+
+
+def create_app(data_dir=None):
+    @asynccontextmanager
+    async def lifespan(app):
+        app.state.store = Store(data_dir or os.environ.get("MONGO_MANAGER_DATA", DATA_DIR))
+        rename_generated_machines(app.state.store)
+        app.state.auth = Auth(app.state.store)
+        app.state.pool = ThreadPoolExecutor(max_workers=8)
+        app.state.admin_lock = threading.Lock()
+        app.state.slots = JobSlots()
+        app.state.plans = {}
+        app.state.stop = threading.Event()
+        for job in app.state.store.all("jobs"):
+            if job["status"] in {"queued", "running"}:
+                if job.get("action") == "ubuntu_upgrade":
+                    ctx = app.state.store.get("ubuntu-jobs", job["id"])
+                    try:
+                        reserve_job(ctx["plan"], job["id"])
+                    except Busy:
+                        pass
+                    else:
+                        app.state.pool.submit(run_job, ctx["plan"], job)
+                        continue
+                job.update(status="interrupted", finished_at=now(), error="Ứng dụng đã dừng giữa tác vụ. Kiểm tra máy đích trước khi chạy lại.")
+                app.state.store.save("jobs", job, job["id"])
+        scheduler = BackupScheduler(app.state.store, dispatch_scheduled)
+        app.state.scheduler = scheduler
+        scheduler.thread.start()
+        try:
+            yield
+        finally:
+            app.state.stop.set()
+            scheduler.stop.set()
+            scheduler.thread.join()
+            app.state.pool.shutdown(wait=True)
+
+    app = FastAPI(title="MongoDB Manager", lifespan=lifespan, docs_url=None, redoc_url=None)
+
+    @app.exception_handler(RequestValidationError)
+    async def invalid_input(request, exc):
+        # Validation errors must never echo submitted credentials.
+        labels = {'seeds': 'Seed MongoDB', 'mongo_endpoint': 'Endpoint MongoDB', 'host': 'Địa chỉ SSH', 'port': 'Port SSH', 'user': 'User SSH', 'ssh_password': 'Mật khẩu SSH', 'password': 'Mật khẩu', 'name': 'Tên hiển thị', 'replica_set': 'Tên replica set'}
+        labels.update(votes="Votes", priority="Ưu tiên bầu primary", service="Tên service",
+                      ssh_auth="Xác thực SSH", identity="SSH private key", profile_id="Cụm MongoDB",
+                      mode="Chế độ kết nối", auto_name="Tự đọc hostname")
+        hints = {"votes": "Chọn 0 hoặc 1.", "priority": "Nhập số từ 0 đến 1000.",
+                 "port": "Nhập số nguyên từ 1 đến 65535.", "seeds": "Dùng IP hoặc hostname, có thể kèm :port (mặc định 27017)."}
+        errors = []
+        for error in exc.errors():
+            field = next((part for part in reversed(error['loc']) if isinstance(part, str) and part != 'body'), '')
+            label = labels.get(field, 'Thông tin nhập')
+            if error["type"] == "extra_forbidden":
+                message = "API chưa hỗ trợ trường này. Kiểm tra phiên bản Manager đang chạy."
+            else:
+                message = hints.get(field, 'Kiểm tra định dạng hoặc giá trị bắt buộc.')
+            errors.append(label + ': ' + message)
+        return JSONResponse({"detail": ' '.join(dict.fromkeys(errors))}, status_code=422)
+
+    register_auth(app)
+
+    @app.exception_handler(KeyError)
+    async def missing(request, exc):
+        return JSONResponse({"detail": "Không tìm thấy hồ sơ hoặc tác vụ."}, status_code=404)
+
+    @app.exception_handler(ValueError)
+    async def invalid(request, exc):
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+
+    @app.exception_handler(PyMongoError)
+    async def mongo_failed(request, exc):
+        return JSONResponse({"detail": mongo_error(exc)}, status_code=502)
+
+    @app.post("/api/{kind}/{record_id}/reveal-password")
+    def reveal_password(kind: str, record_id: str, request: Request):
+        if not request.state.session:
+            raise HTTPException(403, "Cần đăng nhập quản trị để xem mật khẩu đã lưu.")
+        fields = {"profiles": "password", "machines": "ssh_password"}
+        if kind not in fields:
+            raise HTTPException(404)
+        record = app.state.store.get(kind, record_id)
+        return {"password": record.get(fields[kind]) or ""}
+
+    def user_key(database, username):
+        return json.dumps([database, username], ensure_ascii=False)
+
+    @app.post("/api/profiles/{record_id}/user-password")
+    def reveal_user_password(record_id: str, database: str, username: str, request: Request):
+        if not request.state.session:
+            raise HTTPException(403, "Cần đăng nhập quản trị để xem mật khẩu đã lưu.")
+        store = app.state.store
+        profile = store.get("profiles", record_id)
+        if (username, database) == (profile["username"], profile["auth_db"]) and profile.get("password"):
+            return {"password": profile["password"]}
+        return {"password": store.get("user-passwords:" + record_id, user_key(database, username))["password"]}
+
+    @app.put("/api/profiles/{record_id}/user-password")
+    def remember_user_password(record_id: str, database: str, username: str, body: Login, request: Request):
+        if not request.state.session:
+            raise HTTPException(403, "Cần đăng nhập quản trị để lưu mật khẩu.")
+        if not username or username != body.username or not body.password:
+            raise ValueError("Nhập đúng tài khoản và mật khẩu.")
+        store = app.state.store
+        profile = store.get("profiles", record_id)
+        with client(dict(profile, username=username, auth_db=database, password=body.password)) as connection:
+            connection.admin.command("ping")
+        store.save("user-passwords:" + record_id, {"password": body.password}, user_key(database, username))
+        if (username, database) == (profile["username"], profile["auth_db"]):
+            store.update_fields("profiles", record_id, {"password": body.password}, expected={"username": username, "auth_db": database})
+        return {"saved": True}
+
+    def public_profile(value):
+        value = dict(value)
+        value["has_password"] = bool(value.pop("password", None))
+        return value
+
+    def public_machine(value):
+        value = dict(value)
+        value["has_ssh_password"] = bool(value.pop("ssh_password", None))
+        value.setdefault("ssh_auth", "key")
+        return value
+
+    @app.get("/api/releases")
+    def releases():
+        return catalog()
+
+    @app.get("/api/state")
+    def state():
+        store = app.state.store
+        return {"profiles": [public_profile(v) for v in store.all("profiles")], "machines": [public_machine(v) for v in store.all("machines")],
+                "jobs": list(reversed(store.all("jobs")))[0:100], "backup_schedules": store.all(SCHEDULES),
+                "local_only": not bool(app.state.auth.origin)}
+
+    @app.put("/api/profiles/{record_id}/backup-schedule")
+    def save_schedule(record_id: str, body: ScheduleInput):
+        return app.state.scheduler.save(record_id, body)
+
+    @app.post("/api/profiles/{record_id}/backup-schedule/pause")
+    def pause_schedule(record_id: str):
+        return app.state.scheduler.pause(record_id)
+
+    def save_profile(body, record_id=None):
+        value = body.model_dump()
+        if record_id:
+            previous = app.state.store.get("profiles", record_id)
+            if "member_hostnames" in previous:
+                value["member_hostnames"] = {h: n for h, n in previous["member_hostnames"].items() if h in value["seeds"]}
+            if value["password"] is None:
+                value["password"] = previous.get("password", "")
+        value["password"] = value["password"] or ""
+        return public_profile(app.state.store.save("profiles", value, record_id))
+
+    @app.post("/api/profiles")
+    def add_profile(body: Profile):
+        return save_profile(body)
+
+    @app.put("/api/profiles/{record_id}")
+    def edit_profile(record_id: str, body: Profile):
+        return save_profile(body, record_id)
+
+    def probe_value(body):
+        value = body.model_dump(exclude={"record_id", "machines"})
+        if body.record_id and value["password"] is None:
+            value["password"] = app.state.store.get("profiles", body.record_id).get("password", "")
+        return discover(value)
+
+    @app.post("/api/profiles/probe")
+    def probe_profile(body: ProfileProbe):
+        value, status = probe_value(body)
+        return {"profile": public_profile(value), "status": status}
+
+    @app.post("/api/profiles/adopt")
+    def adopt_profile(body: ProfileAdopt):
+        value, status = probe_value(body)
+        value = dict(value)
+        value["verified_at"] = status["checked_at"]
+        profile_id = body.record_id or uuid4().hex
+        records = [('profiles', value, profile_id)]
+        seen = set()
+        for attached in body.machines:
+            machine = attached.machine
+            if machine.mode != 'ssh' or machine.mongo_endpoint not in value['seeds']:
+                raise ValueError('Mỗi hồ sơ SSH cần endpoint thuộc cụm vừa xác minh.')
+            if attached.record_id and attached.record_id in seen:
+                raise ValueError('Không liên kết trùng hồ sơ SSH trong cùng lần lưu.')
+            seen.add(attached.record_id)
+            previous = app.state.store.get('machines', attached.record_id) if attached.record_id else {}
+            if previous.get('profile_id') and previous['profile_id'] != profile_id:
+                raise ValueError('Hồ sơ SSH đang thuộc cụm khác. Chọn hoặc tạo hồ sơ phù hợp.')
+            prepared = prepare_machine(machine, attached.record_id or None)
+            prepared['profile_id'] = profile_id
+            records.append(('machines', prepared, attached.record_id or None))
+        previous_names = app.state.store.get("profiles", profile_id).get("member_hostnames", {}) if body.record_id else {}
+        names = {host: name for host, name in previous_names.items() if host in value["seeds"]}
+        attached_hosts = {record["mongo_endpoint"] for _, record, _ in records[1:]}
+        pending = [m["host"] for m in status.get("members", []) if m.get("host") in value["seeds"]
+                   and m["host"] not in names and m["host"] not in attached_hosts and m.get("health", 1) == 1]
+
+        def detect(host):
+            try:
+                with client(value, direct=host) as db:
+                    name = db.admin.command("hostInfo").get("system", {}).get("hostname", "")
+                    if isinstance(name, str) and name.strip() and name.isprintable() and len(name) <= 80:
+                        return host, name.strip()
+            except PyMongoError:
+                pass
+            return host, ""
+
+        if pending:
+            with ThreadPoolExecutor(max_workers=min(8, len(pending))) as pool:
+                names.update((host, name) for host, name in pool.map(detect, pending) if name)
+        value["member_hostnames"] = names
+        saved = app.state.store.save_many(records)
+        return {"profile": public_profile(saved[0]), "machines": [public_machine(m) for m in saved[1:]], "status": status}
+
+    def reserve_job(plan, job_id):
+        app.state.slots.reserve(job_id, *job_scope(plan), job_id=job_id)
+
+    @app.exception_handler(Busy)
+    async def busy_response(request, exc):
+        headers = {"X-Active-Job": exc.job_id} if exc.job_id else {}
+        return JSONResponse({"detail": "Tài nguyên đang được một thao tác khác sử dụng."}, status_code=409, headers=headers)
+
+    @app.delete("/api/profiles/{record_id}")
+    def delete_profile(record_id: str):
+        owner = uuid4().hex
+        app.state.slots.reserve(owner, set(), {("profile", record_id)})
+        try:
+            app.state.store.delete("profiles", record_id)
+        finally:
+            app.state.slots.release(owner)
+        return {"ok": True}
+
+    def read_hostname(machine):
+        name = host_run(machine, "hostname", {}, lambda _: None).get("hostname", "").strip()
+        if not name or len(name) > 80 or not name.isprintable():
+            raise ValueError("Hostname VPS trả về không hợp lệ.")
+        return name
+
+    def prepare_machine(body, record_id=None):
+        value = body.model_dump()
+        if value["profile_id"]:
+            app.state.store.get("profiles", value["profile_id"])
+        previous = app.state.store.get("machines", record_id) if record_id else {}
+        for setting in ("votes", "priority"):
+            if setting not in body.model_fields_set and setting in previous:
+                value[setting] = previous[setting]
+        if not value["votes"] and value["priority"]:
+            raise ValueError("Votes = 0 yêu cầu ưu tiên bằng 0.")
+        if value["mode"] == "ssh":
+            public_host(value["host"])
+            if value["mongo_endpoint"]:
+                public_endpoint(value["mongo_endpoint"])
+        if value["mode"] == "ssh" and value["ssh_auth"] == "password":
+            if value["ssh_password"] is None:
+                value["ssh_password"] = previous.get("ssh_password", "")
+            if not value["ssh_password"]:
+                raise ValueError("Nhập mật khẩu SSH để dùng xác thực bằng mật khẩu.")
+        else:
+            value["ssh_password"] = ""
+        if value["auto_name"]:
+            try:
+                value["name"] = read_hostname(value)
+            except (OSError, RuntimeError, ValueError):
+                pass  # Keep the suggested name when SSH is unavailable.
+        return value
+
+    def save_machine(body, record_id=None):
+        return public_machine(app.state.store.save("machines", prepare_machine(body, record_id), record_id))
+
+    @app.post("/api/machines")
+    def add_machine(body: Machine):
+        return save_machine(body)
+
+    @app.post('/api/machines/batch')
+    def add_machines(body: list[AttachedMachine]):
+        if not 1 <= len(body) <= 50:
+            raise ValueError('Thêm từ 1 đến 50 hồ sơ VPS mỗi lần.')
+        records = []
+        ids = [m.record_id for m in body if m.record_id]
+        if len(ids) != len(set(ids)):
+            raise ValueError('Hồ sơ VPS bị trùng.')
+        for attached in body:
+            value = prepare_machine(attached.machine, attached.record_id or None)
+            records.append(('machines', value, attached.record_id or None))
+        return {'machines': [public_machine(m) for m in app.state.store.save_many(records)]}
+
+    @app.put("/api/machines/{record_id}")
+    def edit_machine(record_id: str, body: Machine):
+        return save_machine(body, record_id)
+
+    def password_machine(machine_id):
+        machine = app.state.store.get("machines", machine_id)
+        if machine["mode"] != "ssh" or machine.get("ssh_auth") != "password":
+            raise ValueError("Chọn VPS dùng mật khẩu SSH.")
+        return machine
+
+    @app.get("/api/machines/{machine_id}/ssh-key")
+    def inspect_ssh_key(machine_id: str):
+        from shared.manager_core.ssh_transport import probe_host_key, fingerprint
+        machine = password_machine(machine_id)
+        key = probe_host_key(machine)
+        return {"host": machine["host"], "port": machine["port"], "algorithm": key.get_name(), "fingerprint": fingerprint(key)}
+
+    @app.post("/api/machines/{machine_id}/ssh-key")
+    def save_ssh_key(machine_id: str, body: HostFingerprint):
+        from shared.manager_core.ssh_transport import enroll_host_key
+        try:
+            enroll_host_key(password_machine(machine_id), body.fingerprint)
+        except OSError as exc:
+            raise HTTPException(500, "Kiểm tra quyền đọc và ghi ~/.ssh/known_hosts của tài khoản chạy Manager.") from exc
+        return {"saved": True}
+
+    @app.patch("/api/profiles/{profile_id}/machines/{machine_id}/name")
+    def rename_machine(profile_id: str, machine_id: str, body: MachineName):
+        machine = app.state.store.update_fields("machines", machine_id, {"name": body.name, "auto_name": False},
+                                                expected={"profile_id": profile_id})
+        if machine is None:
+            raise HTTPException(404, "Không tìm thấy máy trong cụm đang mở.")
+        return public_machine(machine)
+
+    @app.post("/api/machines/{record_id}/hostname")
+    def use_machine_hostname(record_id: str):
+        store = app.state.store
+        machine = store.get("machines", record_id)
+        try:
+            name = read_hostname(machine)
+        except (RuntimeError, OSError) as exc:
+            raise HTTPException(502, redact(str(exc), machine.get("ssh_password") or "")) from exc
+        saved = store.update_fields("machines", record_id, {"name": name, "auto_name": True}, expected=machine)
+        if saved is None:
+            raise HTTPException(409, "Hồ sơ máy đã thay đổi. Kiểm tra lại trước khi lấy tên.")
+        return public_machine(saved)
+
+    def compatibility_endpoint(machine):
+        store = app.state.store
+        endpoint = machine.get("mongo_endpoint")
+        version, role, live_pid = "", "", None
+        endpoint_error = ""
+        arbiter_version_restricted = False
+        if endpoint and machine.get("profile_id"):
+            profile = store.get("profiles", machine["profile_id"])
+            with mongo_timeout(3):
+                try:
+                    with client(profile, direct=endpoint) as db:
+                        version = db.admin.command("buildInfo")["version"]
+                        hello = db.admin.command("hello")
+                        if hello.get("isreplicaset") and not hello.get("setName"):
+                            role = "uninitialized"
+                        elif hello.get("setName"):
+                            role = next((name for key, name in (("isWritablePrimary", "PRIMARY"), ("secondary", "SECONDARY"),
+                                                                 ("arbiterOnly", "ARBITER")) if hello.get(key)), "other")
+                        else:
+                            role = "mongos" if hello.get("msg") == "isdbgrid" else "standalone"
+                        live_pid = db.admin.command("serverStatus")["pid"]
+                except PyMongoError as exc:
+                    endpoint_error = ("Endpoint MongoDB chưa trả lời trong 3 giây." if exc.timeout else mongo_error(exc))
+                    if isinstance(exc, OperationFailure) and exc.code in (13, 18):
+                        # Arbiters do not replicate the cluster's user collection.
+                        try:
+                            with client(dict(profile, username="", password=""), direct=endpoint) as probe:
+                                hello = probe.admin.command("hello")
+                                if hello.get("arbiterOnly") and (not profile.get("replica_set") or
+                                                                hello.get("setName") == profile["replica_set"]):
+                                    role = "ARBITER"
+                                    version = probe.admin.command("buildInfo").get("version", "")
+                                    endpoint_error = "" if version else "Arbiter chưa cung cấp phiên bản qua buildInfo."
+                        except PyMongoError as probe_error:
+                            if role == "ARBITER":
+                                arbiter_version_restricted = isinstance(probe_error, OperationFailure) and probe_error.code == 13
+                                endpoint_error = "" if arbiter_version_restricted else mongo_error(probe_error)
+        return dict(endpoint=endpoint, live_version=version, live_pid=live_pid, role=role,
+                    live=bool(version), endpoint_error=endpoint_error, arbiter_version_restricted=arbiter_version_restricted)
+
+    def compatibility_result(machine, series, probe, inventory=None):
+        params = {"series": series, "live_version": probe["live_version"]}
+        if inventory is not None:
+            params["inventory"] = inventory
+        try:
+            result = host_run(machine, "ubuntu_compatibility", params, lambda _: None)
+        except (RuntimeError, OSError) as exc:
+            raise ValueError(redact(str(exc), machine.get("ssh_password") or "")) from exc
+        pid = probe["live_pid"]
+        match = str(pid) == result["pid"] if pid else None
+        if match is False:
+            result.update(status="unknown", reason="Endpoint và dịch vụ đã chọn có PID khác nhau.")
+        if (result.get("service_state") == "inactive" and result.get("pid") == "0"
+                and result.get("processes") == 0 and not probe["role"] and not probe["live"]):
+            probe = dict(probe, role="stopped", endpoint_error="")
+        return dict(result, **probe, pid_match=match)
+
+    @app.get("/api/machines/{record_id}/compatibility")
+    def machine_compatibility(record_id: str, series: str | None = Query(None, pattern=r"^\d+\.\d+$"), stream: bool = False):
+        machine = app.state.store.get("machines", record_id)
+        if series is None:
+            series = max(catalog()["supported"], key=lambda s: tuple(map(int, s.split("."))))
+        if not stream:
+            return compatibility_result(machine, series, compatibility_endpoint(machine))
+
+        def updates():
+            def line(stage, value):
+                return json.dumps({"stage": stage, "value": value}) + "\n"
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                pending = {pool.submit(compatibility_endpoint, machine): "endpoint",
+                           pool.submit(host_run, machine, "ubuntu_inventory", {}, lambda _: None): "host"}
+                parts = {}
+                for future in as_completed(pending):
+                    stage = pending[future]
+                    try:
+                        parts[stage] = future.result()
+                        yield line(stage, parts[stage])
+                    except Exception as exc:
+                        yield line("error", redact(str(exc), machine.get("ssh_password") or ""))
+                if len(parts) == 2:
+                    try:
+                        yield line("complete", compatibility_result(machine, series, parts["endpoint"], parts["host"]))
+                    except Exception as exc:
+                        yield line("error", redact(str(exc), machine.get("ssh_password") or ""))
+
+        return StreamingResponse(updates(), media_type="application/x-ndjson",
+                                 headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+    def verify_machine_deletion(machine, precheck=False):
+        store = app.state.store
+        endpoint = machine.get("mongo_endpoint")
+        if endpoint and machine.get("profile_id"):
+            profile = store.get("profiles", machine["profile_id"])
+            if profile.get("replica_set"):
+                with client(profile) as db:
+                    config = db.admin.command("replSetGetConfig")["config"]
+                    if any(m["host"] == endpoint for m in config["members"]):
+                        raise ValueError("VPS còn trong replica set. Dùng Gỡ để dừng mongod và gỡ node trước.")
+        try:
+            host_run(machine, "check_service_stopped",
+                     {"port": int(endpoint.rsplit(":", 1)[1]) if endpoint else 27017,
+                      "precheck": precheck}, lambda _: None)
+        except (RuntimeError, OSError) as exc:
+            raise ValueError(redact(str(exc), machine.get("ssh_password") or "")) from exc
+
+    @app.get("/api/machines/{record_id}/delete-check")
+    def machine_delete_check(record_id: str):
+        machine = app.state.store.get("machines", record_id)
+        verify_machine_deletion(machine, precheck=True)
+        return {"service": machine["service"], "state": "inactive"}
+
+    @app.delete("/api/machines/{record_id}")
+    def delete_machine(record_id: str):
+        store = app.state.store
+        machine = store.get("machines", record_id)
+        owner = uuid4().hex
+        app.state.slots.reserve(owner, set(), machine_keys(machine))
+        try:
+            verify_machine_deletion(machine)
+            if not store.delete("machines", record_id, expected=machine):
+                raise HTTPException(409, "Hồ sơ VPS vừa thay đổi. Kiểm tra lại trước khi xóa.")
+        finally:
+            app.state.slots.release(owner)
+        return {"ok": True}
+
+    @app.get("/api/profiles/{record_id}/status")
+    def status(record_id: str):
+        profile = app.state.store.get("profiles", record_id)
+        result = snapshot(profile)
+        remember_topology(profile, result)
+        return result
+
+    def remember_topology(profile, result):
+        seeds = result.get('seeds')
+        if seeds and profile.get('replica_set') == result.get('replica_set'):
+            app.state.store.update_fields('profiles', profile['id'], {'seeds': seeds},
+                                          expected={'seeds': profile['seeds'], 'replica_set': profile['replica_set']})
+
+    def with_restore_history(items, machine_id):
+        history = {}
+        for job in app.state.store.all("jobs"):
+            if job.get("machine_id") != machine_id or job.get("action") not in {"restore", "sync_backup"} or job.get("status") != "succeeded":
+                continue
+            result = job.get("result") or {}
+            if result.get("restored") and result.get("backup_id"):
+                target = result.get("destination_name") or job["target"].rsplit(" → ", 1)[-1]
+                counts = history.setdefault(result["backup_id"], {})
+                counts[target] = counts.get(target, 0) + 1
+        return [dict(item, machine_id=machine_id, restore_counts=history.get(item["id"], {})) for item in items]
+
+    @app.get("/api/profiles/{record_id}/machines/{machine_id}/backups")
+    def backup_catalog(record_id: str, machine_id: str):
+        machine = app.state.store.get("machines", machine_id)
+        if machine.get("profile_id") != record_id:
+            raise HTTPException(404, "Máy lưu backup không thuộc cụm đang mở.")
+        try:
+            items = execute("backups", {}, None, machine, lambda _: None)
+        except (RuntimeError, OSError) as exc:
+            raise HTTPException(502, redact(str(exc), machine.get("ssh_password") or "")) from exc
+        return with_restore_history(items, machine_id)
+
+    @app.delete("/api/profiles/{record_id}/machines/{machine_id}/backups/{backup_id}")
+    def delete_archive(record_id: str, machine_id: str, backup_id: str):
+        machine = app.state.store.get("machines", machine_id)
+        if machine.get("profile_id") != record_id:
+            raise HTTPException(404, "Máy lưu backup không thuộc cụm đang mở.")
+        owner = uuid4().hex
+        app.state.slots.reserve(owner, {("profile", record_id)}, machine_keys(machine))
+        try:
+            return host_run(machine, "delete_backup", {"backup_id": backup_id}, lambda _: None)
+        except (RuntimeError, OSError) as exc:
+            raise HTTPException(502, redact(str(exc), machine.get("ssh_password") or "")) from exc
+        finally:
+            app.state.slots.release(owner)
+
+    @app.get("/api/profiles/{record_id}/machines/{machine_id}/backups/{backup_id}/preview")
+    def view_archive(record_id: str, machine_id: str, backup_id: str, database: str = "", collection: str = "", offset: int = Query(0, ge=0)):
+        machine = app.state.store.get("machines", machine_id)
+        if machine.get("profile_id") != record_id:
+            raise HTTPException(404, "Máy lưu backup không thuộc cụm đang mở.")
+        try:
+            result = host_run(machine, "preview_backup", dict(backup_id=backup_id, database=database, collection=collection, offset=offset), lambda _: None)
+        except (RuntimeError, OSError) as exc:
+            raise HTTPException(502, redact(str(exc), machine.get("ssh_password") or "")) from exc
+        result["records"] = [json.loads(json_util.dumps(BSON(base64.b64decode(raw)).decode(), json_options=json_util.CANONICAL_JSON_OPTIONS)) for raw in result["records"]]
+        return result
+
+    @app.get("/api/profiles/{record_id}/query/{section}")
+    def read_section(record_id: str, section: str, database: str = "", collection: str = ""):
+        if section == "users":
+            store = app.state.store
+            profile = store.get("profiles", record_id)
+            saved = {record["id"] for record in store.all("user-passwords:" + record_id)}
+            rows = query(profile, section)
+            for row in rows:
+                connected = (row["user"], row["db"]) == (profile["username"], profile["auth_db"])
+                row["has_password"] = user_key(row["db"], row["user"]) in saved or bool(connected and profile.get("password"))
+            return rows
+        if section == "indexes":
+            if not database or not collection:
+                raise ValueError("Chọn database và collection.")
+            return query(app.state.store.get("profiles", record_id), section, database, collection)
+        return query(app.state.store.get("profiles", record_id), section, database)
+
+    @app.post("/api/profiles/{record_id}/documents")
+    def documents(record_id: str, body: DocumentPage):
+        return read_documents(app.state.store.get("profiles", record_id), body)
+
+    @app.post("/api/profiles/{record_id}/documents/write")
+    def change_document(record_id: str, body: DocumentWrite):
+        return write_document(app.state.store.get("profiles", record_id), body)
+
+    @app.post("/api/plans")
+    def preview(body: Action):
+        if body.action not in LABELS:
+            raise ValueError("Tác vụ chưa được hỗ trợ.")
+        store = app.state.store
+        profile = store.get("profiles", body.profile_id) if body.profile_id else None
+        machine = store.get("machines", body.machine_id) if body.machine_id else None
+        if body.action in PROFILE_ACTIONS and not profile:
+            raise ValueError("Hãy chọn hồ sơ MongoDB.")
+        if body.action in HOST_ACTIONS and not machine:
+            raise ValueError("Hãy chọn máy thực thi.")
+        if machine and profile and machine.get("profile_id") and machine["profile_id"] != profile["id"]:
+            raise ValueError("VPS đã chọn thuộc workspace khác.")
+        if body.action in {"mongo_upgrade", "arbiter_upgrade", "install"}:
+            existing = active_upgrade(body.machine_id, "mongo_upgrade")
+            if existing:
+                raise Busy(existing["id"])
+        params = validate_params(body.action, body.params, machine)
+        target = machine["name"] if body.action in HOST_ACTIONS else profile["name"]
+        if body.action in {"backup", "restore", "join_fresh"}:
+            target += " → " + profile["name"]
+        receiver = None
+        destination = None
+        if body.action in {"sync_backup", "restore"} and params.get("destination_id"):
+            destination = store.get("profiles", params["destination_id"])
+            if body.action == "sync_backup" and destination["id"] == profile["id"]:
+                raise ValueError("Chọn cụm đích khác cụm nguồn.")
+            target = f'{machine["name"]} · {profile["name"]} → {destination["name"]}'
+        if body.action == "restore" and params.get("destination_machine_id"):
+            if destination:
+                raise ValueError("Chọn một đích restore.")
+            receiver = store.get("machines", params["destination_machine_id"])
+            if not receiver.get("profile_id") or not receiver.get("mongo_endpoint"):
+                raise ValueError("Máy nhận cần có hồ sơ MongoDB và endpoint đã lưu.")
+            endpoint = receiver["mongo_endpoint"]
+            destination = dict(store.get("profiles", receiver["profile_id"]), seeds=[endpoint], replica_set="",
+                               _restore_direct=True, name=receiver["name"] + " · " + endpoint)
+            target = machine["name"] + " → " + destination["name"]
+        source_machine = None
+        if body.action == "join_fresh":
+            with client(profile) as db:
+                hello = db.admin.command("hello")
+            primary = hello.get("me") if hello.get("isWritablePrimary") else None
+            if not primary or hello.get("setName") != profile["replica_set"]:
+                raise ValueError("Chưa tìm được primary hiện tại của cụm.")
+            sources = [m for m in store.all("machines") if m.get("profile_id") == profile["id"]
+                       and m.get("mongo_endpoint") == primary and m["mode"] == "ssh"]
+            if len(sources) != 1:
+                raise ValueError(f"Cần đúng một hồ sơ SSH cho primary {primary} trong cụm này.")
+            source_machine = sources[0]
+            if source_machine["id"] == machine["id"] or (source_machine["host"], source_machine["port"]) == (machine["host"], machine["port"]):
+                raise ValueError("VPS primary và VPS đích cần là hai máy khác nhau.")
+            params["source_endpoint"] = primary
+        notices = []
+        ubuntu_info = None
+        package_wait = False
+        mongo_current = False
+        if body.action == "mongo_upgrade":
+            try:
+                node = mongo_upgrade_node(profile, machine, params["series"])
+            except (RuntimeError, OSError) as exc:
+                raise ValueError(redact(str(exc), machine.get("ssh_password") or "")) from exc
+            if node.get("role") == "NOT_INSTALLED":
+                return {"install_required": True, "target": target, "params": {"series": params["series"]}}
+            def inspect_host(action, arguments):
+                try:
+                    return host_run(machine, action, arguments, lambda _: None)
+                except (RuntimeError, OSError) as exc:
+                    raise ValueError(redact(str(exc), machine.get("ssh_password") or "")) from exc
+            latest = inspect_host("mongo_latest", params)["version"]
+            current = node["current"]
+            if not re.fullmatch(r"\d+\.\d+\.\d+", current):
+                raise ValueError("Không xác định được phiên bản Community ổn định.")
+            if latest == current:
+                mongo_current = True
+            elif tuple(map(int, latest.split("."))) < tuple(map(int, current.split("."))):
+                raise ValueError(f"Đã cài {current}. Phiên bản {latest} trong kho thấp hơn.")
+            else:
+                activity = inspect_host("package_activity", {})
+                package_wait = bool(activity.get("pending") or activity.get("processes"))
+                if not package_wait:
+                    inspect_host("arbiter_check", dict(node, version=latest))
+            params.update(node=node, version=latest)
+            notices.append(f'{machine["mongo_endpoint"]} · {node["role"]} · {current} → {latest}. '
+                           + ("Dịch vụ đang dừng và sẽ được giữ ở trạng thái dừng." if node["role"] == "INACTIVE"
+                              else "Manager giữ FCV hiện tại."))
+        if body.action == "arbiter_upgrade":
+            node = arbiter_upgrade_target(profile, machine)
+            if not node["current"].startswith("8.0."):
+                raise ValueError("Kiểm tra lại phiên bản hiện tại của arbiter.")
+            try:
+                host_run(machine, "arbiter_check", dict(node, version=params["version"]), lambda _: None)
+            except (RuntimeError, OSError) as exc:
+                raise ValueError(redact(str(exc), machine.get("ssh_password") or "")) from exc
+            notices.append(f'{machine["mongo_endpoint"]} · {node["current"]} → {params["version"]}. '
+                           "Manager tải gói trước rồi tạm dừng và khởi động lại dịch vụ arbiter. Giữ Ubuntu và FCV hiện tại.")
+        if body.action == "ubuntu_upgrade":
+            profile = store.get("profiles", machine["profile_id"]) if machine.get("profile_id") else None
+            try:
+                ubuntu_info = host_run(machine, "ubuntu_assess", params, lambda _: None)
+                i = ubuntu_info
+                route = [i["current"], *i["path"]] if i.get("current") else []
+                i["route"] = " → ".join(catalog()["lts"][c] for c in route)
+                if i.get("blocked"):
+                    notices.append(i["blocked"])
+                elif i["path"]:
+                    try:
+                        activity = ubuntu.host_run(machine, "package_activity", {}, lambda _: None)
+                        package_wait = bool(activity.get("pending") or activity.get("processes"))
+                        if not package_wait:
+                            ubuntu.host_run(machine, "ubuntu_precheck", {"stage": i["path"][0]}, lambda _: None)
+                        role, _ = ubuntu.mongo_state(machine, profile, i)
+                    except (ValueError, RuntimeError, OSError, PyMongoError) as exc:
+                        i["blocked"] = mongo_error(exc) if isinstance(exc, PyMongoError) else redact(str(exc), machine.get("ssh_password") or "")
+                        notices.append(i["blocked"])
+                    else:
+                        notices.extend(["Sẽ kiểm tra lại đường nâng sau khi APT sẵn sàng." if package_wait else "Đã kiểm tra đường nâng Ubuntu trên máy đích.",
+                                        role, "Mỗi chặng cập nhật gói, nâng hệ điều hành và khởi động lại."])
+                else:
+                    notices.append("Máy đang ở bản Ubuntu đích hoặc đã đáp ứng kế hoạch.")
+            except (RuntimeError, OSError, PyMongoError) as exc:
+                raise ValueError(redact(str(exc), machine.get("ssh_password") or "")) from exc
+        install_check = None
+        if body.action == "install":
+            try:
+                install_check = host_run(machine, "ubuntu_assess", dict(series=params["series"], target="auto"), lambda _: None)
+            except (RuntimeError, OSError) as exc:
+                raise ValueError(redact(str(exc), machine.get("ssh_password") or "")) from exc
+            notices.append("Chỉ cài khi chưa có mongod. Package chính thức được kiểm tra theo Ubuntu và kiến trúc.")
+        if body.action in {"setup", "provision"}:
+            notices.append("Tạo instance, service và keyfile mới. Không ghi đè instance đang có; không tự mở firewall.")
+        if body.action == "join_fresh":
+            notices.append("Đọc keyfile từ primary " + source_machine["name"] + ", cài/cấu hình node mới rồi thêm vào cụm. Không khởi tạo replica set riêng. Chọn Votes và Ưu tiên khi thêm secondary.")
+        if body.action == "add_member":
+            notices.append("Node phải được cấu hình cùng replSetName/keyfile và truy cập được từ các member. Kiểm tra Votes và Ưu tiên đã chọn.")
+        if body.action in {"remove_member", "convert_role"}:
+            candidates = [m for m in store.all("machines") if m.get("profile_id") == profile["id"]
+                          and m.get("mongo_endpoint") == params["host"]]
+            if len(candidates) != 1:
+                raise ValueError("Cần lưu đúng một hồ sơ SSH cho node trước khi gỡ.")
+            machine = candidates[0]
+            if body.action == "convert_role":
+                if machine["mode"] != "ssh":
+                    raise ValueError("Đổi vai trò cần hồ sơ SSH của VPS.")
+                notices.append("Dừng dịch vụ trên VPS đã chọn, lưu thư mục dữ liệu cũ cạnh thư mục mới và thêm lại trên cùng cổng. Secondary cần đồng bộ dữ liệu từ đầu.")
+            else:
+                notices.append("Manager kiểm tra quorum, dừng mongod và tắt tự khởi động trước khi gỡ node. Hồ sơ SSH và dữ liệu được giữ để có thể thêm lại VPS.")
+        if body.action in {"remove_member", "member_options", "step_down"}:
+            notices.append("Kiểm tra lại quorum và cấu hình ngay trước khi thực hiện; không force reconfig.")
+        if body.action == "step_down":
+            notices.append("Khi chỉ định node, các secondary đủ điều kiện khác tạm hoãn ứng cử tối đa 45 giây. Ghi có thể gián đoạn ngắn khi bàn giao.")
+        if body.action == "service":
+            notices.append("Chỉ tác động service đã chọn. Stop/restart có thể gián đoạn cụm một node; hãy kiểm tra quorum trước.")
+        if body.action in {"restore", "sync_backup"}:
+            notices.append("Ghi dữ liệu vào cụm đích. Kiểm tra phiên bản nguồn/đích và backup trước; mặc định không drop collection.")
+            if params.get("drop"):
+                notices.append("Các collection có trong bản sao sẽ bị xóa và thay thế ở đích. Bản toàn cụm có thể thay thế tài khoản admin.")
+        if body.action in {"drop_database", "drop_user"}:
+            notices.append("Thao tác xóa không thể hoàn tác từ giao diện. Kiểm tra bản backup trước khi xác nhận.")
+        plan_id = secrets.token_urlsafe(24)
+        display = {k: ("••••••••" if k == "password" else v) for k, v in params.items() if k not in {"node", "source_endpoint", "source_machine_id"}}
+        plan = {"id": plan_id, "action": body.action, "label": LABELS[body.action], "target": target, "params": display,
+                "notices": notices, "confirmation": "" if body.action in READ_ACTIONS else target, "expires_in": 600}
+        if package_wait:
+            plan["package_wait"] = True
+            notices.append("Sau khi xác nhận, Manager chờ APT và hoàn tất cấu hình dpkg trước khi nâng.")
+        if mongo_current:
+            plan["already_current"] = True
+        if install_check and (install_check.get("blocked") or install_check["path"] or install_check["version"]):
+            plan["install_blocked"] = install_check.get("blocked") or ("Máy đã có mongod." if install_check["version"] else "Ubuntu hiện tại chưa có bộ gói phù hợp.")
+        if ubuntu_info:
+            plan["ubuntu"] = {k: v for k, v in ubuntu_info.items() if k not in {"pid", "hostname", "machine_token"}}
+        current = time.monotonic()
+        app.state.plans = {k: v for k, v in app.state.plans.items() if v["expires"] > current}
+        if len(app.state.plans) >= 100:
+            raise HTTPException(429, "Có quá nhiều bản xem trước; hãy chờ hết hạn.")
+        app.state.plans[plan_id] = {"public": plan, "ubuntu_info": ubuntu_info, "destination": destination, "params": params, "profile": profile, "machine": machine, "source_machine": source_machine, "receiver": receiver, "expires": current + 600}
+        return plan
+
+    def run_job(plan, job):
+        store = app.state.store
+        secret_values = [(plan.get("destination") or {}).get("password", ""), plan["params"].get("password", ""), (plan["profile"] or {}).get("password", ""), (plan["machine"] or {}).get("ssh_password", ""), (plan.get("source_machine") or {}).get("ssh_password", "")]
+        def emit(message):
+            sample = re.fullmatch(r"APT_PROGRESS (dlstatus|pmstatus) ([0-9.]+) (-?\d+)", message)
+            if sample:
+                kind, percent, eta = sample.groups()
+                job["upgrade_progress"] = dict(apt_phase=kind, percent=float(percent),
+                    checked_at=time.time(), eta_seconds=int(eta) if int(eta) >= 0 else None)
+                store.save("jobs", job, job["id"])
+                return
+            if job.get("upgrade_progress", {}).get("apt_phase") and not message.startswith(("APT tải", "Setting up", "Unpacking", "Processing triggers")):
+                job.pop("upgrade_progress", None)
+            job["events"].append({"time": now(), "message": redact(message, *secret_values)})
+            store.save("jobs", job, job["id"])
+        try:
+            job.update(status="running", error=None)
+            resumed = bool(job.get("started_at"))
+            job.setdefault("started_at", now())
+            emit(("Tiếp tục theo dõi " if resumed else "Bắt đầu ") + job["label"].lower() + ".")
+            params = dict(plan["params"])
+            if plan.get("source_machine"):
+                params["_source_machine"] = plan["source_machine"]
+            profile = plan["profile"]
+            if job["action"] == "sync_backup":
+                params["_destination"] = plan["destination"]
+            if job["action"] == "restore" and plan.get("destination"):
+                profile = plan["destination"]
+            if job.get("action") == "ubuntu_upgrade":
+                ctx = store.get("ubuntu-jobs", job["id"])
+                result = ubuntu.advance(store, job, plan["machine"], profile, ctx, app.state.stop, emit)
+                if result is None:
+                    return
+            else:
+                if job["action"] in {"remove_member", "convert_role"}:
+                    if store.get("machines", plan["machine"]["id"]) != plan["machine"]:
+                        raise ValueError("Hồ sơ VPS đã đổi. Mở lại thao tác trước khi dừng mongod.")
+                    if any(p["id"] != profile["id"] and params["host"] in p["seeds"] for p in store.all("profiles")):
+                        raise ValueError("Endpoint vẫn được một hồ sơ MongoDB khác sử dụng.")
+                result = execute(job["action"], params, profile, plan["machine"], emit)
+            if job["action"] in {"create_user", "password", "drop_user"}:
+                kind = "user-passwords:" + profile["id"]
+                key = user_key(params["database"], params["username"])
+                if job["action"] == "drop_user":
+                    store.delete(kind, key)
+                else:
+                    store.save(kind, {"password": params["password"]}, key)
+                    if job["action"] == "password":
+                        store.update_fields("profiles", profile["id"], {"password": params["password"]},
+                                            expected={"username": params["username"], "auth_db": params["database"]})
+            if job["action"] == "preflight" and plan["machine"].get("auto_name"):
+                detected = result.get("hostname", "")
+                if detected and len(detected) <= 80 and detected.isprintable():
+                    store.update_fields("machines", plan["machine"]["id"], {"name": detected},
+                                        expected={"auto_name": True, "name": plan["machine"]["name"]})
+            if job["action"] == "backup":
+                result["machine_id"] = plan["machine"]["id"]
+            if job["action"] == "backups":
+                result = with_restore_history(result, plan["machine"]["id"])
+            if job["action"] in {"restore", "sync_backup"}:
+                result["destination_name"] = (plan.get("destination") or profile)["name"]
+            if job["action"] in {"setup", "provision"}:
+                machine = plan["machine"]
+                machine["service"] = result["service"]
+                store.save("machines", machine, machine["id"])
+                p = plan["params"]
+                profile = store.save("profiles", Profile(name=p["instance"], seeds=[p["advertise"]], replica_set=p["replica_set"], username=p["username"], password=p["password"]).model_dump())
+                result["profile_id"] = profile["id"]
+                machine.update(profile_id=profile["id"], mongo_endpoint=p["advertise"])
+                store.save("machines", machine, machine["id"])
+                emit("Đã lưu hồ sơ cụm. Xác minh kết nối từ máy quản trị…")
+                result["status"] = snapshot(profile)
+            if job["action"] == "join_fresh":
+                machine = plan["machine"]
+                machine.update(service=result["service"], profile_id=result["profile_id"], mongo_endpoint=result["mongo_endpoint"])
+                store.save("machines", machine, machine["id"])
+            if job['action'] in {'add_member', 'remove_member', 'join_fresh'}:
+                # Seed lists are cluster membership, never a permanent primary IP.
+                seeds = result.get('seeds') or [m['host'] for m in result.get('config', {}).get('members', [])]
+                remember_topology(plan['profile'], {'seeds': seeds, 'replica_set': plan['profile']['replica_set']})
+            if job["action"] == "remove_member":
+                host = params["host"]
+                latest = store.get("profiles", profile["id"])
+                names = latest.get("member_hostnames", {})
+                if host in names:
+                    store.update_fields("profiles", profile["id"],
+                                        {"member_hostnames": {k: v for k, v in names.items() if k != host}},
+                                        expected={"member_hostnames": names})
+                machine = plan["machine"]
+                store.update_fields(SCHEDULES, profile["id"], {"enabled": False, "next_run": None},
+                                    expected={"machine_id": machine["id"]})
+                emit("Đã gỡ thành viên. Hồ sơ VPS vẫn ở trong danh sách Máy chủ.")
+            def scrub(value):
+                if isinstance(value, dict):
+                    return {k: scrub(v) for k, v in value.items()}
+                if isinstance(value, list):
+                    return [scrub(v) for v in value]
+                return redact(value, *secret_values) if isinstance(value, str) else value
+            job.update(status="succeeded", result=scrub(result))
+            emit("Tác vụ đã hoàn tất và trả về kết quả.")
+        except Exception as exc:
+            message = mongo_error(exc) if isinstance(exc, PyMongoError) else str(exc)
+            job.update(status="failed", error=redact(message, *secret_values))
+            emit("Tác vụ dừng: " + job["error"])
+        finally:
+            try:
+                if job["status"] != "running":
+                    job["finished_at"] = now()
+                store.save("jobs", job, job["id"])
+                if job.get("action") == "ubuntu_upgrade" and job["status"] == "succeeded":
+                    store.delete("ubuntu-jobs", job["id"])
+            finally:
+                app.state.slots.release(job["id"])
+
+    def enqueue(plan, job_id, schedule=None):
+        public = plan["public"]
+        job = {"id": job_id, "machine_id": (plan["machine"] or {}).get("id", ""), "profile_id": (plan["profile"] or {}).get("id") or (plan["machine"] or {}).get("profile_id", ""), "action": public["action"], "label": public["label"], "target": public["target"],
+               "status": "queued", "created_at": now(), "events": [], "result": None, "error": None}
+        records = [("jobs", job, job["id"])]
+        if public["action"] == "ubuntu_upgrade":
+            records.append(("ubuntu-jobs", {"params": plan["params"], "info": plan["ubuntu_info"], "plan": plan}, job["id"]))
+            job["series"] = plan["params"].get("series", "")
+        if schedule:
+            job["scheduled"] = True
+            records.append((SCHEDULES, schedule, schedule["id"]))
+        app.state.store.save_many(records)
+        try:
+            app.state.pool.submit(run_job, plan, job)
+        except Exception:
+            app.state.store.update_fields("jobs", job["id"], {"status": "failed", "finished_at": now(), "error": "Không khởi chạy được tác vụ."})
+            raise
+        return job
+
+    def dispatch_scheduled(schedule, profile, machine):
+        public = {"action": "backup", "label": "Backup định kỳ", "target": machine["name"] + " → " + profile["name"]}
+        plan = {"public": public, "params": schedule["params"], "profile": profile, "machine": machine}
+        job_id = uuid4().hex
+        reserve_job(plan, job_id)
+        try:
+            enqueue(plan, job_id, schedule)
+        except Exception:
+            app.state.slots.release(job_id)
+            raise
+
+    @app.post("/api/jobs", status_code=202)
+    def apply(body: Apply):
+        plan = app.state.plans.get(body.plan_id)
+        if not plan or plan["expires"] < time.monotonic():
+            raise HTTPException(409, "Bản xem trước đã hết hạn. Tạo lại trước khi chạy.")
+        if plan["public"].get("already_current"):
+            raise ValueError("MongoDB đã ở bản mới nhất của nhánh.")
+        if plan["public"].get("install_blocked"):
+            raise ValueError(plan["public"]["install_blocked"])
+        if plan["public"]["action"] == "mongo_upgrade" and not body.backup_confirmed:
+            raise ValueError("Cần xác nhận bản sao lưu trước khi nâng MongoDB.")
+        if plan["public"]["action"] in {"mongo_upgrade", "arbiter_upgrade", "install"} and app.state.store.get("machines", plan["machine"]["id"]) != plan["machine"]:
+            raise HTTPException(409, "Hồ sơ VPS đã thay đổi. Kiểm tra lại.")
+        if plan["public"]["action"] == "ubuntu_upgrade":
+            info = plan["public"]["ubuntu"]
+            if info.get("blocked") or not info["path"] or (info["version"] and not body.backup_confirmed):
+                raise ValueError("Cần có chặng nâng và xác nhận bản sao lưu cho máy đang chạy MongoDB.")
+            if app.state.store.get("machines", plan["machine"]["id"]) != plan["machine"]:
+                raise HTTPException(409, "Cấu hình máy đã đổi. Kiểm tra lại.")
+        if body.confirmation != plan["public"]["confirmation"]:
+            raise ValueError("Tên xác nhận chưa khớp máy/cụm đích.")
+        if plan['profile']:
+            latest = app.state.store.get('profiles', plan['profile']['id'])
+            for field in ('name', 'replica_set', 'username', 'password', 'auth_db', 'tls', 'tls_ca'):
+                if latest.get(field) != plan['profile'].get(field):
+                    raise HTTPException(409, 'Kết nối cụm đã đổi sau khi xem trước. Tạo lại kế hoạch thao tác.')
+            plan['profile']['seeds'] = latest['seeds']
+        job_id = uuid4().hex
+        reserve_job(plan, job_id)
+        try:
+            if app.state.plans.pop(body.plan_id, None) is None:
+                raise HTTPException(409, "Kế hoạch đã được thực hiện.")
+            return enqueue(plan, job_id)
+        except Exception:
+            app.state.slots.release(job_id)
+            raise
+
+    @app.post("/api/jobs/{job_id}/verify-ubuntu", status_code=202)
+    def verify_ubuntu(job_id: str):
+        store = app.state.store
+        job = store.get("jobs", job_id)
+        if job.get("action") != "ubuntu_upgrade" or job["status"] != "failed":
+            raise HTTPException(409, "Chỉ kiểm tra lại tác vụ nâng Ubuntu đã dừng.")
+        ctx = store.get("ubuntu-jobs", job_id)
+        plan = ctx["plan"]
+        reserve_job(plan, job_id)
+        try:
+            if store.get("jobs", job_id)["status"] != "failed":
+                raise HTTPException(409, "Tác vụ đã được kiểm tra lại.")
+            index = ctx.get("index", 0)
+            if index < len(ctx["info"]["path"]):
+                args = {"job_id": job_id, "stage": ctx["info"]["path"][index]}
+                state = host_run(plan["machine"], "ubuntu_status", args, lambda _: None)
+                if state["phase"] == "failed" and state.get("can_finalize") and state.get("current") == args["stage"]:
+                    ctx["retry_finalize"] = True
+                elif state["phase"] == "failed" and state.get("repair_key"):
+                    newer = [item for item in store.all("jobs") if item.get("machine_id") == job["machine_id"]
+                             and item.get("action") == "ubuntu_upgrade" and item["created_at"] > job["created_at"]]
+                    if newer:
+                        raise HTTPException(409, "Máy đã có tác vụ Ubuntu mới hơn. Mở lịch sử để xem kết quả.")
+                    ctx.pop("key_repair_stage", None)
+                elif ctx.get("launching") and state["phase"] in {"starting", "apt", "release", "packages"}:
+                    pass
+                elif state["phase"] not in {"reboot", "prepare-reboot"} or not state["rebooted"]:
+                    raise ValueError("Chặng này chưa hoàn tất reboot. Xem log trên VPS rồi kiểm tra lại kế hoạch.")
+            ctx.pop("verify_until", None)
+            ctx.pop("ready_until", None)
+            ctx.pop("launch_error", None)
+            job.update(status="queued", error=None)
+            job.pop("finished_at", None)
+            store.save_many([("ubuntu-jobs", ctx, job_id), ("jobs", job, job_id)])
+            app.state.pool.submit(run_job, plan, job)
+            return job
+        except Exception:
+            app.state.slots.release(job_id)
+            raise
+
+    @app.get("/api/machines/{machine_id}/package-activity")
+    def machine_package_activity(machine_id: str):
+        return host_run(app.state.store.get("machines", machine_id), "package_activity", {}, lambda _: None)
+
+    @app.get("/api/machines/{machine_id}/active-upgrade")
+    def active_upgrade(machine_id: str, action: str):
+        kinds = {"ubuntu_upgrade": {"ubuntu_upgrade"}, "mongo_upgrade": {"mongo_upgrade", "arbiter_upgrade", "install"}}
+        if action not in kinds:
+            raise ValueError("Tác vụ nâng cấp không hợp lệ.")
+        jobs = app.state.store.all("jobs")
+        return next((job for job in reversed(jobs) if job.get("machine_id") == machine_id
+                     and (job["action"] in kinds[action] or job.get("resource") == "packages") and job["status"] in {"queued", "running"}), None)
+
+    @app.get("/api/jobs/{job_id}")
+    def job_status(job_id: str):
+        return app.state.store.get("jobs", job_id)
+
+    @app.get("/")
+    def index():
+        return FileResponse(ROOT.parent / "frontend" / "index.html")
+
+    app.mount("/static", StaticFiles(directory=ROOT.parent / "frontend"), name="static")
+    return app
+
+
+def now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+app = create_app()

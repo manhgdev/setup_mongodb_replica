@@ -152,9 +152,9 @@ Tác vụ chạy tuần tự. Khi backend dừng giữa chừng, tác vụ đư�
 ## Kiểm tra mã
 
 ```bash
-.venv/bin/python -m pytest tests/test_auth.py tests/test_web.py tests/test_ssh.py -q
-MONGO_TEST_MONGOD=/absolute/path/to/mongod .venv/bin/python -m pytest tests/test_live_mongo.py -q
-node --check web/static/app.js
+.venv/bin/python -m pytest apps/mongodb_manager/tests/test_auth.py apps/mongodb_manager/tests/test_web.py apps/mongodb_manager/tests/test_ssh.py -q
+MONGO_TEST_MONGOD=/absolute/path/to/mongod .venv/bin/python -m pytest apps/mongodb_manager/tests/test_live_mongo.py -q
+node --check apps/mongodb_manager/frontend/app.js
 bash -n start-web.sh
 git diff --check
 ```
@@ -168,3 +168,5 @@ Lưu chỉ thay credential trong bộ quản lý, không đổi password thật 
 Nút **Thêm node / Thêm Secondary** mở lựa chọn quy trình: cài/cấu hình VPS qua SSH (bao gồm kiểm tra, package, keyfile, service và đồng bộ), hoặc chỉ thêm membership cho node đã chuẩn bị. Nếu chưa lưu SSH VPS đích, chọn **Nhập SSH VPS mới**, lưu xong tự chuyển tới form chuẩn bị Secondary. Nhật ký luồng SSH chia sáu bước; lỗi endpoint đích chỉ rõ host và gợi ý kiểm tra cài đặt/service/firewall.
 
 Luồng thêm member qua SSH hỗ trợ cả **Secondary** và **Arbiter**. Chọn vai trò trong form. Với **node đã chuẩn bị**, chọn chế độ tương ứng, nhập đường dẫn keyfile thực tế trên VPS để đối chiếu nguồn; ứng dụng kiểm tra binary/nhánh phiên bản, endpoint và replica set trước reconfig. Nếu mongod chưa cài, chuyển sang chế độ cài/cấu hình. Instance manager đã tạo và khớp replica set, port, bind, data path và keyfile được tái sử dụng; service dừng sẽ được khởi động lại. Instance không khớp hoặc binary khác nhánh sẽ bị chặn, không tự xóa dữ liệu/cài đè. Việc nâng/hạ phiên bản một instance đang có dữ liệu là quy trình riêng, không thuộc nút thêm node.
+
+Gateway phục vụ cả hai đường dẫn trên một cổng. Với Nginx, dùng [location mẫu](deploy/nginx-manager.conf.example) trong server HTTPS của Manager để chuyển cả trang chính, API và /vps/ về 127.0.0.1:8765.

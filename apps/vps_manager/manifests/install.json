@@ -1,0 +1,664 @@
+{
+  "git": {
+    "group": "Hệ thống",
+    "apt": [
+      "git"
+    ],
+    "dnf": [
+      "git"
+    ]
+  },
+  "curl": {
+    "group": "Hệ thống",
+    "apt": [
+      "curl"
+    ],
+    "dnf": [
+      "curl"
+    ]
+  },
+  "wget": {
+    "group": "Hệ thống",
+    "apt": [
+      "wget"
+    ],
+    "dnf": [
+      "wget"
+    ]
+  },
+  "unzip": {
+    "group": "Hệ thống",
+    "apt": [
+      "unzip"
+    ],
+    "dnf": [
+      "unzip"
+    ]
+  },
+  "zip": {
+    "group": "Hệ thống",
+    "apt": [
+      "zip"
+    ],
+    "dnf": [
+      "zip"
+    ]
+  },
+  "vim": {
+    "group": "Hệ thống",
+    "apt": [
+      "vim"
+    ],
+    "dnf": [
+      "vim"
+    ]
+  },
+  "tmux": {
+    "group": "Hệ thống",
+    "apt": [
+      "tmux"
+    ],
+    "dnf": [
+      "tmux"
+    ]
+  },
+  "jq": {
+    "group": "Hệ thống",
+    "apt": [
+      "jq"
+    ],
+    "dnf": [
+      "jq"
+    ]
+  },
+  "rsync": {
+    "group": "Hệ thống",
+    "apt": [
+      "rsync"
+    ],
+    "dnf": [
+      "rsync"
+    ]
+  },
+  "make": {
+    "group": "Hệ thống",
+    "apt": [
+      "make"
+    ],
+    "dnf": [
+      "make"
+    ]
+  },
+  "gcc": {
+    "group": "Hệ thống",
+    "apt": [
+      "gcc"
+    ],
+    "dnf": [
+      "gcc"
+    ]
+  },
+  "openssl": {
+    "group": "Hệ thống",
+    "apt": [
+      "openssl"
+    ],
+    "dnf": [
+      "openssl"
+    ]
+  },
+  "snapd": {
+    "group": "Hệ thống",
+    "apt": [
+      "snapd"
+    ],
+    "dnf": [
+      "snapd"
+    ]
+  },
+  "htop": {
+    "group": "Giám sát",
+    "apt": [
+      "htop"
+    ],
+    "dnf": [
+      "htop"
+    ]
+  },
+  "btop": {
+    "group": "Giám sát",
+    "apt": [
+      "btop"
+    ],
+    "dnf": [
+      "btop"
+    ]
+  },
+  "ncdu": {
+    "group": "Giám sát",
+    "apt": [
+      "ncdu"
+    ],
+    "dnf": [
+      "ncdu"
+    ]
+  },
+  "vnstat": {
+    "group": "Giám sát",
+    "apt": [
+      "vnstat"
+    ],
+    "dnf": [
+      "vnstat"
+    ]
+  },
+  "net-tools": {
+    "group": "Giám sát",
+    "apt": [
+      "net-tools"
+    ],
+    "dnf": [
+      "net-tools"
+    ]
+  },
+  "lsof": {
+    "group": "Giám sát",
+    "apt": [
+      "lsof"
+    ],
+    "dnf": [
+      "lsof"
+    ]
+  },
+  "logrotate": {
+    "group": "Giám sát",
+    "apt": [
+      "logrotate"
+    ],
+    "dnf": [
+      "logrotate"
+    ]
+  },
+  "dnsutils": {
+    "group": "Giám sát",
+    "apt": [
+      "dnsutils",
+      "bind9-dnsutils"
+    ],
+    "dnf": [
+      "bind-utils"
+    ]
+  },
+  "cron": {
+    "group": "Giám sát",
+    "apt": [
+      "cron"
+    ],
+    "dnf": [
+      "cronie"
+    ]
+  },
+  "netcat-openbsd": {
+    "group": "Giám sát",
+    "apt": [
+      "netcat-openbsd"
+    ],
+    "dnf": [
+      "nmap-ncat"
+    ]
+  },
+  "g++": {
+    "group": "Phát triển",
+    "apt": [
+      "g++"
+    ],
+    "dnf": [
+      "gcc-c++"
+    ]
+  },
+  "python3": {
+    "group": "Phát triển",
+    "apt": [
+      "python3"
+    ],
+    "dnf": [
+      "python3"
+    ]
+  },
+  "python3-pip": {
+    "group": "Phát triển",
+    "apt": [
+      "python3-pip"
+    ],
+    "dnf": [
+      "python3-pip"
+    ]
+  },
+  "python3-venv": {
+    "group": "Phát triển",
+    "apt": [
+      "python3-venv"
+    ],
+    "dnf": [
+      "python3"
+    ]
+  },
+  "python-is-python3": {
+    "group": "Phát triển",
+    "apt": [
+      "python-is-python3"
+    ],
+    "dnf": [
+      "python-unversioned-command"
+    ]
+  },
+  "golang-go": {
+    "group": "Phát triển",
+    "apt": [
+      "golang-go"
+    ],
+    "dnf": [
+      "golang"
+    ]
+  },
+  "libnss3": {
+    "group": "Phát triển",
+    "apt": [
+      "libnss3"
+    ],
+    "dnf": [
+      "nss"
+    ]
+  },
+  "libasound2": {
+    "group": "Phát triển",
+    "apt": [
+      "libasound2t64",
+      "libasound2"
+    ],
+    "dnf": [
+      "alsa-lib"
+    ]
+  },
+  "ca-certificates": {
+    "group": "Bảo mật",
+    "apt": [
+      "ca-certificates"
+    ],
+    "dnf": [
+      "ca-certificates"
+    ]
+  },
+  "libaugeas0": {
+    "group": "Bảo mật",
+    "apt": [
+      "libaugeas0"
+    ],
+    "dnf": [
+      "augeas-libs"
+    ]
+  },
+  "fail2ban": {
+    "group": "Bảo mật",
+    "apt": [
+      "fail2ban"
+    ],
+    "dnf": [
+      "fail2ban"
+    ]
+  },
+  "ufw": {
+    "group": "Bảo mật",
+    "apt": [
+      "ufw"
+    ],
+    "dnf": [
+      "ufw"
+    ]
+  },
+  "ffmpeg": {
+    "group": "Media",
+    "apt": [
+      "ffmpeg"
+    ],
+    "dnf": [
+      "ffmpeg"
+    ]
+  },
+  "libavcodec-extra": {
+    "group": "Media",
+    "apt": [
+      "libavcodec-extra"
+    ],
+    "dnf": []
+  },
+  "aria2": {
+    "group": "Media",
+    "apt": [
+      "aria2"
+    ],
+    "dnf": [
+      "aria2"
+    ]
+  },
+  "certbot": {
+    "group": "SSL",
+    "apt": [
+      "certbot"
+    ],
+    "dnf": [
+      "certbot"
+    ]
+  },
+  "python3-certbot-nginx": {
+    "group": "SSL",
+    "apt": [
+      "python3-certbot-nginx"
+    ],
+    "dnf": [
+      "python3-certbot-nginx"
+    ]
+  },
+  "python3-certbot-dns-cloudflare": {
+    "group": "SSL",
+    "apt": [
+      "python3-certbot-dns-cloudflare"
+    ],
+    "dnf": [
+      "python3-certbot-dns-cloudflare"
+    ]
+  },
+  "python3-certbot-apache": {
+    "group": "SSL",
+    "apt": [
+      "python3-certbot-apache"
+    ],
+    "dnf": [
+      "python3-certbot-apache"
+    ]
+  },
+  "nginx": {
+    "group": "Web",
+    "apt": [
+      "nginx"
+    ],
+    "dnf": [
+      "nginx"
+    ]
+  },
+  "redis-server": {
+    "group": "Database",
+    "apt": [
+      "redis-server"
+    ],
+    "dnf": [
+      "redis"
+    ]
+  },
+  "nvm": {
+    "group": "Node.js",
+    "probe": "test -s \"$HOME/.nvm/nvm.sh\" && nvm --version",
+    "install": "git clone --depth 1 --branch v0.40.3 https://github.com/nvm-sh/nvm.git \"$HOME/.nvm\"; touch \"$HOME/.bashrc\"; grep -Fq '. \"$HOME/.nvm/nvm.sh\"' \"$HOME/.bashrc\" || printf '\\n[ -s \"$HOME/.nvm/nvm.sh\" ] && . \"$HOME/.nvm/nvm.sh\"\\n' >> \"$HOME/.bashrc\"",
+    "deps": [
+      "git",
+      "ca-certificates"
+    ],
+    "user": true
+  },
+  "node-lts": {
+    "group": "Node.js",
+    "probe": "test -d \"$HOME/.nvm/versions/node\" && node -e 'if(!process.release.lts)process.exit(1);console.log(process.version)'",
+    "install": "nvm install --lts && nvm alias default \"$(nvm current)\"",
+    "deps": [
+      "nvm",
+      "curl"
+    ],
+    "user": true
+  },
+  "bun": {
+    "group": "Node.js",
+    "probe": "\"$HOME/.bun/bin/bun\" --version",
+    "install": "script=$(mktemp); trap 'rm -f \"$script\"' EXIT; curl -fsSL https://bun.sh/install -o \"$script\"; bash \"$script\"",
+    "deps": [
+      "curl",
+      "unzip"
+    ],
+    "user": true
+  },
+  "pm2": {
+    "group": "Node.js",
+    "probe": "(command -v pm2 >/dev/null 2>&1 && pm2 -v) || npm list -g --depth=0 pm2 2>/dev/null | grep -F \"pm2@\" || ls \"$HOME\"/.nvm/versions/node/*/bin/pm2 2>/dev/null | head -1",
+    "install": "npm install -g pm2",
+    "deps": [
+      "node-lts"
+    ],
+    "user": true
+  },
+  "yarn": {
+    "group": "Node.js",
+    "probe": "npm list -g --depth=0 yarn | grep -F \"yarn@\"",
+    "install": "npm install -g yarn",
+    "deps": [
+      "node-lts"
+    ],
+    "user": true
+  },
+  "fast-cli": {
+    "group": "Node.js",
+    "probe": "npm list -g --depth=0 fast-cli | grep -F \"fast-cli@\"",
+    "install": "npm install -g fast-cli",
+    "deps": [
+      "node-lts",
+      "libnss3",
+      "libasound2"
+    ],
+    "user": true
+  },
+  "pm2-logrotate": {
+    "group": "Node.js",
+    "probe": "test -d \"$HOME/.pm2/modules/pm2-logrotate/node_modules/pm2-logrotate\" && node -e 'const s=require(process.env.HOME+\"/.pm2/module_conf.json\")[\"pm2-logrotate\"];if(s.max_size!==\"100M\"||String(s.retain)!==\"3\"||String(s.compress)!==\"true\")process.exit(1);console.log(\"100M / 3\")'",
+    "install": "pm2 install pm2-logrotate; pm2 set pm2-logrotate:max_size 100M; pm2 set pm2-logrotate:retain 3; pm2 set pm2-logrotate:compress true; pm2 save",
+    "deps": [
+      "pm2"
+    ],
+    "user": true
+  },
+  "python-env": {
+    "group": "Phát triển",
+    "probe": "\"$HOME/.venvs/zm-vps/bin/python\" -c 'import importlib.metadata as m;print(\", \".join(m.version(x) for x in (\"pip\",\"setuptools\",\"wheel\")))'",
+    "install": "python3 -m venv \"$HOME/.venvs/zm-vps\"; \"$HOME/.venvs/zm-vps/bin/python\" -m pip install -U pip setuptools wheel",
+    "deps": [
+      "python3",
+      "python3-venv"
+    ],
+    "user": true
+  },
+  "yt-dlp": {
+    "group": "Media",
+    "probe": "/usr/local/bin/yt-dlp --version",
+    "install": "tmp=$(mktemp); trap 'rm -f \"$tmp\"' EXIT; curl -fLsS https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o \"$tmp\"; python3 \"$tmp\" --version; install -m 755 \"$tmp\" /usr/local/bin/yt-dlp",
+    "deps": [
+      "python3",
+      "curl",
+      "ca-certificates"
+    ],
+    "user": false
+  },
+  "yt-dlp-nightly": {
+    "group": "Media",
+    "probe": "/usr/local/bin/yt-dlp-nightly --version",
+    "install": "tmp=$(mktemp); trap 'rm -f \"$tmp\"' EXIT; curl -fLsS https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp -o \"$tmp\"; python3 \"$tmp\" --version; install -m 755 \"$tmp\" /usr/local/bin/yt-dlp-nightly",
+    "deps": [
+      "python3",
+      "curl",
+      "ca-certificates"
+    ],
+    "user": false
+  },
+  "speedtest": {
+    "group": "Giám sát",
+    "probe": "speedtest-cli --version",
+    "install": "python3 -m venv /opt/zm-speedtest; /opt/zm-speedtest/bin/pip install speedtest-cli; ln -sf /opt/zm-speedtest/bin/speedtest-cli /usr/local/bin/speedtest-cli",
+    "deps": [
+      "python3-venv"
+    ],
+    "user": false
+  },
+  "timezone-vn": {
+    "group": "Thiết lập VPS",
+    "probe": "timedatectl show -p Timezone --value | grep -Fx Asia/Ho_Chi_Minh",
+    "install": "timedatectl set-timezone Asia/Ho_Chi_Minh",
+    "deps": [],
+    "user": false
+  },
+  "vnstat-service": {
+    "group": "Thiết lập VPS",
+    "probe": "s=vnstat; systemctl is-enabled --quiet \"$s\" && systemctl is-active \"$s\"",
+    "install": "s=vnstat; systemctl enable --now \"$s\"",
+    "deps": [
+      "vnstat"
+    ],
+    "user": false
+  },
+  "fail2ban-service": {
+    "group": "Thiết lập VPS",
+    "probe": "s=fail2ban; systemctl is-enabled --quiet \"$s\" && systemctl is-active \"$s\"",
+    "install": "s=fail2ban; systemctl enable --now \"$s\"",
+    "deps": [
+      "fail2ban"
+    ],
+    "user": false
+  },
+  "nginx-service": {
+    "group": "Thiết lập VPS",
+    "probe": "s=nginx; systemctl is-enabled --quiet \"$s\" && systemctl is-active \"$s\"",
+    "install": "s=nginx; systemctl enable --now \"$s\"",
+    "deps": [
+      "nginx"
+    ],
+    "user": false
+  },
+  "redis-server-service": {
+    "group": "Thiết lập VPS",
+    "probe": "s=redis-server; if ! command -v apt-get >/dev/null; then s=redis; fi; systemctl is-enabled --quiet \"$s\" && systemctl is-active \"$s\"",
+    "install": "s=redis-server; if ! command -v apt-get >/dev/null; then s=redis; fi; systemctl enable --now \"$s\"",
+    "deps": [
+      "redis-server"
+    ],
+    "user": false
+  },
+  "cron-service": {
+    "group": "Thiết lập VPS",
+    "probe": "s=cron; if ! command -v apt-get >/dev/null; then s=crond; fi; systemctl is-enabled --quiet \"$s\" && systemctl is-active \"$s\"",
+    "install": "s=cron; if ! command -v apt-get >/dev/null; then s=crond; fi; systemctl enable --now \"$s\"",
+    "deps": [
+      "cron"
+    ],
+    "user": false
+  },
+  "certbot-venv": {
+    "group": "SSL",
+    "probe": "/opt/certbot/bin/certbot --version",
+    "install": "python3 -m venv /opt/certbot; /opt/certbot/bin/pip install certbot certbot-nginx",
+    "deps": [
+      "python3-venv",
+      "libaugeas0"
+    ],
+    "user": false
+  },
+  "certbot-snap": {
+    "group": "SSL",
+    "probe": "snap list certbot | tail -n +2 | grep certbot",
+    "install": "snap list core >/dev/null 2>&1 || snap install core; snap refresh core; snap install --classic certbot",
+    "deps": [
+      "snapd"
+    ],
+    "user": false
+  },
+  "bench-sh": {
+    "group": "Giám sát",
+    "probe": "test -x \"$HOME/.local/bin/bench.sh\" && echo bench.sh",
+    "install": "mkdir -p \"$HOME/.local/bin\"; tmp=$(mktemp); trap 'rm -f \"$tmp\"' EXIT; curl -fLsS https://bench.sh -o \"$tmp\"; bash -n \"$tmp\"; install -m 755 \"$tmp\" \"$HOME/.local/bin/bench.sh\"",
+    "deps": [
+      "curl",
+      "ca-certificates"
+    ],
+    "user": true
+  },
+  "go-backports": {
+    "group": "Phát triển",
+    "probe": "grep -Rqs \"longsleep/golang-backports\" /etc/apt/sources.list.d && go version",
+    "install": "(. /etc/os-release; test \"$ID\" = ubuntu); add-apt-repository -y ppa:longsleep/golang-backports; apt-get update; apt-get -y --no-remove install golang-go",
+    "deps": [
+      "software-properties-common"
+    ],
+    "user": false
+  },
+  "software-properties-common": {
+    "group": "Hệ thống",
+    "apt": [
+      "software-properties-common"
+    ],
+    "dnf": []
+  },
+  "pm2-startup": {
+    "group": "Node.js",
+    "probe": "systemctl is-enabled --quiet \"pm2-$USER.service\" && test -f \"$HOME/.pm2/dump.pm2\" && echo systemd",
+    "install": "pm2 save; if [ ! -f \"$HOME/.pm2/dump.pm2\" ]; then pm2 save --force; fi",
+    "deps": [
+      "pm2"
+    ],
+    "user": true
+  },
+  "yt-nightly-timer": {
+    "group": "Thiết lập VPS",
+    "probe": "systemctl is-enabled --quiet zm-yt-nightly.timer && systemctl is-active zm-yt-nightly.timer",
+    "install": "systemctl enable --now zm-yt-nightly.timer",
+    "deps": [
+      "yt-dlp-nightly"
+    ],
+    "user": false
+  },
+  "certbot-timer": {
+    "group": "SSL",
+    "probe": "for t in certbot.timer certbot-renew.timer snap.certbot.renew.timer; do if systemctl is-active --quiet \"$t\"; then echo \"$t\"; exit 0; fi; done; exit 1",
+    "install": "for t in certbot.timer certbot-renew.timer snap.certbot.renew.timer; do if systemctl cat \"$t\" >/dev/null 2>&1; then systemctl enable --now \"$t\"; exit 0; fi; done; exit 1",
+    "deps": [],
+    "user": false
+  },
+  "docker-engine": {
+    "group": "Docker",
+    "probe": "command -v dockerd >/dev/null || test -x /usr/sbin/dockerd || exit 1; docker --version",
+    "apt": [
+      "docker.io",
+      "docker-ce"
+    ],
+    "dnf": [
+      "docker-ce",
+      "moby-engine"
+    ]
+  },
+  "docker-service": {
+    "group": "Docker",
+    "probe": "systemctl is-active --quiet docker && echo active",
+    "install": "systemctl enable --now docker",
+    "deps": [
+      "docker-engine"
+    ]
+  },
+  "docker-compose": {
+    "group": "Docker",
+    "probe": "docker compose version --short",
+    "apt": [
+      "docker-compose-v2",
+      "docker-compose-plugin"
+    ],
+    "dnf": [
+      "docker-compose-plugin",
+      "docker-compose"
+    ],
+    "deps": [
+      "docker-engine"
+    ]
+  }
+}

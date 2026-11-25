@@ -1,4 +1,39 @@
-# MongoDB Manager
+# MongoDB Manager và ZM VPS Manager
+
+Chạy `bash start-web.sh` để mở **MongoDB Manager** tại [trang chính](http://127.0.0.1:8765/) và **ZM VPS Manager** tại [trang VPS](http://127.0.0.1:8765/vps/). Nhấn **ZM VPS Manager ↗** trên thanh trên cùng để chuyển sang VPS. Nhấn **← MongoDB Manager** để quay về màn hình MongoDB trước đó, trên cả máy tính và điện thoại. Hai giao diện dùng chung tài khoản quản trị, hồ sơ máy và lịch sử tác vụ.
+
+Mở trực tiếp một tab VPS hoặc MongoDB khi chưa đăng nhập sẽ đưa bạn đến cùng trang `/login`. Đăng nhập xong, Manager mở lại máy và tab vừa chọn. Nhấn tên tài khoản trên thanh trên cùng để đổi thông tin quản trị. Nút **Xem thử giao diện** có ở cả hai ứng dụng và giữ lựa chọn khi chuyển qua lại. Trong VPS Manager, chế độ này dùng máy, gói và website mẫu. [Trang đăng nhập chung](previews/vps-manager/shared-login.jpg) · [Chế độ xem thử VPS](previews/vps-manager/account-preview.jpg).
+
+- [Tài liệu MongoDB Manager](apps/mongodb_manager/docs/README.md)
+- [Tài liệu ZM VPS Manager](apps/vps_manager/docs/README.md)
+
+Trang **Tổng quan VPS** hiển thị tải CPU trung bình trong 1, 5 và 15 phút, RAM đang dùng, dung lượng phân vùng gốc, kernel và thời gian chạy tại lần kiểm tra gần nhất. Bên dưới là website theo hạn chứng chỉ, năm tác vụ gần nhất có thể bấm để xem log và phiên bản phần mềm phát hiện trong bộ cài. Bấm **Làm mới** để đọc lại tài nguyên.
+
+Trong **Tổng quan VPS**, nhập **Hostname mới**, bấm **Đổi hostname** và xác nhận tên cũ → tên mới. Manager dùng `hostnamectl`, đồng bộ `/etc/hosts` và ghi `preserve_hostname: true` vào `/etc/cloud/cloud.cfg.d/zz-zm-manager-hostname.cfg`. Khi xác minh thành công, tên mới xuất hiện ngay trên trang. Lịch sử tác vụ ghi tài khoản quản trị, máy đích, tên cũ, tên mới và kết quả. Địa chỉ kết nối SSH và tên hồ sơ VPS được giữ nguyên. [Ảnh xác nhận đổi hostname](previews/vps-manager/hostname-confirm.jpg).
+
+![Tổng quan tài nguyên và hoạt động trên Ubuntu ARM64](previews/vps-manager/server-health.jpg)
+
+Trong **Nginx & tên miền**, chọn VPS và bấm trực tiếp các nút sửa, bật, tắt hoặc xóa trên dòng website. Các nút hiển thị theo trạng thái và cấu hình của site. **Cấp SSL** hỗ trợ Certbot HTTP-01 và Cloudflare DNS-01. [Xem giao diện quản lý tên miền](previews/vps-manager/nginx-direct-actions.jpg).
+
+**VPS mới chỉ có SSH key:** chọn **Thêm VPS**, nhập user của image (ví dụ `ubuntu` hoặc `opc`), chọn **SSH key** và đường dẫn private key trên máy chạy Manager. Bấm **Kiểm tra kết nối**, đối chiếu fingerprint với console VPS rồi xác nhận tin cậy. Trong **Tổng quan VPS** hoặc **Software Center → Bộ cài của tôi → Công cụ VPS → Tài khoản & SSH**, đặt mật khẩu Linux cho user đang kết nối. Chỉ đánh dấu tùy chọn SSH bằng mật khẩu khi muốn mở phương thức đăng nhập này. [Ảnh quản lý tài khoản](previews/vps-manager/account-ssh.jpg).
+
+**Software Center** mở tại **Bộ cài của tôi → Tất cả**, gồm 69 mục ban đầu và ba mục Docker. Mỗi bộ hiển thị số mục đạt trên tổng số của VPS đang chọn. Dùng bộ lọc để xem phần còn thiếu hoặc chưa xác minh. **Cài phần còn thiếu** kiểm tra trực tiếp các máy đã chọn, hiển thị phụ thuộc rồi đưa các máy cần cài vào hàng đợi. Trong **Công cụ VPS**, mở **Gói hệ điều hành** để đọc toàn bộ dpkg/RPM hoặc **Kho phần mềm** để tìm gói ngoài bộ cài. [Ảnh bộ Docker trên Ubuntu](previews/vps-manager/software-my-kits.jpg).
+
+**Docker & Compose** quản lý container qua daemon cục bộ của VPS. Tab Container hiển thị tên, image, cổng, trạng thái, 200 dòng log gần nhất và nút Start/Stop/Restart. Tab Compose nhận đường dẫn tuyệt đối đến file YAML trên VPS, kiểm tra cấu hình và cho xem project, service, image trước khi xác nhận triển khai. Đánh dấu tải image mới khi cần cập nhật. [Ảnh container thực tế](previews/vps-manager/docker-containers.jpg).
+
+**Firewall** quản lý hai lớp trong một bảng: Ubuntu UFW và Oracle Cloud (Security List/NSG). Bảng hiển thị port LISTEN (tiến trình), truy cập nội bộ, kết nối bên ngoài từ máy chạy Manager (TCP), trạng thái UFW và Oracle, đồng thời cảnh báo port UFW đã mở nhưng Oracle Cloud còn chặn. **Mở port** hỗ trợ port đơn hoặc dải (`8000-8100`), TCP/UDP, Source CIDR và chọn UFW, Oracle Cloud hoặc cả hai; rule đã được bao phủ thì bỏ qua, rule hiện có không bị ghi đè, port SSH không thể đóng. VPS thường chỉ dùng lớp UFW. Oracle Cloud được nhận diện qua Instance Metadata; vào **Cấu hình Oracle Cloud** để thêm tài khoản (API Key hoặc Instance Principal), kiểm tra kết nối, chọn region và liên kết với VPS. Dùng OCI Python SDK (`oci`), không cần OCI CLI. Private key được mã hóa trong kho dữ liệu, không trả lại giao diện và không ghi log. Policy IAM tối thiểu cho compartment của VPS: `read instance-family`, `read virtual-network-family`, `manage security-lists`, `manage network-security-groups`. Instance Principal chỉ dùng khi chính Manager chạy trên VM Oracle thuộc Dynamic Group. Tiến trình và kết quả từng lớp nằm trong **Lịch sử tác vụ**. Ảnh preview sẽ bổ sung trong `previews/vps-manager/`.
+
+**Git & SSH Key** hiển thị phiên bản Git, OpenSSH Client, danh tính Git và các public key của tài khoản Linux trên VPS đang chọn. Tạo key ED25519 hoặc RSA 4096-bit, mở **Public key → Sao chép**, thêm vào tài khoản Git, rồi bấm **Kiểm tra kết nối**. Dùng **+ Alias** để chọn key riêng theo tài khoản, ví dụ `git clone git@github-work:nhom/project.git`. [Ảnh quản lý Git & SSH Key](previews/vps-manager/git-ssh-keys.jpg) · [Hướng dẫn sử dụng](apps/vps_manager/docs/README.md#git--ssh-key).
+
+Sidebar VPS chia theo workspace, quản trị và hoạt động. Trên desktop, nút « thu gọn sidebar thành dải biểu tượng và lưu lựa chọn cho lần mở sau.
+
+Trong **Software Center → Bộ cài của tôi → Tiếp tục** hoặc **Nginx & tên miền → + Thêm tên miền**, đánh dấu các **Máy chủ đích** để cài cùng bộ gói hoặc tạo cùng một website trên nhiều VPS. **Lịch sử tác vụ → Tác vụ nhiều máy** hiển thị kết quả riêng và mở log theo máy. [Ảnh chọn máy đích](previews/vps-manager/multi-targets.jpg).
+
+Ngay trên dòng website HTTPS đang bật, chọn **Gia hạn SSL** để chạy Certbot cho chứng chỉ đang được site sử dụng. Popup hiển thị tên hồ sơ Certbot trước khi chạy. [Ảnh nút gia hạn](previews/vps-manager/nginx-renew.jpg).
+
+Mỗi file cấu hình chiếm một dòng trong danh sách website. Các tuyến HTTP chuyển hướng và HTTPS reverse proxy cùng file hiển thị chung một bộ nút thao tác. [Ảnh website có hai tuyến](previews/vps-manager/nginx-file-routes.jpg). Trên desktop, tên miền và file cấu hình, định tuyến và nhóm thao tác nằm ở ba cột thẳng hàng. Trên điện thoại, các nút nằm ngay dưới thông tin site. Giao diện đặt trạng thái cạnh tên miền, phân biệt HTTP/HTTPS bằng nhãn màu và dùng nút pastel theo thao tác. **Chi tiết website** mở cấu hình Nginx hiện có trên máy, diff trước khi áp dụng, bản sao để rollback, trạng thái SSL và nhật ký. [Ảnh nhãn và nút thao tác](previews/vps-manager/nginx-actions.jpg) · [Ảnh danh sách website](previews/vps-manager/nginx-inventory.jpg) · [Hướng dẫn Nginx](apps/vps_manager/docs/README.md#website-đã-có-trên-vps).
+
+[Giao diện VPS trên điện thoại](previews/vps-manager/mobile.jpg)
 
 Quản trị MongoDB Community trên VPS Ubuntu từ một giao diện web tiếng Việt hoặc tiếng Anh. Mỗi workspace tương ứng với một cụm. Manager kết nối MongoDB để đọc dữ liệu và quản lý replica set. Khi cần cài gói, điều khiển dịch vụ hoặc đọc nhật ký, Manager dùng SSH của VPS được chọn.
 
@@ -18,11 +53,11 @@ bash start-web.sh
 
 Mở [127.0.0.1:8765](http://127.0.0.1:8765) trên máy đang chạy Manager. Lần đầu, tạo tài khoản quản trị và lưu mã khôi phục. Manager tự đăng nhập. Chọn **Xem thử giao diện** để khám phá cụm minh họa trong ảnh dưới đây.
 
-![Tổng quan một workspace minh họa với primary và các secondary](previews/guide-overview.jpg)
+![Tổng quan một workspace minh họa với primary và các secondary](previews/mongodb-manager/guide-overview.jpg)
 
 Trên điện thoại, bấm **☰** cạnh tên màn hình để mở menu. Các nút ngôn ngữ, xem thử và tài khoản nằm ở hàng bên dưới.
 
-![Thanh điều hướng trên điện thoại](previews/mobile-overview.jpg)
+![Thanh điều hướng trên điện thoại](previews/mongodb-manager/mobile-overview.jpg)
 
 <details>
 <summary>Chạy nền bằng PM2, truy cập từ xa và khôi phục tài khoản</summary>
@@ -46,11 +81,11 @@ Bấm avatar để sửa tài khoản web. Nếu mất mật khẩu, chọn **Qu
 <details>
 <summary>Đăng nhập, thiết lập ban đầu và quản trị tài khoản</summary>
 
-![Đăng nhập MongoDB Manager](previews/login-preview.jpg)
+![Đăng nhập MongoDB Manager](previews/mongodb-manager/login-preview.jpg)
 
-![Hướng dẫn thiết lập ban đầu](previews/onboarding-preview.jpg)
+![Hướng dẫn thiết lập ban đầu](previews/mongodb-manager/onboarding-preview.jpg)
 
-![Quản lý tài khoản quản trị web](previews/manager-admin.jpg)
+![Quản lý tài khoản quản trị web](previews/mongodb-manager/manager-admin.jpg)
 
 </details>
 
@@ -110,9 +145,9 @@ Các thẻ trạng thái, member, độ trễ và backup dẫn đến phần qu�
 <details>
 <summary>Giao diện tổng quan và trạng thái cụm</summary>
 
-![Tổng quan MongoDB Manager](previews/web-preview.jpg)
+![Tổng quan MongoDB Manager](previews/mongodb-manager/web-preview.jpg)
 
-![Trạng thái cụm API Express](previews/api-express-live.jpg)
+![Trạng thái cụm API Express](previews/mongodb-manager/api-express-live.jpg)
 
 </details>
 
@@ -124,7 +159,7 @@ Mỗi hồ sơ lưu tên hiển thị, seed list, tên replica set, database xá
 - **Chỉnh kết nối** dùng khi đổi endpoint, tài khoản hoặc thiết lập TLS. **Xóa hồ sơ** bỏ kết nối đã lưu trong Manager. Để thay đổi membership thật, dùng **Gỡ** trên member của replica set.
 - **SSH cho tất cả các cụm** cho phép đánh dấu những VPS thực sự dùng chung tài khoản. Việc lưu cập nhật thông tin đăng nhập của Manager. Mật khẩu Linux trên VPS chỉ thay đổi khi quản trị viên thay đổi trên chính VPS.
 
-![Trang Các cụm MongoDB trong workspace minh họa](previews/guide-clusters.jpg)
+![Trang Các cụm MongoDB trong workspace minh họa](previews/mongodb-manager/guide-clusters.jpg)
 
 <a id="machines"></a>
 
@@ -144,7 +179,7 @@ Thêm VPS bằng **IP public** hoặc DNS public, **cổng MongoDB** (thường 
 
 SSH hỗ trợ mật khẩu và key/agent. Với mật khẩu, Manager lưu host key ở lần kết nối đầu. Nếu khóa thay đổi, đối chiếu fingerprint từ console VPS rồi cập nhật qua **Xác minh khóa SSH**. Khi chạy Manager dưới systemd, SSH dùng home và known_hosts của tài khoản chạy dịch vụ.
 
-![Máy chủ và các thao tác riêng cho từng VPS](previews/guide-machines.jpg)
+![Máy chủ và các thao tác riêng cho từng VPS](previews/mongodb-manager/guide-machines.jpg)
 
 <a id="replica"></a>
 
@@ -157,7 +192,7 @@ SSH hỗ trợ mật khẩu và key/agent. Với mật khẩu, Manager lưu host
 - **Chuyển sang SECONDARY / ARBITER.** Kiểm tra endpoint và vai trò đích trong popup. Luồng chuyển vai trò dừng service trên VPS đã chọn rồi thêm lại với thư mục dữ liệu mới. Khi chuyển thành Secondary cần chờ đồng bộ ban đầu. Kiểm tra dung lượng trống trước khi chạy.
 - **Write Concern.** Chọn mức xác nhận ghi mặc định của cụm. Với `w=1`, primary xác nhận ghi. Với `majority`, việc xác nhận phụ thuộc số member dữ liệu có quyền bỏ phiếu. Trong cụm một primary, một secondary và một arbiter, cả hai node dữ liệu cần sẵn sàng để xác nhận ghi majority.
 
-![Bảng member, cấu hình bầu chọn và các thao tác Replica Set](previews/guide-replica.jpg)
+![Bảng member, cấu hình bầu chọn và các thao tác Replica Set](previews/mongodb-manager/guide-replica.jpg)
 
 <a id="users"></a>
 
@@ -167,7 +202,7 @@ SSH hỗ trợ mật khẩu và key/agent. Với mật khẩu, Manager lưu host
 
 Bảng định danh user bằng cả **username và database xác thực**. Bấm **Đổi mật khẩu** ở đúng dòng. Nếu đó là tài khoản kết nối hiện tại, Manager cập nhật mật khẩu hồ sơ sau khi MongoDB chấp nhận thay đổi. **Lưu mật khẩu** dành cho tài khoản đã có: nhập mật khẩu biết trước để Manager xác thực và lưu mã hóa. Biểu tượng mắt hiển thị giá trị đã lưu. **Xóa** thu hồi user trong database xác thực đã chọn.
 
-![Danh sách user, database xác thực, role và thao tác mật khẩu](previews/guide-users.jpg)
+![Danh sách user, database xác thực, role và thao tác mật khẩu](previews/mongodb-manager/guide-users.jpg)
 
 <a id="data"></a>
 
@@ -179,7 +214,7 @@ Bảng định danh user bằng cả **username và database xác thực**. Bấ
 4. Mở một document, bấm trực tiếp giá trị cần sửa rồi **Lưu**. Dùng **Sửa JSON** khi cần sửa nhiều trường cùng lúc. Khi thêm document có thể bỏ `_id` để MongoDB tự sinh. Khi cập nhật, giữ nguyên `_id`.
 5. **Backup collection** điền sẵn database và collection đang xem. **Xóa** trong popup document tác động một document. **Xóa database** ở danh sách database tác động toàn bộ database ứng dụng đã chọn.
 
-![Trình duyệt dữ liệu mở đến collection với bộ lọc và danh sách document](previews/guide-data.jpg)
+![Trình duyệt dữ liệu mở đến collection với bộ lọc và danh sách document](previews/mongodb-manager/guide-data.jpg)
 
 <a id="backup"></a>
 
@@ -201,7 +236,7 @@ Trên mỗi dòng, dùng **ID backup**, thời gian, phạm vi và tên máy lư
 - **Restore** kiểm tra checksum trước khi ghi. Nếu gặp khóa trùng, kiểm tra đích đã có dữ liệu chưa. Với backup theo collection, Manager có thể đối chiếu BSON, cấu hình và index để nhận ra bản đã khôi phục trùng khớp. Chỉ bật thay thế collection nếu muốn bỏ nội dung hiện có ở đích.
 - **Lịch backup** thuộc từng workspace. Sau khi bật, kiểm tra giờ chạy kế tiếp trên giao diện. **Tạm dừng lịch** ngừng các lượt tiếp theo. Đóng tab vẫn chạy lịch khi tiến trình Manager còn hoạt động. Lịch sử từng lượt nằm trong **Lịch sử tác vụ**.
 
-![Trang Backup và restore với lựa chọn máy lưu và danh sách archive](previews/guide-backup.jpg)
+![Trang Backup và restore với lựa chọn máy lưu và danh sách archive](previews/mongodb-manager/guide-backup.jpg)
 
 <a id="settings"></a>
 
@@ -211,18 +246,18 @@ Mở **Cấu hình** để đối chiếu tên cụm, seed list, replica set, us
 
 Tài khoản trong **Sửa tài khoản quản trị** dùng để đăng nhập web. Khi đổi tên hoặc mật khẩu, nhập mật khẩu Manager hiện tại, lưu và đăng nhập lại. Lưu mã khôi phục mới. Có thể đổi ngôn ngữ Việt/English từ màn hình đăng nhập hoặc thanh trên cùng.
 
-![Cấu hình workspace với hồ sơ MongoDB và SSH cho cụm](previews/guide-settings.jpg)
+![Cấu hình workspace với hồ sơ MongoDB và SSH cho cụm](previews/mongodb-manager/guide-settings.jpg)
 
 <a id="diagnostics"></a>
 
 <details>
 <summary>Kết nối SSH của các cụm và từng VPS</summary>
 
-![Hồ sơ SSH trong cụm](previews/cluster-ssh-preview.jpg)
+![Hồ sơ SSH trong cụm](previews/mongodb-manager/cluster-ssh-preview.jpg)
 
-![Danh sách SSH của các cụm](previews/ssh-all-clusters.jpg)
+![Danh sách SSH của các cụm](previews/mongodb-manager/ssh-all-clusters.jpg)
 
-![Cấu hình xác thực SSH bằng mật khẩu](previews/ssh-password-preview.jpg)
+![Cấu hình xác thực SSH bằng mật khẩu](previews/mongodb-manager/ssh-password-preview.jpg)
 
 </details>
 
@@ -237,7 +272,7 @@ Tài khoản trong **Sửa tài khoản quản trị** dùng để đăng nhập
 | Keyfile sai quyền | Với instance Manager đã dừng, chọn **Sửa quyền keyfile và khởi động instance Manager**. Manager xác minh unit, cấu hình và owner trước khi đặt mode 0400 và khởi động. |
 | Thiếu dung lượng hoặc có dấu hiệu lỗi WiredTiger | Kiểm tra nơi chứa dbPath và log. Giữ bản sao có thể phục hồi trước khi xử lý lưu trữ. Trang dịch vụ đưa kết quả chẩn đoán cho quản trị viên. |
 
-![Ba phép kiểm tra kết nối MongoDB, môi trường VPS và nhật ký dịch vụ](previews/guide-diagnostics.jpg)
+![Ba phép kiểm tra kết nối MongoDB, môi trường VPS và nhật ký dịch vụ](previews/mongodb-manager/guide-diagnostics.jpg)
 
 <a id="upgrade"></a>
 
@@ -250,22 +285,22 @@ Ba nút **Nâng cấp Ubuntu**, **Nâng cấp MongoDB** và **Nâng cả hai** m
 <details>
 <summary>Xem ảnh chọn VPS và ba thao tác nâng cấp</summary>
 
-![Kiểm tra Ubuntu và MongoDB trên một VPS trong chế độ minh họa](previews/guide-upgrade.jpg)
+![Kiểm tra Ubuntu và MongoDB trên một VPS trong chế độ minh họa](previews/mongodb-manager/guide-upgrade.jpg)
 
 </details>
 
 <details>
 <summary>Chọn thao tác và kiểm tra phiên bản trên VPS</summary>
 
-![Nút nâng riêng Ubuntu và MongoDB](previews/upgrade-actions.jpg)
+![Nút nâng riêng Ubuntu và MongoDB](previews/mongodb-manager/upgrade-actions.jpg)
 
-![Nâng cả hai trên máy đã chọn](previews/upgrade-both.jpg)
+![Nâng cả hai trên máy đã chọn](previews/mongodb-manager/upgrade-both.jpg)
 
-![Danh mục phiên bản](previews/release-catalog.jpg)
+![Danh mục phiên bản](previews/mongodb-manager/release-catalog.jpg)
 
-![Kiểm tra tương thích Ubuntu và MongoDB](previews/ubuntu-compatibility.jpg)
+![Kiểm tra tương thích Ubuntu và MongoDB](previews/mongodb-manager/ubuntu-compatibility.jpg)
 
-![Trạng thái khi dịch vụ MongoDB đã dừng](previews/compatibility-stopped.jpg)
+![Trạng thái khi dịch vụ MongoDB đã dừng](previews/mongodb-manager/compatibility-stopped.jpg)
 
 </details>
 
@@ -278,24 +313,24 @@ Trong lúc nâng Ubuntu, theo dõi gói đang xử lý và giai đoạn chờ VP
 <details>
 <summary>Chọn đích và xem kế hoạch Ubuntu</summary>
 
-![Chọn phiên bản Ubuntu đích](previews/upgrade-ubuntu-dialog.jpg)
+![Chọn phiên bản Ubuntu đích](previews/mongodb-manager/upgrade-ubuntu-dialog.jpg)
 
-![Lộ trình nâng Ubuntu](previews/ubuntu-upgrade.jpg)
+![Lộ trình nâng Ubuntu](previews/mongodb-manager/ubuntu-upgrade.jpg)
 
-![Kế hoạch nâng riêng Ubuntu](previews/ubuntu-only-plan.jpg)
+![Kế hoạch nâng riêng Ubuntu](previews/mongodb-manager/ubuntu-only-plan.jpg)
 
-![Kiểm tra trước khi nâng Ubuntu trên máy có dịch vụ MongoDB đã dừng](previews/ubuntu-service-inactive.jpg)
+![Kiểm tra trước khi nâng Ubuntu trên máy có dịch vụ MongoDB đã dừng](previews/mongodb-manager/ubuntu-service-inactive.jpg)
 
 </details>
 
 <details>
 <summary>Chọn nhánh và xem kế hoạch MongoDB</summary>
 
-![Chọn nhánh MongoDB](previews/upgrade-mongo-dialog.jpg)
+![Chọn nhánh MongoDB](previews/mongodb-manager/upgrade-mongo-dialog.jpg)
 
-![Xem trước kế hoạch nâng MongoDB](previews/mongodb-upgrade-plan.jpg)
+![Xem trước kế hoạch nâng MongoDB](previews/mongodb-manager/mongodb-upgrade-plan.jpg)
 
-![Phiên bản gói MongoDB khi dịch vụ đã dừng](previews/mongodb-inactive-current.jpg)
+![Phiên bản gói MongoDB khi dịch vụ đã dừng](previews/mongodb-manager/mongodb-inactive-current.jpg)
 
 </details>
 
@@ -307,18 +342,18 @@ Mở **Lịch sử tác vụ → Chi tiết** để xem tên thao tác, VPS ho�
 
 Nếu một thao tác đang giữ đúng VPS hoặc tài nguyên cụm mà thao tác mới cần, Manager mở nhật ký của tác vụ đang giữ tài nguyên. Công việc độc lập trên VPS khác có thể chạy song song. Sau lỗi, đọc bước cuối đã hoàn tất trước khi thử lại. Ví dụ, nếu membership đã được ghi nhưng hết thời gian chờ đồng bộ, kiểm tra node trên **Replica Set** trước khi thêm lần nữa.
 
-![Lịch sử tác vụ của workspace với trạng thái và nút mở chi tiết](previews/guide-jobs.jpg)
+![Lịch sử tác vụ của workspace với trạng thái và nút mở chi tiết](previews/mongodb-manager/guide-jobs.jpg)
 
 <details>
 <summary>Mở lại tác vụ và theo dõi tiến độ gói</summary>
 
-![Bảng theo dõi tác vụ đang chạy](previews/active-upgrade-monitor.jpg)
+![Bảng theo dõi tác vụ đang chạy](previews/mongodb-manager/active-upgrade-monitor.jpg)
 
-![Thời gian và tiến độ nâng Ubuntu](previews/ubuntu-upgrade-progress.jpg)
+![Thời gian và tiến độ nâng Ubuntu](previews/mongodb-manager/ubuntu-upgrade-progress.jpg)
 
-![Hoạt động APT và dpkg trên VPS](previews/upgrade-package-activity.jpg)
+![Hoạt động APT và dpkg trên VPS](previews/mongodb-manager/upgrade-package-activity.jpg)
 
-![Tiến độ APT sau khi khôi phục kho gói](previews/ubuntu-apt-recovery.jpg)
+![Tiến độ APT sau khi khôi phục kho gói](previews/mongodb-manager/ubuntu-apt-recovery.jpg)
 
 </details>
 
@@ -331,24 +366,28 @@ Nếu một thao tác đang giữ đúng VPS hoặc tài nguyên cụm mà thao 
 
 Trong bảng theo dõi Ubuntu, dòng **SSH** hiển thị lần thử kết nối gần nhất khi VPS tạm ngắt. Khi kết nối lại, bảng cập nhật chặng và tiến độ, còn nhật ký giữ thời điểm ngắt để đối chiếu.
 
-![Theo dõi kết nối SSH khi nâng Ubuntu](previews/ubuntu-ssh-status.jpg)
+![Theo dõi kết nối SSH khi nâng Ubuntu](previews/mongodb-manager/ubuntu-ssh-status.jpg)
 
 Nếu bước nâng MongoDB phát hiện VPS chưa cài mongod, bấm **Xem kế hoạch cài** để kiểm tra bản cài mới trên đúng máy và nhánh đã chọn.
 
-![Bước MongoDB trên máy chưa cài](previews/mongo-install-required.jpg)
+![Bước MongoDB trên máy chưa cài](previews/mongodb-manager/mongo-install-required.jpg)
 
 Nút **Nâng cấp MongoDB** và **Nâng cả hai** mở cả tác vụ cài mới đang chạy trên máy đã chọn. Bảng theo dõi ghi thời gian chạy, hoạt động APT/dpkg và tiến độ tải hoặc cài gói. Ước tính cho từng chặng xuất hiện khi APT đã trả đủ mẫu tiến độ.
 
-![Theo dõi cài MongoDB](previews/mongo-install-progress.jpg)
+![Theo dõi cài MongoDB](previews/mongodb-manager/mongo-install-progress.jpg)
 
 Nếu popup kế hoạch đã mở trước lúc máy bắt đầu cài MongoDB, bấm **Xem kế hoạch** sẽ mở tác vụ đang chạy ngay cả khi APT chưa tạo dịch vụ mongod.
 
-![Tác vụ đang tải gói trước khi tạo mongod](previews/mongo-install-service-pending.jpg)
+![Tác vụ đang tải gói trước khi tạo mongod](previews/mongodb-manager/mongo-install-service-pending.jpg)
 
 **Nâng cấp MongoDB** đọc phiên bản gói trên VPS khi unit đã bị mask và mongod đã dừng. Nếu proxy trả HTTP 502, giao diện hiển thị trạng thái kết nối tới Manager.
 
-![Kiểm tra MongoDB trên linux1929](previews/mongo-linux1929-version.jpg)
+![Kiểm tra MongoDB trên linux1929](previews/mongodb-manager/mongo-linux1929-version.jpg)
 
 ## Cập nhật tài liệu
 
 Cập nhật mục hướng dẫn liên quan trong cùng thay đổi mã nguồn. Khi giao diện thay đổi, chụp ảnh bằng workspace minh họa, lưu trong [previews/](previews/) và dùng liên kết tương đối để GitHub hiển thị ảnh.
+
+Trong **Thêm tên miền**, dùng **Domain bổ sung** cho các tên cùng phục vụ một website. Bấm **+ Thêm website khác** để tạo nhiều file cấu hình độc lập trên các VPS đã chọn. Mỗi website có kiểu, backend, cổng hoặc thư mục riêng. Chọn **Node.js** cho ứng dụng chạy qua cổng (Express, Next.js, Nuxt SSR), **Vue / React / Angular · SPA** cho thư mục build có `index.html`, **Web tĩnh** cho HTML thông thường. Các kiểu PHP-FPM, redirect, WebSocket, SSE và gRPC cũng có trong form. Trên từng VPS, Manager kiểm tra tên trùng, chạy `nginx -t` rồi reload một lần cho cả nhóm. [Ảnh thêm nhiều website](previews/vps-manager/nginx-create-multiple.jpg) · [Ảnh editor cấu hình](previews/vps-manager/domain-editor.jpg).
+
+Tổng quan VPS và Software Center dùng chung bản thông tin gần nhất của từng máy, lưu trong kho dữ liệu mã hóa của Manager. Sau 5 phút, khi mở màn hình, Manager hiển thị bản đã lưu rồi đọc lại qua SSH. Nút **Làm mới** kiểm tra ngay. Trước khi xác nhận cài phần mềm, popup kiểm tra trực tiếp các máy đã chọn.
