@@ -328,6 +328,8 @@ def create_app(data_dir=None):
             raise ValueError("Votes = 0 yêu cầu ưu tiên bằng 0.")
         if value["mode"] == "ssh":
             public_host(value["host"])
+            if any(m["id"] != record_id and m.get("mode") == "ssh" and m.get("host") == value["host"] and int(m.get("port", 22)) == int(value.get("port", 22)) for m in app.state.store.all("machines")):
+                raise ValueError(f"Máy chủ {value['host']}:{value['port']} đã tồn tại.")
             if value["mongo_endpoint"]:
                 public_endpoint(value["mongo_endpoint"])
         if value["mode"] == "ssh" and value["ssh_auth"] == "password":

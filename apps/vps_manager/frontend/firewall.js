@@ -42,7 +42,9 @@ async function firewallPage(view,path,rev,force=false){
   const oracle=s.oracle||{},oci=s.oci,vnic=oci?.vnics[0],linked=!!(s.link&&oci);
   const heading=$('#heading-actions');
   const mk=(text,tone,fn,sz='small')=>{const b=document.createElement('button');b.type='button';b.className='button'+(sz?' '+sz:'');if(tone)b.dataset.tone=tone;b.textContent=text;b.onclick=fn;return b;};
-  heading.append(mk('+ '+vt('Mở port','Open port'),'create',()=>fwOpenDialog(s,path),''),mk(vt('Làm mới','Refresh'),'info',()=>{fwCache.delete(host);vpsGetCache.clear();render();},''));
+  const bulkOpen=mk('','create',()=>fwBulkDialog(s,path,'open',picked()),'');bulkOpen.hidden=true;
+  const bulkClose=mk('','remove',()=>fwBulkDialog(s,path,'close',picked()),'');bulkClose.hidden=true;
+  heading.append(bulkOpen,bulkClose,mk('+ '+vt('Mở port','Open port'),'create',()=>fwOpenDialog(s,path),''),mk(vt('Làm mới','Refresh'),'info',()=>{fwCache.delete(host);vpsGetCache.clear();render();},''));
   if(oracle.detected)heading.append(mk(vt('Cấu hình Oracle Cloud','Oracle Cloud setup'),'configure',()=>ociDialog(s,path),''));
   if(s.ufw.installed&&!s.ufw.active)heading.append(mk(vt('Bật UFW (giữ SSH)','Enable UFW (keep SSH)'),'warning',()=>modal('UFW','<p>'+escapeHTML(vt('Cho phép cổng SSH '+s.ssh_ports.join(', ')+'/tcp rồi bật UFW.','Allow SSH port '+s.ssh_ports.join(', ')+'/tcp, then enable UFW.'))+'</p>',()=>fwSubmit({op:'enable',layers:['ufw']},path)),''));
   const ufwText=!s.ufw.installed?vt('UFW chưa cài','UFW not installed'):s.ufw.active?vt('UFW đang bật','UFW active'):vt('UFW đang tắt','UFW inactive');
@@ -55,7 +57,7 @@ async function firewallPage(view,path,rev,force=false){
   if(blocked.length)notes.unshift(vt('Port UFW mở nhưng Oracle Cloud chặn: ','UFW open but Oracle Cloud blocks: ')+blocked.map(r=>r.proto+'/'+fwRange(r)).join(', '));
   view.innerHTML=`<section class="vps-box fw-panel"><header><h2>Firewall</h2><span>${escapeHTML(ufwText)}${oracleText}</span></header>
     <div class="fw-body">${notes.map(n=>'<p class="fw-note">'+escapeHTML(n)+'</p>').join('')}
-    <div class="table-wrap"><table><thead><tr><th>#</th><th>Port</th><th>LISTEN</th><th>${vt('Nội bộ','Local')}</th><th>${vt('Bên ngoài','External')}</th><th>UFW</th><th>Oracle</th><th></th></tr></thead><tbody></tbody></table></div></div></section>`;
+    <div class="table-wrap"><table><thead><tr><th><input type="checkbox" id="fw-pick-all" aria-label="Chọn tất cả"></th><th>#</th><th>Port</th><th>LISTEN</th><th>${vt('Nội bộ','Local')}</th><th>${vt('Bên ngoài','External')}</th><th>UFW</th>${oracle.detected?'<th>Oracle</th>':''}<th></th></tr></thead><tbody></tbody></table></div></div></section>`;
   if(oracle.detected&&!s.link){
     const box=document.createElement('section');box.className='fw-guide';
     box.innerHTML='<h3>'+vt('Kết nối Oracle Cloud để mở port từ Internet','Connect Oracle Cloud to open ports from the Internet')+'</h3>'
@@ -69,24 +71,35 @@ async function firewallPage(view,path,rev,force=false){
     view.querySelector('.fw-body').prepend(box);
   }
   const body=view.querySelector('tbody');
-  if(!s.rows.length)body.innerHTML='<tr><td colspan="8">'+escapeHTML(vt('Chưa có port nào đang LISTEN hoặc có rule.','No listening ports or rules yet.'))+'</td></tr>';
+  if(!s.rows.length)body.innerHTML='<tr><td colspan="${oracle.detected?9:8}">'+escapeHTML(vt('Chưa có port nào đang LISTEN hoặc có rule.','No listening ports or rules yet.'))+'</td></tr>';
   for(const [idx,r] of s.rows.entries()){
     const tr=document.createElement('tr');
     const listen=r.listening.length?r.listening.map(l=>escapeHTML((l.process||'?')+(r.min===r.max?'':':'+l.port))).join(', '):'—';
     const internal=r.internal===null?'—':r.internal?vt('Truy cập được','Reachable'):vt('Không kết nối','Refused');
     const external=r.external===null?(r.proto==='udp'?vt('Không kiểm tra UDP','UDP not probed'):'—'):r.external==='open'?vt('Truy cập được','Reachable'):vt('Không kết nối','Unreachable');
-    tr.innerHTML='<td class="row-number">'+(idx+1)+'</td><td><code>'+escapeHTML(r.proto+'/'+fwRange(r))+'</code></td><td>'+listen+'</td><td>'+escapeHTML(internal)+'</td><td>'+escapeHTML(external)+'</td><td>'+fwTag(r.ufw)+'</td><td>'+fwTag(r.oci)+'</td><td class="fw-actions"></td>';
+    tr.innerHTML='<td></td><td class="row-number">'+(idx+1)+'</td><td><code>'+escapeHTML(r.proto+'/'+fwRange(r))+'</code></td><td>'+listen+'</td><td>'+escapeHTML(internal)+'</td><td>'+escapeHTML(external)+'</td><td>'+fwTag(r.ufw)+'</td>'+(oracle.detected?'<td>'+fwTag(r.oci)+'</td>':'')+'<td class="fw-actions"></td>';
     const act=tr.lastElementChild;
     const protectedPort=r.proto==='tcp'&&s.ssh_ports.some(p=>p>=r.min&&p<=r.max);
-    if(r.warnings.length){const w=document.createElement('small');w.className='site-warning';w.textContent=r.warnings.map(k=>vt(...fwWarnings[k])).join(' ');tr.children[1].append(w);}
+    if(r.warnings.length){const w=document.createElement('small');w.className='site-warning';w.textContent=r.warnings.map(k=>vt(...fwWarnings[k])).join(' ');tr.children[2].append(w);}
     if(r.warnings.includes('oci_blocked'))act.append(mk(vt('Mở Oracle','Open Oracle'),'create',()=>fwOpenDialog(s,path,{port:fwRange(r),proto:r.proto,layers:['oci']})));
     if(protectedPort){const l=document.createElement('small');l.textContent='SSH';act.append(l);}
     else{
+      tr.firstElementChild.innerHTML='<input type="checkbox" class="fw-pick" value="'+idx+'">';
       if(r.ufw!=='open'||(oracle.detected&&r.oci!=='open'))act.append(mk(vt('Mở','Open'),'create',()=>fwOpenDialog(s,path,{port:fwRange(r),proto:r.proto})));
       act.append(mk(vt('Đóng','Close'),'remove',()=>fwCloseDialog(s,path,r)));
     }
     body.append(tr);
   }
+  const pickAll=$('#fw-pick-all');
+  function picked(){return [...body.querySelectorAll('.fw-pick:checked')].map(c=>s.rows[Number(c.value)]).filter(Boolean);}
+  function syncBulk(){
+    const n=picked().length;
+    bulkOpen.hidden=bulkClose.hidden=!n;
+    bulkOpen.textContent=vt('Mở ('+n+')','Open ('+n+')');
+    bulkClose.textContent=vt('Đóng ('+n+')','Close ('+n+')');
+  }
+  if(pickAll)pickAll.onchange=()=>{body.querySelectorAll('.fw-pick').forEach(c=>{c.checked=pickAll.checked;});syncBulk();};
+  body.addEventListener('change',e=>{if(e.target.classList.contains('fw-pick'))syncBulk();});
   if(vnic){
     const d=document.createElement('details');d.className='fw-oci';
     const count=l=>l.rules.length+' rule';
@@ -199,4 +212,18 @@ function ociDialog(s,path){
     try{const r=await api('vps/oci/accounts/'+encodeURIComponent(account.id)+'/test'+(($('#popup').elements.region.value.trim())?'?region='+encodeURIComponent($('#popup').elements.region.value.trim()):''),{});out.textContent='✓ '+r.regions.join(', ');}
     catch(err){out.textContent='✗ '+err.message;}finally{btn.disabled=false;}
   };
+}
+
+function fwBulkDialog(s,path,op,rows){
+  if(!rows.length)return;
+  const title=op==='open'?vt('Mở '+rows.length+' port','Open '+rows.length+' ports'):vt('Đóng '+rows.length+' port','Close '+rows.length+' ports');
+  modal(title,'<p>'+escapeHTML($('#hosts').selectedOptions[0].textContent)+'</p><ul>'+rows.map(r=>'<li><code>'+escapeHTML(r.proto+'/'+fwRange(r))+'</code></li>').join('')+'</ul><label class="field">Source CIDR<input name="source" value="0.0.0.0/0"></label>'+fwLayerFields(s,['ufw','oci']),
+    form=>{
+      const selected=fwSelected(form),src=form.get('source').trim();
+      if(!selected.length)throw new Error(vt('Chọn ít nhất một lớp firewall.','Select at least one firewall layer.'));
+      if($('dialog')?.open)$('dialog').close();
+      (async()=>{
+        for(const r of rows)await fwSubmit({op,port:fwRange(r),protocols:[r.proto],source:src,layers:selected,oci_target:'auto'},path);
+      })();
+    });
 }

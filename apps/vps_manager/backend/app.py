@@ -268,6 +268,8 @@ def register(app):
                 raise HTTPException(422, "Thiếu mật khẩu SSH.")
         else:
             values["ssh_password"] = ""
+        if body.mode == "ssh" and any(m["id"] != ident and m.get("mode") == "ssh" and m.get("host") == body.host and int(m.get("port", 22)) == body.port for m in app.state.store.all("machines")):
+            raise HTTPException(422, f"Máy chủ {body.host}:{body.port} đã tồn tại.")
         return public_machine(app.state.store.save("machines", values, ident))
 
     @app.delete("/api/vps/servers/{ident}")
@@ -289,6 +291,8 @@ def register(app):
             )
         if body.mode == "ssh" and body.ssh_auth == "password" and not body.ssh_password:
             raise HTTPException(422, "Thiếu mật khẩu SSH.")
+        if body.mode == "ssh" and any(m.get("mode") == "ssh" and m.get("host") == body.host and int(m.get("port", 22)) == body.port for m in app.state.store.all("machines")):
+            raise HTTPException(422, f"Máy chủ {body.host}:{body.port} đã tồn tại.")
         saved = app.state.store.save("machines", values)
         return {"id": saved["id"], "name": saved["name"]}
 
