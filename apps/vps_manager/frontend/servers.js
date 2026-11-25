@@ -4,7 +4,15 @@ async function serversPage(view,path,rev){
   if(rev!==revision)return;
   const add=document.createElement('button');add.type='button';add.className='button';add.dataset.tone='create';add.textContent='+ '+vt('Thêm máy chủ','Add server');add.onclick=()=>addVps();
   const bulkAdd=document.createElement('button');bulkAdd.type='button';bulkAdd.className='button';bulkAdd.dataset.tone='info';bulkAdd.textContent='+ '+vt('Thêm từ Seed list','Add from Seed list');bulkAdd.onclick=()=>addFromSeeds();
-  $('#heading-actions').append(bulkAdd,add);
+  const copyIps=document.createElement('button');copyIps.type='button';copyIps.className='button';copyIps.dataset.tone='configure';copyIps.textContent=vt('Copy IP VPS','Copy VPS IPs');
+  copyIps.onclick=async()=>{
+    const ips=[...new Set(list.filter(m=>m.mode==='ssh'&&m.host).map(m=>m.host))];
+    if(!ips.length)return;
+    await navigator.clipboard?.writeText(ips.join('\n'));
+    copyIps.textContent='✓ '+vt('Đã copy '+ips.length+' IP','Copied '+ips.length+' IPs');
+    setTimeout(()=>{copyIps.textContent=vt('Copy IP VPS','Copy VPS IPs');},2500);
+  };
+  $('#heading-actions').append(copyIps,bulkAdd,add);
   view.innerHTML='<section class="panel"><div class="panel-head"><div><h2>'+vt('Danh sách máy chủ','Servers')+'</h2></div><input class="search-box" type="search" id="find-server" placeholder="'+vt('Tìm máy chủ, IP…','Find server, IP…')+'"></div><div class="table-wrap"><table><thead><tr><th>#</th><th>'+vt('MÁY CHỦ','SERVER')+'</th><th>'+vt('KẾT NỐI','CONNECTION')+'</th><th>'+vt('XÁC THỰC','AUTH')+'</th><th></th></tr></thead><tbody></tbody></table></div></section>';
   const body=view.querySelector('tbody');
   if(!list.length)body.innerHTML='<tr><td colspan="5">'+vt('Chưa có máy chủ.','No servers yet.')+'</td></tr>';

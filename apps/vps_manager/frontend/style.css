@@ -272,3 +272,5 @@ dialog#modal:has(.domain-form,.copy-split,.upstream-builder) .modal-body{max-hei
 #popup fieldset.site-draft .site-preview-wrap{grid-column:2;grid-row:1;margin-top:0 !important;border-top:0;padding-top:0;width:100%}
 #popup fieldset.site-draft .remove-site{position:absolute;top:6px;right:10px;margin:0;padding:3px 9px;font-size:12px}
 @media(max-width:780px){#popup fieldset.site-draft{grid-template-columns:1fr}#popup fieldset.site-draft .site-preview-wrap{grid-column:1;grid-row:auto}}
+
+

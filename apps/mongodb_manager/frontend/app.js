@@ -274,7 +274,7 @@ function clustersPage(){
 const hostnameBatches=new Set();
 function workspaceSSHHosts(){return machines().filter(m=>m.mode==='ssh'&&(m.profile_id||'')===(profile()?.id||''));}
 function machinePage(){
- let html=heading(uiText("Máy chủ"),uiText("Quản lý kết nối SSH, cài đặt và dịch vụ trên từng máy."),button(uiText("Thêm từ Seed list"),'machine-seed-bulk','plus')+button(uiText("Thêm máy chủ"),'machine-new','plus'));
+ let html=heading(uiText("Máy chủ"),uiText("Quản lý kết nối SSH, cài đặt và dịch vụ trên từng máy."),button(uiText("Copy IP VPS"),'machine-copy-ips','')+button(uiText("Thêm từ Seed list"),'machine-seed-bulk','plus')+button(uiText("Thêm máy chủ"),'machine-new','plus'));
  if(!profile())html+=onboardingCards();
  const linked=machines().filter(m=>!profile()||m.profile_id===profile().id||!m.profile_id);
  const members=profile()?(currentStatus?.members||profile().seeds.map(host=>({host}))):[];
@@ -1469,6 +1469,7 @@ document.addEventListener('click',async event=>{
     }
     if(act==='machine-new'){showRecord('machines');return;}
     if(act==='machine-seed-bulk'){openMongoSeedBulk();return;}
+    if(act==='machine-copy-ips'){const ips=[...new Set(machines().filter(m=>m.mode==='ssh'&&m.host).map(m=>m.host))];if(ips.length){navigator.clipboard?.writeText(ips.join('\n'));toast(uiText('Đã copy ')+ips.length+' IP VPS.');}return;}
     if(act==='node-add'){showNodeAdd();return;}
     if(act==='prepared-node'){openAction('add_member');return;}
     if(act==='add-arbiter'){showNodeAdd(true);return;}

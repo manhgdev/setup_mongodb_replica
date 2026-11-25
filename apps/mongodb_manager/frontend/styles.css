@@ -293,3 +293,5 @@ td .password-control input[readonly] { min-width:9rem; padding-block:7px; border
 .app-switch summary {cursor:pointer;list-style:none}
 .app-switch a {display:block;padding:12px 0;font-size:13px}
 @media(min-width:681px){body.sidebar-hidden .app-switch{display:none}body.sidebar-hidden .brand[hidden]{display:flex!important}}
+
+
