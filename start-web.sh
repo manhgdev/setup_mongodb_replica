@@ -68,7 +68,7 @@ try:
             req = Requirement(line)
             if version(req.name) not in req.specifier:
                 raise SystemExit(1)
-    import fastapi, uvicorn, pymongo, cryptography, paramiko
+    import fastapi, uvicorn, websockets, pymongo, cryptography, paramiko
 except (ImportError, PackageNotFoundError):
     raise SystemExit(1)
 PYTHON
