@@ -323,7 +323,7 @@ def register(app):
                 await websocket.close(code=4404)
                 return
             await websocket.accept()
-            await run_terminal_session(websocket, machine, cols=cols, rows=rows)
+            await run_terminal_session(websocket, machine, cols=cols, rows=rows, store=ws_store)
 
     @app.post("/api/vps/machines/{ident}/password",status_code=202)
     def password_change(ident: str,body: PasswordChange):
@@ -369,12 +369,12 @@ def register(app):
 
     @app.post("/api/vps/ssh-keys/import")
     def import_ssh_key(body: ImportedSshKey):
-        from shared.manager_core.ssh_transport import save_imported_ssh_key
+        from shared.manager_core.ssh_transport import save_ssh_key_to_store
         try:
-            path = save_imported_ssh_key(app.state.store.directory, body.filename, body.content)
+            saved = save_ssh_key_to_store(app.state.store, body.filename, body.content)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
-        return {"path": path, "name": Path(path).name}
+        return {"path": saved["path"], "name": saved["name"], "id": saved["id"]}
 
     @app.put("/api/vps/servers/{ident}")
     def edit_server(ident: str, body: Machine):

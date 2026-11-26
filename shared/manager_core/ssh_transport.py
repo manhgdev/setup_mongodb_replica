@@ -1,13 +1,16 @@
 """Password SSH transport; credentials stay in memory and never enter argv."""
 import base64
 import codecs
+from contextlib import contextmanager
 import hashlib
 import fcntl
 import os
 import re
 import socket
 import json
+import tempfile
 import time
+import weakref
 from pathlib import Path
 
 import paramiko
@@ -160,8 +163,28 @@ def run_password(machine, command, payload, emit):
         ssh.close()
 
 
-def save_imported_ssh_key(directory: Path, filename: str, content: str) -> str:
-    """Validate and save an uploaded SSH key file (.pem, .key, .ppk, .pub, etc.) with 0600 permissions."""
+_KEY_STORES: list = []
+
+
+def register_key_store(store) -> None:
+    """Register a Store instance so SSH/SCP helpers can resolve db://ssh-keys/<id>."""
+    global _KEY_STORES
+    alive = [ref for ref in _KEY_STORES if ref() is not None and ref() is not store]
+    alive.append(weakref.ref(store))
+    _KEY_STORES = alive
+
+
+def _iter_key_stores(store=None):
+    if store is not None:
+        yield store
+    for ref in reversed(_KEY_STORES):
+        s = ref()
+        if s is not None and s is not store:
+            yield s
+
+
+def validate_ssh_key(content: str) -> tuple[str, str]:
+    """Validate an uploaded SSH key (.pem, .key, .ppk, .pub) and return (normalized, sha256_prefix)."""
     normalized = (content or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     if not normalized or len(normalized) > 65536 or "\x00" in normalized:
         raise ValueError("File SSH key không hợp lệ hoặc quá lớn (tối đa 64 KB).")
@@ -169,11 +192,65 @@ def save_imported_ssh_key(directory: Path, filename: str, content: str) -> str:
     if "PRIVATE KEY" not in normalized and not any(normalized.startswith(p) for p in prefixes):
         raise ValueError("Định dạng file không phải SSH key hợp lệ (.pem, .key, .ppk, .pub, id_ed25519...).")
     normalized += "\n"
+    digest = hashlib.sha256(normalized.encode()).hexdigest()[:10]
+    return normalized, digest
+
+
+def save_ssh_key_to_store(store, filename: str, content: str) -> dict:
+    """Validate and save an uploaded SSH key encrypted inside Store (MongoDB/SQLite)."""
+    normalized, digest = validate_ssh_key(content)
+    stem = re.sub(r"[^a-zA-Z0-9._-]+", "_", Path(filename or "id_key").name).strip("._") or "id_key"
+    key_id = f"key_{digest}"
+    store.save("ssh-keys", {
+        "id": key_id,
+        "name": stem,
+        "filename": str(filename or stem),
+        "digest": digest,
+        "private_key": normalized,
+    }, key_id)
+    return {"id": key_id, "path": f"db://ssh-keys/{key_id}", "name": stem}
+
+
+@contextmanager
+def identity_file(machine: dict, store=None):
+    """Yield a filesystem key path for SSH/SCP/Paramiko, materializing db://ssh-keys/<id> into a 0600 temp file."""
+    identity = str((machine or {}).get("identity") or "").strip()
+    if not identity:
+        yield None
+        return
+    if identity.startswith("db://ssh-keys/"):
+        key_id = identity.removeprefix("db://ssh-keys/").strip()
+        rec = None
+        for candidate in _iter_key_stores(store):
+            rec = candidate.get("ssh-keys", key_id)
+            if rec:
+                break
+        secret = (rec or {}).get("private_key") or (rec or {}).get("content") or ""
+        if not secret:
+            raise RuntimeError("Không tìm thấy SSH key đã lưu trong cơ sở dữ liệu.")
+        fd, tmp_path = tempfile.mkstemp(prefix="zm_key_", suffix=".pem")
+        try:
+            os.chmod(tmp_path, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(secret if secret.endswith("\n") else secret + "\n")
+            os.chmod(tmp_path, 0o600)
+            yield tmp_path
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        return
+    yield str(Path(identity).expanduser())
+
+
+def save_imported_ssh_key(directory: Path, filename: str, content: str) -> str:
+    """Validate and save an uploaded SSH key file (.pem, .key, .ppk, .pub, etc.) with 0600 permissions."""
+    normalized, digest = validate_ssh_key(content)
     keys_dir = Path(directory) / "ssh_keys"
     keys_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(keys_dir, 0o700)
     stem = re.sub(r"[^a-zA-Z0-9._-]+", "_", Path(filename or "id_key").name).strip("._") or "id_key"
-    digest = hashlib.sha256(normalized.encode()).hexdigest()[:10]
     target = keys_dir / f"{stem}_{digest}"
     fd = os.open(target, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:

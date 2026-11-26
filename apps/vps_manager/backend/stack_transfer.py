@@ -116,15 +116,17 @@ def transfer_bundle(machine: dict, direction: str, local_path: Path, remote_path
         "-o", "ConnectTimeout=15",
         "-P", str(machine["port"]),
     ]
-    if machine.get("identity"):
-        cmd += ["-i", str(Path(machine["identity"]).expanduser())]
-    remote_spec = f'{machine["user"]}@{machine["host"]}:{remote_path}'
-    if direction == "put":
-        cmd += [str(local_path), remote_spec]
-    else:
-        cmd += [remote_spec, str(local_path)]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
-    if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or "").strip().splitlines()
-        hint = err[-1][:300] if err else f"exit {proc.returncode}"
-        raise RuntimeError(f"Truyền bundle qua SCP thất bại: {hint}")
+    from shared.manager_core.ssh_transport import identity_file
+    with identity_file(machine) as id_path:
+        if id_path:
+            cmd += ["-i", id_path]
+        remote_spec = f'{machine["user"]}@{machine["host"]}:{remote_path}'
+        if direction == "put":
+            cmd += [str(local_path), remote_spec]
+        else:
+            cmd += [remote_spec, str(local_path)]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "").strip().splitlines()
+            hint = err[-1][:300] if err else f"exit {proc.returncode}"
+            raise RuntimeError(f"Truyền bundle qua SCP thất bại: {hint}")

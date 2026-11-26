@@ -145,17 +145,38 @@ class _SqliteBackend:
 class _MongoBackend:
     """Mongoose-style MongoDB document backend storing each `kind` as its own collection."""
 
-    def __init__(self, uri: str, database: str, cipher: Fernet, client=None):
+    def __init__(self, uri: str, database: str, cipher: Fernet, client=None, local_key_bytes: bytes = b""):
         from pymongo import MongoClient
 
         self.uri = uri
         self.database_name = (database or "zm_manager").strip() or "zm_manager"
         self.cipher = cipher
+        self._local_key_bytes = local_key_bytes
+        self._cipher_synced = False
         self.client = client or MongoClient(uri, serverSelectionTimeoutMS=5000, connectTimeoutMS=5000)
         self.db = self.client[self.database_name]
         self._cache_lock = threading.RLock()
         self._all_cache = {}
         self._item_cache = {}
+
+    def _ensure_cipher(self):
+        if self._cipher_synced or not self._local_key_bytes:
+            return
+        try:
+            meta = self.db["_zm_meta"]
+            doc = meta.find_one({"_id": "cipher_key"})
+            if not doc or not doc.get("key"):
+                meta.update_one(
+                    {"_id": "cipher_key"},
+                    {"$setOnInsert": {"key": self._local_key_bytes.decode("utf-8")}},
+                    upsert=True,
+                )
+                doc = meta.find_one({"_id": "cipher_key"})
+            if doc and doc.get("key"):
+                self.cipher = Fernet(doc["key"].encode("utf-8"))
+            self._cipher_synced = True
+        except Exception:
+            pass
 
     def _invalidate(self, kind: str = None):
         with self._cache_lock:
@@ -177,6 +198,7 @@ class _MongoBackend:
         return self.db[_collection_name(kind)]
 
     def _prepare_doc(self, kind: str, value: dict, record_id: str) -> dict:
+        self._ensure_cipher()
         clean = json.loads(json.dumps(dict(value, id=record_id), ensure_ascii=False, default=str))
         encrypted = _encrypt_secrets(clean, self.cipher)
         encrypted["_id"] = record_id
@@ -184,13 +206,14 @@ class _MongoBackend:
         return encrypted
 
     def _decode_doc(self, doc: dict) -> dict:
+        self._ensure_cipher()
         out = {k: v for k, v in doc.items() if k not in ("_id", "_kind")}
         return _decrypt_secrets(out, self.cipher)
 
     def list_kinds(self):
         kinds = []
         for name in self.db.list_collection_names():
-            if name.startswith("system.") or name == "_zm_probe":
+            if name.startswith("system.") or name in {"_zm_probe", "_zm_meta"}:
                 continue
             sample = self.db[name].find_one({}, {"_kind": 1})
             kinds.append(sample["_kind"] if sample and "_kind" in sample else name)
@@ -199,7 +222,7 @@ class _MongoBackend:
     def count_all(self):
         total = 0
         for name in self.db.list_collection_names():
-            if name.startswith("system.") or name == "_zm_probe":
+            if name.startswith("system.") or name in {"_zm_probe", "_zm_meta"}:
                 continue
             total += self.db[name].count_documents({})
         return total
@@ -407,7 +430,8 @@ class Store:
             fd = os.open(key, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
             with os.fdopen(fd, "wb") as output:
                 output.write(Fernet.generate_key())
-        self.cipher = Fernet(key.read_bytes())
+        self.key_bytes = key.read_bytes()
+        self.cipher = Fernet(self.key_bytes)
         self.path = self.directory / "manager.sqlite3"
         self.config_path = self.directory / "storage_config.json"
         self._lock = threading.RLock()
@@ -417,6 +441,8 @@ class Store:
         self._active = self._sqlite
         self._backend_name = "sqlite"
         self.reload()
+        from shared.manager_core.ssh_transport import register_key_store
+        register_key_store(self)
 
     def _read_config(self) -> dict:
         if not self.config_path.exists():
@@ -456,7 +482,7 @@ class Store:
                 self._mongo = None
             uri = self._decrypt_uri(cfg)
             if cfg.get("backend") == "mongodb" and uri:
-                self._mongo = _MongoBackend(uri, cfg.get("database") or "zm_manager", self.cipher)
+                self._mongo = _MongoBackend(uri, cfg.get("database") or "zm_manager", self.cipher, local_key_bytes=self.key_bytes)
                 self._active = self._mongo
                 self._backend_name = "mongodb"
             else:
@@ -507,7 +533,7 @@ class Store:
         real_db = (database or "").strip() or cfg.get("database") or "zm_manager"
         if not real_uri:
             raise ValueError("Chưa nhập chuỗi kết nối MongoDB (URI).")
-        return _MongoBackend(real_uri, real_db, self.cipher)
+        return _MongoBackend(real_uri, real_db, self.cipher, local_key_bytes=self.key_bytes)
 
     def sqlite_backend(self) -> _SqliteBackend:
         return self._sqlite

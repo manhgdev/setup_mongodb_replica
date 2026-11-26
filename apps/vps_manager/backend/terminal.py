@@ -99,9 +99,11 @@ async def _run_local_pty(websocket, cols: int, rows: int):
             pass
 
 
-async def run_terminal_session(websocket, machine: dict, cols: int = 100, rows: int = 30):
+async def run_terminal_session(websocket, machine: dict, cols: int = 100, rows: int = 30, store=None):
     if machine.get("mode") == "local":
         return await _run_local_pty(websocket, cols, rows)
+
+    from shared.manager_core.ssh_transport import identity_file
 
     client = paramiko.SSHClient()
     known_hosts = Path.home() / ".ssh" / "known_hosts"
@@ -124,14 +126,14 @@ async def run_terminal_session(websocket, machine: dict, cols: int = 100, rows: 
         connect_kwargs["look_for_keys"] = False
         connect_kwargs["allow_agent"] = False
     else:
-        identity = str(machine.get("identity") or "").strip()
-        if identity:
-            connect_kwargs["key_filename"] = str(Path(identity).expanduser())
         connect_kwargs["look_for_keys"] = True
         connect_kwargs["allow_agent"] = True
 
     try:
-        await asyncio.to_thread(client.connect, **connect_kwargs)
+        with identity_file(machine, store=store) as key_path:
+            if key_path:
+                connect_kwargs["key_filename"] = key_path
+            await asyncio.to_thread(client.connect, **connect_kwargs)
         channel = await asyncio.to_thread(client.invoke_shell, term="xterm-256color", width=max(cols, 20), height=max(rows, 5))
         channel.settimeout(0.2)
     except Exception as exc:

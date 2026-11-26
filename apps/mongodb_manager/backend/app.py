@@ -404,12 +404,12 @@ def create_app(data_dir=None):
 
     @app.post("/api/ssh-keys/import")
     def import_ssh_key(body: dict):
-        from shared.manager_core.ssh_transport import save_imported_ssh_key
+        from shared.manager_core.ssh_transport import save_ssh_key_to_store
         try:
-            path = save_imported_ssh_key(app.state.store.directory, str(body.get("filename") or "id_key"), str(body.get("content") or ""))
+            saved = save_ssh_key_to_store(app.state.store, str(body.get("filename") or "id_key"), str(body.get("content") or ""))
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
-        return {"path": path, "name": Path(path).name}
+        return {"path": saved["path"], "name": saved["name"], "id": saved["id"]}
 
     @app.post("/api/machines/connection-test")
     def test_machine_connection(body: dict):
