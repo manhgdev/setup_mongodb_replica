@@ -57,9 +57,16 @@ async function showWebsite(site, machinePath, currentRevision, initialTab) {
       body.textContent=site.https?'HTTPS · '+(site.expires===null?'—':site.expires+' ngày'):'HTTP';
       api(path+'/ssl-status?domain='+encodeURIComponent(site.domain)).then(status=>{
         if(active!==generation)return;
-        const info=document.createElement('pre');info.textContent=['certbot.timer · '+status.timer,
+        const renewal=status.renewal||{};
+        const autoLabel=renewal.enabled?(vt('Đang bật','Enabled')+' ('+renewal.detail+')'):vt('Chưa bật','Not enabled');
+        const info=document.createElement('pre');info.textContent=[vt('Tự gia hạn SSL','SSL auto-renew')+' · '+autoLabel,'certbot.timer · '+status.timer,
           'cron · '+(status.cron?'✓':'—'),status.served?'SNI · '+status.served.names.join(', ')+' · '+status.served.expires:status.error].join('\n');
         body.append(info);
+        if(!renewal.enabled){
+          const btn=document.createElement('button');btn.className='button small';btn.dataset.tone='create';btn.textContent=vt('Bật tự gia hạn SSL','Enable SSL auto-renew');
+          btn.onclick=()=>modal(vt('Bật tự gia hạn SSL','Enable SSL auto-renew'),'<p>'+escapeHTML(site.domain)+'</p><p>'+vt('Kích hoạt systemd timer hoặc cron định kỳ để tự động gia hạn SSL và reload Nginx.','Enable the systemd timer or periodic cron job to automatically renew SSL and reload Nginx.')+'</p>',()=>submit('ssl-renew-enable',{}));
+          body.append(btn);
+        }
       }).catch(report);
     }else if(tab===tabs[2]){
       const toggle=document.createElement('button'), log=document.createElement('pre');

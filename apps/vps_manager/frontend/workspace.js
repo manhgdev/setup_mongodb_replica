@@ -1,86 +1,21 @@
 const vt=(vi,en)=>vpsEnglish?en:vi;
-const packagePages=new Map();
 
-function packagesPage(view,path,host){
-  const page=packagePages.get(host)||'kits';
-  if(page==='kits')return view;
-  view.innerHTML='<button type="button" class="text-button" id="back-kits">← '+vt('Bộ cài của tôi','My kits')+'</button><div id="package-content"></div>';
-  $('#back-kits').onclick=()=>{packagePages.set(host,'kits');render();};
-  const content=$('#package-content');
-  const remote=page==='repository';
-  content.innerHTML=`<section class="vps-box"><form class="vps-search"><input type="search" maxlength="100" aria-label="${vt('Tên gói','Package name')}" placeholder="${remote?vt('Tên gói trong kho, ví dụ tree','Repository package, e.g. tree'):vt('Lọc theo tên gói…','Filter by package name…')}"><button class="button small">${vt('Tìm','Search')}</button></form>
-    <div class="vps-package-results" aria-live="polite"></div><div class="vps-pager"></div></section>`;
-  const form=content.querySelector('form'),results=content.querySelector('.vps-package-results'),pager=content.querySelector('.vps-pager');
-  results.classList.toggle('installed-grid',!remote);
-  let generation=0,offset=0,query='';
-  function capacity(){
-    if(remote)return 30;
-    const grid=getComputedStyle(results);
-    const columns=grid.gridTemplateColumns.split(' ').length;
-    const rowHeight=parseFloat(grid.gridAutoRows)+parseFloat(grid.rowGap);
-    const top=form.getBoundingClientRect().bottom+window.scrollY;
-    const available=window.innerHeight-top-parseFloat(grid.paddingTop)-parseFloat(grid.paddingBottom)-64;
-    return Math.min(240,columns*Math.max(1,Math.floor(available/rowHeight)));
-  }
-  let limit=capacity();
-  if(!remote){
-    let timer;
-    function resize(){
-      clearTimeout(timer);
-      if(!content.isConnected){
-        observer.disconnect();
-        window.removeEventListener('resize',resize);
-        return;
-      }
-      timer=setTimeout(()=>{
-        if(!content.isConnected)return;
-        const next=capacity();
-        if(next===limit)return;
-        offset=Math.floor(offset/next)*next;
-        limit=next;load();
-      },150);
-    }
-    const observer=new ResizeObserver(resize);
-    observer.observe(content);
-    window.addEventListener('resize',resize);
-  }
-  async function load(){
-    const current=++generation;
-    pager.replaceChildren();
-    if(remote&&!query){results.textContent=vt('Nhập tên để tìm trong kho của VPS.','Enter a name to search this server’s repositories.');return;}
-    results.textContent=vt('Đang đọc danh sách gói…','Reading packages…');
-    try{
-      const data=await api(path+'/packages?'+new URLSearchParams({scope:page,query,offset,limit}));
-      if(current!==generation||!content.isConnected)return;
-      results.replaceChildren();
-      for(const item of data.items){
-        const row=document.createElement('div');row.className='vps-package';
-        const title=document.createElement('strong');title.textContent=title.title=item.name;
-        const version=document.createElement('code');version.textContent=version.title=item.version;row.append(title,version);
-        if(remote){
-          const btn=document.createElement('button');btn.className='button small';btn.textContent=vt('Xem kế hoạch','Preview');
-          btn.onclick=async()=>{
-            btn.disabled=true;
-            try{
-              const plan=await api(path+'/package-plan?'+new URLSearchParams({name:item.name}));
-              if(!btn.isConnected)return;
-              modal(vt('Cài gói từ kho','Install repository package'),'<p>'+escapeHTML($('#hosts').selectedOptions[0].textContent)+' · '+escapeHTML(plan.target)+'</p><pre>'+escapeHTML(plan.summary)+'</pre>',()=>submit('native-install',{name:item.name,target:plan.target}));
-            }catch(err){if(btn.isConnected)row.append(document.createTextNode(err.message));}
-            finally{btn.disabled=false;}
-          };row.append(btn);
-        }
-        results.append(row);
-      }
-      if(!data.total){results.textContent=vt('Không tìm thấy gói.','No packages found.');return;}
-      const count=document.createElement('span');count.textContent=(offset+1)+'–'+(offset+data.items.length)+' / '+data.total;pager.append(count);
-      for(const [delta,label] of [[-limit,vt('Trước','Previous')],[limit,vt('Sau','Next')]]){
-        const btn=document.createElement('button');btn.className='button small';btn.textContent=label;
-        btn.disabled=offset+delta<0||offset+delta>=data.total;btn.onclick=()=>{offset+=delta;load();};pager.append(btn);
-      }
-    }catch(err){if(current===generation&&content.isConnected)results.textContent=err.message;}
-  }
-  form.onsubmit=e=>{e.preventDefault();offset=0;query=form.querySelector('input').value.trim();load();};
-  load();return null;
+async function accountDialog(){
+  const path=endpoint(), rev=revision, btn=$('#account')||$('#settings-account'), orig=btn?.textContent;
+  if(btn){btn.disabled=true;btn.textContent=vt('Đang tải…','Loading…');}
+  let state;
+  try{state=await api(path+'/account');}
+  finally{if(btn){btn.disabled=false;if(orig)btn.textContent=orig;}}
+  if(rev!==revision)return;
+  const target=state.user+'@'+state.host+':'+state.port;
+  const canChange=state.sudo&&state.user!=='root'&&state.auth==='key';
+  const fields='<p><strong>'+escapeHTML(target)+'</strong> · '+escapeHTML(state.auth)+'</p><p>sudo -n · '+(state.sudo?'✓':'—')+'　 SSH PasswordAuthentication · '+escapeHTML(state.password||'—')+'</p>';
+  if(!canChange){modal('Tài khoản & SSH',fields+'<p>Chọn user thường dùng SSH key và có quyền sudo -n để đặt mật khẩu.</p>',async()=>{});return;}
+  modal('Tài khoản & SSH',fields+'<div class="form-grid"><label class="field">Mật khẩu Linux mới<input name="password" type="password" autocomplete="new-password" required></label><label class="field">Nhập lại mật khẩu<input name="repeat" type="password" autocomplete="new-password" required></label></div><p><label><input id="show-secret" type="checkbox"> Hiện mật khẩu</label></p><p><label><input name="enable" type="checkbox"> Cho phép user này đăng nhập SSH bằng mật khẩu</label></p><p><label><input name="set_root" type="checkbox"> '+vt('Đặt mật khẩu này cho cả root (và cho phép SSH root nếu bật ở trên)','Also set this password for root (and allow root SSH if enabled above)')+'</label></p>',async form=>{
+    if(form.get('password')!==form.get('repeat'))throw new Error('Hai mật khẩu chưa khớp.');
+    await submit('password',{password:form.get('password'),enable:form.has('enable'),set_root:form.has('set_root')});
+  });
+  $('#show-secret').onchange=e=>{for(const input of $('#popup').querySelectorAll('[autocomplete=new-password]'))input.type=e.target.checked?'text':'password';};
 }
 
 const hostnameChanges=new Map();
@@ -121,7 +56,7 @@ function hostnameControls(view,path){
             hostnameChanges.set(path,{name:result.result.hostname,message:vt('Đã đổi hostname thành ','Hostname changed to ')+result.result.hostname});vpsGetCache.clear();loadHosts($('#hosts').value);
           }catch(error){hostnameChanges.set(path,{message:error.message+' · '+vt('Xem lịch sử tác vụ.','See job history.')});}
           if(form.isConnected){input.value='';sync();}
-          else if(endpoint()===path&&location.hash==='#overview')render();
+          else if(endpoint()===path&&(location.hash==='#overview'||location.hash==='#settings'))render();
         }
         follow();
       });
@@ -147,12 +82,21 @@ function overviewPage(view,info,path){
     return (m.kernel?'Kernel '+escapeHTML(m.kernel):'')+(Number.isFinite(uptime)?'<span>'+vt('Đã chạy ','Uptime ')+(uptime<3600?Math.floor(uptime/60)+vt(' phút',' min'):Math.floor(uptime/86400)+vt(' ngày ',' days ')+Math.floor(uptime/3600)%24+vt(' giờ',' hours'))+'</span>':'');
   };
   const panel=(id,title,route,action,extra='')=>`<section class="vps-box overview-panel"><header><div style="display:flex;align-items:center;gap:10px"><h2>${title}</h2>${extra}</div><a href="#${route}">${action} →</a></header><div id="${id}"></div></section>`;
+  const quickSummary=[
+    ['software',vt('Software Center','Software Center'),vt('Gói hệ điều hành & bộ cài','System packages & kits')],
+    ['docker',vt('Docker & Compose','Docker & Compose'),info.docker?('Docker · '+info.docker):vt('Container & Compose YAML','Containers & Compose YAML')],
+    ['firewall',vt('Firewall','Firewall'),vt('UFW & Oracle Cloud Security','UFW & Oracle Cloud Security')],
+    ['sysadmin',vt('User & Ổ đĩa','Users & Disks'),vt('Tài khoản Linux, mount & phân quyền','Linux users, mounts & permissions')],
+    ['git',vt('Git & SSH Key','Git & SSH Keys'),vt('Deploy key & đồng bộ repo','Deploy keys & repo sync')],
+    ['servers',vt('Máy chủ & Cài đặt','Servers & Settings'),vt('Danh sách VPS, lưu trữ & phân quyền','VPS inventory, storage & roles')],
+  ].map(([hash,title,sub])=>`<a href="#${hash}" style="display:flex;flex-direction:column;gap:4px;padding:10px 12px;border:1px solid var(--line,#e2e8f0);border-radius:8px;background:#fafcfa;text-decoration:none;color:inherit"><span style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-weight:600;color:var(--green,#2f6e49)"><span>${title}</span><span>→</span></span><span style="font-size:12px;color:#576e60">${escapeHTML(sub)}</span></a>`).join('');
   view.innerHTML=`<article class="vps-box"><header class="vps-machine"><div><h2>${escapeHTML(info.host)}</h2><p>${escapeHTML([info.os,info.arch,info.manager].filter(Boolean).join(' · '))}</p></div><button class="button small" data-tone="configure" id="account">${vt('Tài khoản & SSH','Account & SSH')}</button></header>
     <form class="hostname-form"><label>${vt('Hostname mới','New hostname')}<input name="hostname" required maxlength="63" placeholder="web-01" autocomplete="off" autocapitalize="none" spellcheck="false"></label><button type="submit" class="button small" data-tone="configure">${vt('Đổi hostname','Change hostname')}</button><output class="hostname-status" aria-live="polite"></output></form>
     <div class="overview-meters" id="ov-meters">${renderMeters(info)}</div><div class="overview-system" id="ov-system">${renderUptime(info)}</div></article>
     <div class="overview-panels">${panel('ov-processes',vt('Tác vụ đang chạy · CPU & RAM','Running processes · CPU & RAM'),'terminal','SSH Terminal','<span class="ov-live"><i></i>Live · 3s</span>')}
     ${panel('ov-sites',vt('Website & chứng chỉ','Websites & certificates'),'domains','Nginx')}
-    ${panel('ov-jobs',vt('Tác vụ gần đây','Recent jobs'),'jobs',vt('Lịch sử','History'))}</div>`;
+    <section class="vps-box overview-panel"><header><h2>${vt('Lưu trữ dữ liệu ứng dụng (SQLite / MongoDB)','App Data Storage (SQLite / MongoDB)')}</h2><a href="#settings" id="ov-storage-cfg">${vt('Cấu hình','Configure')} →</a></header><div id="ov-storage"></div></section>
+    <section class="vps-box overview-panel" style="grid-column:1/-1"><header><h2>${vt('Công cụ & dịch vụ trên VPS','VPS tools & services')}</h2><a href="#software">${vt('Mở Software Center','Open Software Center')} →</a></header><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;padding:12px 16px">${quickSummary}</div></section></div>`;
   if(!hostnameChanges.get(path)?.running && hostnameChanges.get(path)?.name!==info.host)hostnameChanges.delete(path);
   hostnameControls(view,path);
   const row=(title,value,job)=>`<${job?'button type="button" data-job="'+escapeHTML(job)+'"':'div'} class="overview-row"><strong>${escapeHTML(title)}</strong><span>${escapeHTML(value)}</span></${job?'button':'div'}>`;
@@ -193,10 +137,23 @@ function overviewPage(view,info,path){
     try{const data=await api(url);if(el.isConnected)el.innerHTML=format(data);}
     catch(err){if(el.isConnected)el.textContent=err.message;}
   }
-  populate($('#ov-jobs'),path+'/jobs',jobs=>{
-    const labels={running:vt('Đang chạy','Running'),queued:vt('Đang chờ','Queued'),succeeded:vt('Hoàn tất','Completed'),failed:vt('Có lỗi','Failed'),interrupted:vt('Gián đoạn','Interrupted')};
-    return jobs.slice(0,5).map(j=>row(j.label,[j.created_at?new Date(j.created_at).toLocaleString(vpsEnglish?'en-GB':'vi-VN',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'',labels[j.status]||j.status].filter(Boolean).join(' · '),j.id)).join('')||vt('Chưa ghi nhận tác vụ cho máy này.','No recorded jobs for this server.');
-  });
+  const storageEl=$('#ov-storage');
+  const renderStorage=s=>{
+    const active=s.backend==='mongodb'?'MongoDB ('+s.database+')':'SQLite (manager.sqlite3)';
+    return row(vt('Chế độ đang dùng','Active backend'),active)
+      +row(vt('Số bản ghi SQLite','SQLite records'),String(s.sqlite_count??0))
+      +(s.mongo_count!=null?row(vt('Số bản ghi MongoDB','MongoDB records'),String(s.mongo_count)):'')
+      +(s.uri_masked?row('MongoDB URI',s.uri_masked):'');
+  };
+  if(previewMode){
+    storageEl.innerHTML=renderStorage({backend:'sqlite',database:'zm_manager',sqlite_count:12,mongo_count:null,uri_masked:''});
+  }else{
+    populate(storageEl,'storage/config',renderStorage);
+  }
+  const cfgLink=$('#ov-storage-cfg');
+  if(cfgLink && !previewMode && window.zmStorageModal){
+    cfgLink.onclick=e=>{e.preventDefault();window.zmStorageModal({csrfToken:csrf,en:vpsEnglish,openModal:modal,closeModal:()=>$('dialog').close(),onSwitched:()=>location.reload()}).catch(err=>modal('Storage',escapeHTML(err.message),async()=>{}));};
+  }
   const sites=$('#ov-sites');
   if(info.nginx!=='active'){sites.textContent='Nginx · '+(info.nginx||'—');return;}
   populate(sites,path+'/nginx',inventory=>{
@@ -208,23 +165,27 @@ function overviewPage(view,info,path){
 
 function jobsPage(view,jobs,id){
   const labels={queued:vt('Đang chờ','Queued'),running:vt('Đang chạy','Running'),succeeded:vt('Hoàn tất','Completed'),failed:vt('Có lỗi','Failed'),interrupted:vt('Gián đoạn','Interrupted')};
-  const job=jobs.find(j=>j.id===id)||jobs[0];
-  if(!job){view.innerHTML='<div class="vps-box vps-empty">'+vt('Máy này chưa có tác vụ.','This server has no jobs yet.')+'</div>';return;}
-  view.innerHTML='<div class="vps-jobs"><div class="vps-job-list"></div><article class="vps-box vps-job-log"></article></div>';
-  const list=view.querySelector('.vps-job-list');
-  const tones={queued:'warning',running:'info',succeeded:'create',failed:'remove',interrupted:'remove'};
-  for(const [idx,j] of jobs.entries()){
-    const btn=document.createElement('button');btn.dataset.job=j.id;btn.setAttribute('aria-pressed',String(job.id===j.id));
-    const when=j.created_at?new Date(j.created_at).toLocaleTimeString():'';
-    const last=(j.events||[]).at(-1)?.message||'';
-    btn.innerHTML='<div style="display:flex;justify-content:space-between;gap:6px;align-items:center"><strong>'+(idx+1)+'. '+escapeHTML(j.label)+'</strong><span class="site-tag" data-tone="'+(tones[j.status]||'info')+'">'+escapeHTML(labels[j.status]||j.status)+'</span></div>'
-      +(last&&last!==j.label?'<small style="color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeHTML(last)+'</small>':'')
-      +(when?'<span>'+escapeHTML(when)+'</span>':'');
-    list.append(btn);
+  const badgeCls={queued:'warn',running:'blue',succeeded:'success',failed:'error',interrupted:'error'};
+  const fmtDate=s=>s?new Date(s).toLocaleString(vpsEnglish?'en-GB':'vi-VN',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—';
+  const refBtn=document.createElement('button');refBtn.type='button';refBtn.className='button';refBtn.dataset.tone='info';refBtn.textContent=vt('Làm mới','Refresh');refBtn.onclick=()=>render();
+  if(!$('#heading-actions').querySelector('.jobs-refresh')){refBtn.classList.add('jobs-refresh');$('#heading-actions').append(refBtn);}
+  const openDetail=job=>{
+    const logs=(job.events||[]).map(e=>e.message).filter(Boolean).join('\n')||'…';
+    const errHtml=job.error?'<div class="callout error" style="margin-top:10px">'+escapeHTML(job.error)+'</div>':'';
+    const resHtml=job.result?'<pre style="margin-top:10px;max-height:220px;overflow:auto">'+escapeHTML(JSON.stringify(job.result,null,2))+'</pre>':'';
+    modal(escapeHTML(job.label)+' · '+(labels[job.status]||job.status),
+      '<p><strong>'+escapeHTML(job.target||'')+'</strong> · '+escapeHTML(fmtDate(job.created_at))+'</p>'
+      +'<pre style="max-height:280px;overflow:auto">'+escapeHTML(logs)+'</pre>'+errHtml+resHtml,
+      async()=>{});
+  };
+  if(!jobs.length){
+    view.innerHTML='<section class="panel"><div class="panel-head"><div><h2>'+vt('Tác vụ','Jobs')+'</h2></div></div><div class="panel-body"><p style="color:var(--muted);margin:0">'+vt('Chưa có tác vụ nào cho máy này.','No jobs recorded for this server.')+'</p></div></section>';
+    return;
   }
-  const detail=view.querySelector('.vps-job-log');
-  const started=job.created_at?new Date(job.created_at).toLocaleString():'';
-  detail.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><h2>'+escapeHTML(job.label)+'</h2><span class="site-tag" data-tone="'+(tones[job.status]||'info')+'">'+escapeHTML(labels[job.status]||job.status)+'</span></div><p>'+escapeHTML(job.target)+(started?' · '+escapeHTML(started):'')+'</p><pre>'+escapeHTML((job.events||[]).map(e=>e.message).join('\n')||'…')+'</pre>';
-  if(job.error){const error=document.createElement('div');error.className='callout error';error.style.margin='8px 0 0';error.textContent=job.error;detail.append(error);}
-  if(job.result){const result=document.createElement('pre');result.textContent=JSON.stringify(job.result,null,2);detail.append(result);}
+  const rows=jobs.map(j=>'<tr class="job-row" data-id="'+escapeHTML(j.id)+'" style="cursor:pointer"><td><strong>'+escapeHTML(j.label)+'</strong></td><td>'+escapeHTML(j.target||'—')+'</td><td>'+escapeHTML(fmtDate(j.created_at))+'</td><td><span class="badge '+(badgeCls[j.status]||'')+'">'+escapeHTML(labels[j.status]||j.status)+'</span></td><td><button type="button" class="button small job-open-btn" data-tone="info" data-id="'+escapeHTML(j.id)+'">'+vt('Chi tiết','Details')+'</button></td></tr>').join('');
+  view.innerHTML='<section class="panel"><div class="panel-head"><div><h2>'+vt('Tác vụ','Jobs')+'</h2></div></div><div class="table-wrap"><table><thead><tr><th>'+vt('TÁC VỤ','JOB')+'</th><th>'+vt('ĐÍCH','TARGET')+'</th><th>'+vt('THỜI GIAN','TIME')+'</th><th>'+vt('TRẠNG THÁI','STATUS')+'</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div></section>';
+  for(const row of view.querySelectorAll('.job-row')){
+    row.onclick=()=>{const j=jobs.find(x=>x.id===row.dataset.id);if(j)openDetail(j);};
+  }
+  if(id){const reqJob=jobs.find(x=>x.id===id);if(reqJob){selectedJob='';sessionStorage.removeItem('vps-selected-job');openDetail(reqJob);}}
 }

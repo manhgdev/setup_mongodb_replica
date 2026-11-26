@@ -6,7 +6,8 @@ import re
 import tempfile
 from pathlib import Path
 
-from shared.manager_core.auth import password_hash, private_json, public_origin
+from shared.manager_core.auth import Auth, password_hash, private_json, public_origin
+from shared.manager_core.store import Store
 
 
 def main():
@@ -47,6 +48,7 @@ def main():
         if getpass.getpass('Nhập lại mật khẩu: ') != password:
             parser.error('Hai lần nhập chưa khớp.')
         private_json(path, {'username': args.username, 'password_hash': password_hash(password)})
+        Auth(Store(directory, app_name='mongo'))
         print('Đã tạo tài khoản quản trị. Khởi động lại ứng dụng để áp dụng.')
     else:
         origin = '' if args.url == 'local' else public_origin(args.url)

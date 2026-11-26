@@ -1,10 +1,11 @@
 """Shared FastAPI routes for inspecting, testing, migrating, and switching app storage (SQLite <-> MongoDB)."""
 from urllib.parse import quote
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from pydantic import BaseModel, Field
 from typing import Literal
 
 from .store import mask_uri, migrate_store, test_mongo_storage
+from .workspaces import current_store
 
 
 def _profile_uri(profile: dict) -> str:
@@ -59,10 +60,11 @@ def register_storage_routes(app):
         return ""
 
     @app.get("/api/storage/config")
-    def get_storage_config():
-        info = app.state.store.storage_info()
+    def get_storage_config(request: Request):
+        store = current_store(request)
+        info = store.storage_info()
         presets = []
-        for p in app.state.store.all("profiles"):
+        for p in store.all("profiles"):
             try:
                 full_uri = _profile_uri(p)
                 presets.append({
@@ -77,8 +79,8 @@ def register_storage_routes(app):
         return info
 
     @app.post("/api/storage/test")
-    def test_storage(body: StorageTestRequest):
-        store = app.state.store
+    def test_storage(body: StorageTestRequest, request: Request):
+        store = current_store(request)
         try:
             uri = resolve_uri(store, body.uri, body.profile_id)
             mb = store.get_mongo_backend(uri, body.database)
@@ -90,8 +92,8 @@ def register_storage_routes(app):
             raise HTTPException(422, str(exc)) from None
 
     @app.post("/api/storage/migrate")
-    def migrate_storage(body: StorageMigrateRequest):
-        store = app.state.store
+    def migrate_storage(body: StorageMigrateRequest, request: Request):
+        store = current_store(request)
         try:
             uri = resolve_uri(store, body.uri, body.profile_id)
             mb = store.get_mongo_backend(uri, body.database)
@@ -108,8 +110,8 @@ def register_storage_routes(app):
             raise HTTPException(422, str(exc)) from None
 
     @app.post("/api/storage/switch")
-    def switch_storage(body: StorageSwitchRequest):
-        store = app.state.store
+    def switch_storage(body: StorageSwitchRequest, request: Request):
+        store = current_store(request)
         if body.backend == "mongodb":
             try:
                 uri = resolve_uri(store, body.uri, body.profile_id)

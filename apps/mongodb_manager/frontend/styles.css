@@ -253,6 +253,7 @@ td .password-control input[readonly] { min-width:9rem; padding-block:7px; border
 .recovery-copy code { flex:1 1 180px; min-width:0; overflow-wrap:anywhere; user-select:all; }
 
 .recovery-card { width:min(520px,100%); gap:16px; }
+.recovery-card h1 { font-size:20px; line-height:1.3; }
 .recovery-heading { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; }
 .recovery-heading .brand { margin:0; padding:0; }
 .recovery-card header p { margin-top:8px; line-height:1.55; color:#52675b; }
@@ -316,6 +317,18 @@ td .password-control input[readonly] { min-width:9rem; padding-block:7px; border
   .top-actions .demo-toggle{padding:0 10px;white-space:nowrap}
   .top-actions .account-actions{margin-inline-start:auto;display:flex;align-items:center;gap:6px;flex-shrink:0}
   .top-actions .account-actions .avatar{width:26px;height:26px;font-size:10px}
+}
+.topbar{gap:14px}
+.topbar .breadcrumb{min-width:0;flex:1 1 auto;display:flex;align-items:center;gap:10px;overflow:hidden;white-space:nowrap}
+.topbar .breadcrumb #breadcrumb{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.topbar .top-actions{flex:0 0 auto;display:flex;align-items:center;flex-wrap:nowrap;white-space:nowrap}
+.topbar .top-actions :is(a,select,button){white-space:nowrap;flex-shrink:0}
+@media(max-width:1180px){
+  .topbar .top-actions{gap:6px}
+}
+@media(max-width:920px){
+  .topbar .breadcrumb>span{display:none}
+  .topbar .account-profile #admin-username{display:none}
 }
 
 

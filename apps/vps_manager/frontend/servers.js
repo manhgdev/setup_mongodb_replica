@@ -135,3 +135,88 @@ function addFromSeeds(){
     }finally{testBtn.disabled=false;}
   };
 }
+
+function addVps(record=null){
+  let verified=false,expected='',detected='',autoConnect;
+  const field=(name,label,value='',type='text',hint='',extra='')=>'<label class="field"'+(extra.includes('wide')?' data-wide':'')+'>'+label+'<input name="'+name+'" type="'+type+'" value="'+escapeHTML(value)+'"'+(type==='number'?' min="0"':'')+(extra==='placeholder'?' placeholder="'+vt('Tự đọc hostname','Detect hostname')+'"':'')+' autocomplete="'+(type==='password'?'new-password':'off')+'">'+(hint?'<small>'+hint+'</small>':'')+'</label>';
+  const select=(name,label,options,value)=>'<label class="field">'+label+'<select name="'+name+'">'+options.map(o=>'<option value="'+o[0]+'"'+(o[0]===String(value)?' selected':'')+'>'+o[1]+'</option>').join('')+'</select></label>';
+  // Same fields and order as the MongoDB Manager server form; both write the shared machine record.
+  modal(record?vt('Sửa máy chủ','Edit server'):vt('Thêm máy chủ','Add server'),'<div class="form-grid">'
+    +field('name',vt('Tên máy','Server name'),'','text','','placeholder')
+    +field('mongo_host',vt('Địa chỉ IP public','Public IP address'),'','text','')
+    +field('mongo_port',vt('Cổng MongoDB','MongoDB port'),27017,'number')
+    +select('votes','Votes',[['1','1'],['0','0']],1)
+    +field('priority',vt('Ưu tiên bầu primary','Primary election priority'),1,'number',vt('Áp dụng khi thêm Secondary.','Used when adding a secondary.'))
+    +select('mode',vt('Kiểu kết nối','Connection type'),[['ssh','ssh'],['local','local']],'ssh')
+    +field('user','User SSH','root')+field('port','Port SSH',22,'number')
+    +select('ssh_auth',vt('Xác thực SSH','SSH authentication'),[['password',vt('Mật khẩu SSH','SSH password')],['key','SSH key / Agent']],'password')
+    +'<label class="field">'+vt('Mật khẩu SSH','SSH password')+'<span class="input-eye-wrap"><input name="ssh_password" type="password" autocomplete="new-password"><button type="button" id="show-ssh-pw" class="input-eye" aria-label="'+vt('Hiện mật khẩu','Show password')+'"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button></span></label>'
+    +field('identity',vt('SSH private key (tùy chọn)','SSH private key (optional)'),'','text',vt('Để trống để dùng SSH agent hoặc ~/.ssh/config.','Leave empty to use the SSH agent or ~/.ssh/config.'))
+    +'<details class="field wide"><summary>'+vt('Địa chỉ SSH riêng','Separate SSH address')+'</summary>'+field('host',vt('Địa chỉ SSH (nếu khác)','SSH address (if different)'),'','text',vt('Để trống để dùng địa chỉ IP public ở trên.','Leave empty to use the public address above.'))+'</details></div>'
+    +'<p><button type="button" class="button" id="test-connection">'+vt('Kiểm tra kết nối','Test connection')+'</button></p><output id="ssh-feedback"></output>',async form=>{
+    let data=payload(form);
+    const moved=record&&(data.host!==record.host||data.port!==record.port||data.user!==record.user||data.mode!==record.mode);
+    if(data.mode==='ssh'&&(!record||moved)){await autoConnect();data=payload(form);}
+    const saved=await api(record?'vps/servers/'+encodeURIComponent(record.id):'vps/machines',data,record?'PUT':undefined);await loadHosts(saved.id);
+    if(location.hash==='#servers')render();
+  });
+  const form=$('#popup'), fields=form.elements, test=$('#test-connection'), feedback=$('#ssh-feedback');
+  function payload(source){
+    const raw=source instanceof FormData?Object.fromEntries(source):Object.fromEntries(new FormData(form));
+    const v=k=>(raw[k]||'').trim(),ssh=v('mode')==='ssh',address=v('mongo_host').replace(/^\[|\]$/g,'');
+    const mongoPort=Number(v('mongo_port')||27017);
+    const data={mode:v('mode'),name:v('name'),auto_name:!v('name'),votes:Number(raw.votes),priority:Number(raw.priority||0),port:Number(v('port')||22),user:v('user'),
+      ssh_auth:v('ssh_auth'),ssh_password:ssh&&v('ssh_auth')==='password'?(raw.ssh_password||null):'',identity:ssh&&v('ssh_auth')==='key'?v('identity'):'',
+      host:ssh?(v('host')||address):'127.0.0.1',mongo_endpoint:address?(address.includes(':')?'['+address+']':address)+':'+mongoPort:''};
+    if(!data.votes&&data.priority)throw new Error(vt('Votes = 0 yêu cầu ưu tiên bằng 0.','Votes = 0 requires priority 0.'));
+    if(ssh&&!data.host)throw new Error(vt('Nhập địa chỉ IP public hoặc địa chỉ SSH.','Enter the public IP or an SSH address.'));
+    if(ssh&&data.ssh_auth==='password'&&!data.ssh_password&&!record?.has_ssh_password)throw new Error(vt('Nhập mật khẩu SSH.','Enter the SSH password.'));
+    data.name=data.name||detected||(ssh?data.host:'Local');
+    return data;
+  }
+  let generation=0;
+  function update(){
+    generation++;verified=false;expected='';feedback.textContent='';test.textContent=vt('Kiểm tra kết nối','Test connection');
+    const ssh=fields.mode.value==='ssh';test.hidden=!ssh;
+    for(const name of ['user','port','ssh_auth','identity','ssh_password','host']){
+      const visible=ssh&&(name!=='identity'||fields.ssh_auth.value==='key')&&(name!=='ssh_password'||fields.ssh_auth.value==='password');
+      fields[name].disabled=!visible;fields[name].closest('label').hidden=!visible;
+    }
+    fields.votes.onchange=fields.votes.oninput=()=>{if(fields.votes.value==='0')fields.priority.value=0;fields.priority.readOnly=fields.votes.value==='0';};
+    form.querySelector('details').hidden=!ssh;
+  }
+  if(record){
+    const m=(record.mongo_endpoint||'').match(/^\[?([^\]]+?)\]?:(\d+)$/);
+    Object.entries({name:record.auto_name?'':record.name,mongo_host:m?m[1]:'',mongo_port:m?m[2]:27017,votes:record.votes,priority:record.priority,mode:record.mode,user:record.user,port:record.port,ssh_auth:record.ssh_auth||'key',identity:record.identity||'',host:m&&m[1]===record.host?'':record.host}).forEach(([k,v])=>{fields[k].value=v;});
+    if(!m&&record.mode==='ssh')fields.mongo_host.value=record.host;
+    if(record.has_ssh_password)fields.ssh_password.placeholder='••••••••';
+  }
+  $('#show-ssh-pw').onclick=async()=>{
+    const inp=fields.ssh_password,btn=$('#show-ssh-pw');
+    if(inp.type==='password'){
+      if(!inp.value&&record?.has_ssh_password){
+        btn.disabled=true;
+        try{const r=await api('vps/servers/'+encodeURIComponent(record.id)+'/reveal-password',{});inp.value=r.password||'';}
+        finally{btn.disabled=false;}
+      }
+      inp.type='text';btn.setAttribute('aria-pressed','true');
+    }else{inp.type='password';btn.setAttribute('aria-pressed','false');}
+  };
+  $('#fields').oninput=update;setupSshKeyDropzone(form);update();
+  // Trust on first use, like the MongoDB Manager: the host key is stored on the first successful connection.
+  async function connect(){
+    const data=payload(),id=generation;
+    let result=await api('vps/connection-test',{...data,expected});
+    if(result.fingerprint){expected=result.fingerprint;result=await api('vps/connection-test',{...data,expected});}
+    if(id!==generation)return false;
+    verified=true;detected=result.hostname||'';
+    feedback.textContent=result.user+' · sudo -n '+(result.sudo?'✓':'—')+' · '+expected;
+    return true;
+  }
+  test.onclick=async()=>{
+    test.disabled=true;feedback.textContent=vt('Đang kết nối…','Connecting…');
+    try{await connect();}catch(err){feedback.textContent=err.message;}finally{test.disabled=false;}
+  };
+  autoConnect=async()=>{if(!verified&&!await connect())throw new Error(vt('Thông tin kết nối đã đổi, thử lại.','Connection details changed, try again.'));};
+  form.closest('dialog').addEventListener('close',()=>{$('#fields').oninput=null;},{once:true});
+}

@@ -6,7 +6,8 @@ const TERM_TPL_KEY='vps-term-templates';
 
 function termWsUrl(machineId,cols,rows){
   const proto=location.protocol==='https:'?'wss:':'ws:';
-  return proto+'//'+location.host+'/api/vps/machines/'+encodeURIComponent(machineId)+'/terminal?cols='+cols+'&rows='+rows;
+  const wsTarget=window.zmWorkspaceHelper?window.zmWorkspaceHelper.getTarget():'';
+  return proto+'//'+location.host+'/api/vps/machines/'+encodeURIComponent(machineId)+'/terminal?cols='+cols+'&rows='+rows+(wsTarget?'&workspace_user='+encodeURIComponent(wsTarget):'');
 }
 
 function loadTermTemplates(){
@@ -313,16 +314,16 @@ async function terminalPage(view,path,rev){
       +'<div class="term-tabs" id="term-tabs"></div>'
       +'<div class="term-controls">'
         +'<select class="term-tpl-select" id="term-tpl-select" aria-label="Template"></select>'
-        +'<button type="button" class="button small" id="term-tpl-save" title="'+vt('Lưu hoặc cập nhật bố cục & vị trí các ô','Save or update current layout & pane positions')+'">'+vt('Lưu template','Save template')+'</button>'
-        +'<button type="button" class="button small" id="term-tpl-del" hidden title="'+vt('Xoá template đang chọn','Delete selected template')+'">'+vt('Xoá template','Delete')+'</button>'
-        +'<button type="button" class="button small term-link-toggle'+(linkedResize?' is-active':'')+'" id="term-link-resize" title="'+vt('Kéo cạnh sẽ tự đẩy/thu các ô sát cạnh (bấm để tắt kéo rời từng ô)','Linked edge resize: adjacent panes resize together (click for free independent resize)')+'">⛓ '+vt('Kéo dính','Linked')+'</button>'
-        +'<button type="button" class="button small" id="term-tile" title="'+vt('Xếp gọn các ô thành lưới đều','Auto-tile panes into equal grid')+'">'+vt('Xếp đều','Tile')+'</button>'
-        +'<button type="button" class="button small term-bcast-toggle" id="term-broadcast" title="'+vt('Gõ đồng bộ tới tất cả VPS trong tab','Broadcast keyboard input to all panes in tab')+'">Broadcast</button>'
-        +'<button type="button" class="button small" id="term-font-dn" title="Thu nhỏ chữ">A-</button>'
-        +'<button type="button" class="button small" id="term-font-up" title="Phóng to chữ">A+</button>'
-        +'<button type="button" class="button small" id="term-clear">'+vt('Xoá màn hình','Clear')+'</button>'
-        +'<button type="button" class="button small" id="term-reconnect">'+vt('Kết nối lại','Reconnect')+'</button>'
-        +'<button type="button" class="button small" id="term-fullscreen">'+vt('Toàn màn hình','Fullscreen')+'</button>'
+        +'<button type="button" class="button small term-icon-btn" id="term-tpl-save" title="'+vt('Lưu hoặc cập nhật template','Save or update template')+'">💾</button>'
+        +'<button type="button" class="button small term-icon-btn" id="term-tpl-del" data-tone="remove" hidden title="'+vt('Xoá template đang chọn','Delete selected template')+'">🗑</button>'
+        +'<button type="button" class="button small term-icon-btn term-link-toggle'+(linkedResize?' is-active':'')+'" id="term-link-resize" title="'+vt('Kéo dính các ô sát cạnh (bấm để tắt kéo rời)','Linked edge resize (click for free resize)')+'">⛓</button>'
+        +'<button type="button" class="button small term-icon-btn" id="term-tile" title="'+vt('Xếp đều các ô thành lưới','Auto-tile panes into grid')+'">⊞</button>'
+        +'<button type="button" class="button small term-bcast-toggle" id="term-broadcast" title="'+vt('Gõ đồng bộ tới tất cả VPS trong tab','Broadcast input to all panes')+'">Broadcast</button>'
+        +'<button type="button" class="button small term-icon-btn" id="term-font-dn" title="Thu nhỏ chữ">A-</button>'
+        +'<button type="button" class="button small term-icon-btn" id="term-font-up" title="Phóng to chữ">A+</button>'
+        +'<button type="button" class="button small term-icon-btn" id="term-clear" title="'+vt('Xoá màn hình','Clear')+'">⌫</button>'
+        +'<button type="button" class="button small term-icon-btn" id="term-reconnect" title="'+vt('Kết nối lại','Reconnect')+'">↻</button>'
+        +'<button type="button" class="button small term-icon-btn" id="term-fullscreen" title="'+vt('Toàn màn hình','Fullscreen')+'">⛶</button>'
       +'</div>'
     +'</div>'
     +'<div class="term-snippets">'+snippets.map(([label,cmd,kind])=>'<button type="button" class="term-chip" data-kind="'+kind+'" data-cmd="'+escapeHTML(cmd)+'">'+escapeHTML(label)+'</button>').join('')+'</div>'
@@ -571,14 +572,16 @@ async function terminalPage(view,path,rev){
   const serversById=new Map(servers.map(s=>[s.id,s]));
   function syncTemplatesUI(){
     const list=loadTermTemplates(),ws=getActiveWorkspace();
-    tplSelect.innerHTML='<option value="">'+vt('Template đã lưu ('+list.length+')','Saved templates ('+list.length+')')+'</option>';
+    tplSelect.innerHTML='<option value="">'+vt('Template ('+list.length+')','Templates ('+list.length+')')+'</option>';
     for(const t of list){
       const count=(t.panes||[]).length;
-      tplSelect.append(new Option(t.name+' ('+count+' VPS)',t.id));
+      tplSelect.append(new Option(t.name+' ('+count+')',t.id));
     }
     if(ws?.templateId&&list.some(t=>t.id===ws.templateId))tplSelect.value=ws.templateId;
     tplDel.hidden=!tplSelect.value;
-    tplSave.textContent=(ws?.templateId&&list.some(t=>t.id===ws.templateId))?vt('Cập nhật template','Update template'):vt('Lưu template','Save template');
+    const isUpdate=Boolean(ws?.templateId&&list.some(t=>t.id===ws.templateId));
+    tplSave.title=isUpdate?vt('Cập nhật template đang mở','Update current template'):vt('Lưu template mới','Save new template');
+    tplSave.classList.toggle('is-active',isUpdate);
   }
   tplSelect.onchange=()=>{
     const tid=tplSelect.value;

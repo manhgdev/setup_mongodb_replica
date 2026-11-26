@@ -56,9 +56,9 @@ async function previewVps(path,data){
           {device:'/dev/sdb1',fstype:'ext4',size:107373133824,used:1073741824,avail:106299392000,percent:'1%',mountpoint:'/data',protected:false}
         ]
       };
-      case machine+'/nginx':return {sites:[site],diagnostics:[],capabilities:{},php_sockets:[]};
+      case machine+'/nginx':return {sites:[site],diagnostics:[],capabilities:{},php_sockets:[],ssl_renewal:{enabled:true,method:'systemd',unit:'certbot.timer',cron:false,detail:'certbot.timer'}};
       case machine+'/nginx/web/detail':return {source:'server {\n    listen 443 ssl;\n    server_name '+domain+';\n    location / { proxy_pass http://127.0.0.1:3000; }\n}',editable:false,domains:[domain],diagnostics:[],history:[]};
-      case machine+'/nginx/web/ssl-status':return {served:{names:[domain],expires:'64 days'},timer:'active'};
+      case machine+'/nginx/web/ssl-status':return {served:{names:[domain],expires:'64 days'},timer:'active',cron:false,renewal:{enabled:true,method:'systemd',unit:'certbot.timer',cron:false,detail:'certbot.timer'}};
       case machine+'/nginx/web/logs':
       case machine+'/pm2':return [];
       case machine+'/jobs':return [{id:'sample',target:'web-demo',label:'Nginx',status:'succeeded',events:[{message:'nginx -t · OK'}]}];

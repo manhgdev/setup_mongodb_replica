@@ -1,6 +1,7 @@
 {
   "Web cơ bản": [
     "nginx",
+    "nginx-service",
     "curl",
     "git"
   ],
@@ -25,10 +26,18 @@
     "cron-service",
     "netcat-openbsd",
     "logrotate",
-    "ca-certificates",
     "gcc",
     "g++",
-    "make"
+    "make",
+    "timezone-vn",
+    "speedtest",
+    "bench-sh"
+  ],
+  "Bảo mật": [
+    "ufw",
+    "fail2ban",
+    "fail2ban-service",
+    "ca-certificates"
   ],
   "Python": [
     "python3",
@@ -37,6 +46,7 @@
     "python-env"
   ],
   "Node.js": [
+    "nvm",
     "node-lts",
     "bun",
     "yarn",
@@ -45,11 +55,17 @@
     "pm2-logrotate",
     "fast-cli"
   ],
+  "Go": [
+    "golang-go",
+    "go-backports"
+  ],
   "Media": [
     "ffmpeg",
     "libavcodec-extra",
     "aria2",
-    "yt-dlp-nightly"
+    "yt-dlp",
+    "yt-dlp-nightly",
+    "yt-nightly-timer"
   ],
   "Redis": [
     "redis-server",
@@ -64,6 +80,9 @@
     "certbot",
     "python3-certbot-nginx",
     "python3-certbot-dns-cloudflare",
+    "python3-certbot-apache",
+    "certbot-venv",
+    "certbot-snap",
     "certbot-timer",
     "openssl",
     "ca-certificates"

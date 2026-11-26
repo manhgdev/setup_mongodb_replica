@@ -151,6 +151,19 @@ class _MongoBackend:
         self.cipher = cipher
         self.client = client or MongoClient(uri, serverSelectionTimeoutMS=5000, connectTimeoutMS=5000)
         self.db = self.client[self.database_name]
+        self._cache_lock = threading.RLock()
+        self._all_cache = {}
+        self._item_cache = {}
+
+    def _invalidate(self, kind: str = None):
+        with self._cache_lock:
+            if kind is None:
+                self._all_cache.clear()
+                self._item_cache.clear()
+            else:
+                self._all_cache.pop(kind, None)
+                for k in [key for key in self._item_cache if key[0] == kind]:
+                    self._item_cache.pop(k, None)
 
     def close(self):
         try:
@@ -193,11 +206,22 @@ class _MongoBackend:
         record_id = record_id or uuid4().hex
         doc = self._prepare_doc(kind, value, record_id)
         self._col(kind).replace_one({"_id": record_id}, doc, upsert=True)
+        self._invalidate(kind)
         return dict(value, id=record_id)
 
     def all(self, kind):
-        docs = self._col(kind).find({})
-        return [self._decode_doc(d) for d in docs]
+        now = time.monotonic()
+        with self._cache_lock:
+            cached = self._all_cache.get(kind)
+            if cached and cached[0] > now:
+                return [dict(item) for item in cached[1]]
+        docs = [self._decode_doc(d) for d in self._col(kind).find({})]
+        with self._cache_lock:
+            self._all_cache[kind] = (time.monotonic() + 8.0, docs)
+            for item in docs:
+                if "id" in item:
+                    self._item_cache[(kind, item["id"])] = (time.monotonic() + 8.0, item)
+        return [dict(item) for item in docs]
 
     def save_many(self, records):
         from pymongo import ReplaceOne
@@ -212,13 +236,22 @@ class _MongoBackend:
         for kind, ops in grouped.items():
             if ops:
                 self._col(kind).bulk_write(ops, ordered=False)
+                self._invalidate(kind)
         return saved
 
     def get(self, kind, record_id):
+        now = time.monotonic()
+        with self._cache_lock:
+            cached = self._item_cache.get((kind, record_id))
+            if cached and cached[0] > now:
+                return dict(cached[1])
         doc = self._col(kind).find_one({"_id": record_id})
         if not doc:
             raise KeyError("Không tìm thấy hồ sơ hoặc tác vụ.")
-        return self._decode_doc(doc)
+        decoded = self._decode_doc(doc)
+        with self._cache_lock:
+            self._item_cache[(kind, record_id)] = (time.monotonic() + 8.0, decoded)
+        return dict(decoded)
 
     def delete(self, kind, record_id, expected=None):
         if expected is not None:
@@ -226,8 +259,10 @@ class _MongoBackend:
             if not doc or self._decode_doc(doc) != expected:
                 return False
         res = self._col(kind).delete_one({"_id": record_id})
+        self._invalidate(kind)
         if kind == "profiles":
             self.db[_collection_name("user-passwords:" + record_id)].drop()
+            self._invalidate("user-passwords:" + record_id)
         return bool(res.deleted_count)
 
     def update_fields(self, kind, record_id, changes, expected=None):
@@ -241,6 +276,7 @@ class _MongoBackend:
         current.update(changes)
         updated_doc = self._prepare_doc(kind, current, record_id)
         col.replace_one({"_id": record_id}, updated_doc, upsert=True)
+        self._invalidate(kind)
         return current
 
 

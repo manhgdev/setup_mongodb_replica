@@ -197,7 +197,7 @@ def discover_sites(root):
     version = subprocess.run(["nginx","-V"],capture_output=True,text=True,timeout=10).stderr
     capabilities = dict(http2="--with-http_v2_module" in version,http3="--with-http_v3_module" in version,
                         brotli="brotli" in version or bool(re.search(r"load_module [^;]*brotli_filter_module",dump.stdout)))
-    return dict(broken=broken,capabilities=capabilities,sites=sites, diagnostics=diagnostics, php_sockets=sorted(glob.glob("/run/php/*fpm.sock")))
+    return dict(broken=broken,capabilities=capabilities,sites=sites, diagnostics=diagnostics, php_sockets=sorted(glob.glob("/run/php/*fpm.sock")), ssl_renewal=certbot_renewal_status())
 
 
 def website_file(action, params, root):
@@ -205,7 +205,7 @@ def website_file(action, params, root):
     import hashlib
     import stat
     with (root / ".zm-vps.lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX if action in {"apply","lifecycle","external-certificate","renew-ssl"} else fcntl.LOCK_SH)
+        fcntl.flock(lock, fcntl.LOCK_EX if action in {"apply","lifecycle","external-certificate","renew-ssl","renew-test"} else fcntl.LOCK_SH)
         inventory = discover_sites(root)
         rows = [s for s in inventory["sites"] if s["file_id"] == params["file_id"]]
         if not rows:
@@ -228,6 +228,17 @@ def website_file(action, params, root):
             if ssl.cert_time_to_seconds(cert["notAfter"]) <= time.time():
                 raise ValueError("Chứng chỉ vẫn hết hạn sau khi chạy Certbot.")
             return {"certificate":name,"expires":cert["notAfter"]}
+        if action == "renew-test":
+            matches = [r for r in rows if r["domain"]==params.get("domain") and r["enabled"] and r["https"]]
+            names = {name for r in matches for name in r["renewal_names"]}
+            if not matches or not names:
+                raise ValueError("Cần site HTTPS đang bật và hồ sơ Certbot hợp lệ để thử gia hạn.")
+            if not shutil.which("certbot"):
+                raise ValueError("Cần cài Certbot trong Software Center trước.")
+            for name in sorted(names):
+                event("Certbot · Kiểm tra gia hạn · " + name)
+                command(["certbot","renew","--dry-run","--cert-name",name],timeout=600)
+            return {"domain":params.get("domain"),"renewal_test":"ok"}
         editable = (path.parent in [root / "conf.d", root / "sites-available"] and
                     all(w == ["server"] or w[0] == "upstream" for w, _ in nginx_blocks(old))
                     and all(row["enabled"] for row in rows))
@@ -302,9 +313,10 @@ def website_file(action, params, root):
         if action == "ssl-status":
             import ssl
             site = next((row for row in rows if row["domain"] == params.get("domain")),rows[0])
-            timer = command(["systemctl","is-active","certbot.timer"],False)
-            cron = Path("/etc/cron.d/certbot").is_file()
-            status = dict(timer=timer,cron=cron, served=None, error="")
+            renewal = certbot_renewal_status()
+            timer = "active" if renewal["unit"] else _systemctl_output(["is-active","certbot.timer"])
+            cron = renewal["cron"] or Path("/etc/cron.d/certbot").is_file()
+            status = dict(timer=timer,cron=cron, renewal=renewal, served=None, error="")
             tls = next((item.split()[0] for item in site["listeners"] if "ssl" in item.split()),None)
             if tls and site["primary"]:
                 endpoint = tls.rsplit(":",1)
@@ -429,7 +441,104 @@ def website_file(action, params, root):
             command(["nginx","-t"])
             command(["systemctl","reload","nginx"])
             raise
+        if action == "external-certificate":
+            try:
+                renewal = enable_certbot_renewal()
+                event("Certbot · Tự gia hạn · " + renewal["detail"])
+            except ValueError:
+                pass
         return dict(file=str(path),backup=backup.name)
+
+
+CERTBOT_TIMERS = ("certbot.timer", "certbot-renew.timer", "snap.certbot.renew.timer")
+
+
+def _systemctl_output(args):
+    try:
+        return command(["systemctl", *args], False)
+    except FileNotFoundError:
+        return ""
+
+
+def _timer_stagger(unit):
+    delay = _systemctl_output(["show", "-p", "RandomizedDelaySec", "--value", unit])
+    if delay in {"", "0", "0s"} or not re.fullmatch(r"\d+(?:\.\d+)?(?:[a-zA-Z]+)?(?:\s+\d+(?:[a-zA-Z]+)?)*", delay):
+        return ""
+    return delay
+
+
+def certbot_renewal_status():
+    """Return current Certbot automatic renewal status (systemd timer or cron)."""
+    for unit in CERTBOT_TIMERS:
+        if _systemctl_output(["is-active", unit]) == "active":
+            stagger = _timer_stagger(unit)
+            detail = f"{unit} · giãn cách {stagger}" if stagger else unit
+            return {"enabled": True, "method": "systemd", "unit": unit, "cron": False, "stagger": stagger, "detail": detail}
+    managed_cron = Path("/etc/cron.d/zm-certbot-renew")
+    if managed_cron.is_file():
+        return {"enabled": True, "method": "cron", "unit": "", "cron": True, "stagger": "ngẫu nhiên", "detail": str(managed_cron)}
+    system_cron = Path("/etc/cron.d/certbot")
+    if system_cron.is_file():
+        try:
+            text = system_cron.read_text()
+        except OSError:
+            text = ""
+        if "/run/systemd/system" not in text or not Path("/run/systemd/system").exists():
+            return {"enabled": True, "method": "cron", "unit": "", "cron": True, "stagger": "", "detail": str(system_cron)}
+    return {"enabled": False, "method": "", "unit": "", "cron": False, "stagger": "", "detail": ""}
+
+
+def enable_certbot_renewal():
+    """Enable Certbot automatic renewal with per-VPS randomized timing."""
+    import secrets
+    status = certbot_renewal_status()
+    if status["enabled"]:
+        if status["method"] == "systemd" and not status["stagger"]:
+            dropin = Path(f"/etc/systemd/system/{status['unit']}.d/zm-stagger.conf")
+            if not dropin.is_dir():
+                dropin.parent.mkdir(parents=True, exist_ok=True)
+                atomic_write(dropin, "[Timer]\nRandomizedDelaySec=6h\n")
+                os.chmod(dropin, 0o644)
+                _systemctl_output(["daemon-reload"])
+                _systemctl_output(["restart", status["unit"]])
+                status["stagger"] = _timer_stagger(status["unit"]) or "6h"
+                status["detail"] = f"{status['unit']} · giãn cách {status['stagger']}"
+        return status
+    for unit in CERTBOT_TIMERS:
+        if _systemctl_output(["cat", unit]):
+            if not _timer_stagger(unit):
+                dropin = Path(f"/etc/systemd/system/{unit}.d/zm-stagger.conf")
+                if not dropin.is_dir():
+                    dropin.parent.mkdir(parents=True, exist_ok=True)
+                    atomic_write(dropin, "[Timer]\nRandomizedDelaySec=6h\n")
+                    os.chmod(dropin, 0o644)
+                    _systemctl_output(["daemon-reload"])
+            command(["systemctl", "enable", "--now", unit])
+            if _systemctl_output(["is-active", unit]) == "active":
+                stagger = _timer_stagger(unit)
+                detail = f"{unit} · giãn cách {stagger}" if stagger else unit
+                return {"enabled": True, "method": "systemd", "unit": unit, "cron": False, "stagger": stagger, "detail": detail}
+    certbot_bin = shutil.which("certbot")
+    if not certbot_bin:
+        venv_bin = Path("/opt/certbot/bin/certbot")
+        if venv_bin.is_file():
+            certbot_bin = str(venv_bin)
+    if not certbot_bin:
+        raise ValueError("Cần cài Certbot trong Software Center trước khi bật tự gia hạn.")
+    cron_path = Path("/etc/cron.d/zm-certbot-renew")
+    if cron_path.is_dir():
+        return {"enabled": True, "method": "cron", "unit": "", "cron": True, "stagger": "ngẫu nhiên", "detail": str(cron_path)}
+    minute = secrets.randbelow(60)
+    hour = secrets.randbelow(12)
+    cron_path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write(
+        cron_path,
+        "SHELL=/bin/sh\n"
+        "PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin\n"
+        f'{minute} {hour},{hour + 12} * * * root {sys.executable} -c "import random,time;time.sleep(random.randrange(900))" && {certbot_bin} renew --quiet --deploy-hook "nginx -t && systemctl reload nginx"\n',
+    )
+    os.chmod(cron_path, 0o644)
+    return {"enabled": True, "method": "cron", "unit": "", "cron": True, "stagger": f"{minute:02d} {hour},{hour + 12}", "detail": f"{cron_path} ({minute:02d} {hour},{hour + 12})"}
 
 
 def atomic_write(path, content):
@@ -709,11 +818,7 @@ def nginx_site(domain, port, operation="save", params=None):
         elif operation == "renew-enable":
             if not old or "ssl_certificate " not in old:
                 raise ValueError("Site chưa cấu hình SSL.")
-            cron = Path("/etc/cron.d/certbot")
-            if not cron.is_file() or "/run/systemd/system" in cron.read_text():
-                command(["systemctl","enable","--now","certbot.timer"])
-                command(["systemctl","is-active","certbot.timer"])
-            return {"domain":domain,"renewal":True}
+            return {"domain": domain, "renewal": True, **enable_certbot_renewal()}
         elif operation == "renew-test":
             if source == disabled or "ssl_certificate " not in old:
                 raise ValueError("Cần site HTTPS đang bật để thử gia hạn.")
@@ -776,6 +881,12 @@ def nginx_site(domain, port, operation="save", params=None):
                 command(["nginx", "-t"])
                 command(["systemctl", "reload", "nginx"], check=False)
                 raise
+        if operation == "certificate":
+            try:
+                renewal = enable_certbot_renewal()
+                event("Certbot · Tự gia hạn · " + renewal["detail"])
+            except ValueError:
+                pass
     if operation not in {"save", "create", "edit"} or destination == disabled:
         return {"domain": domain, "operation": operation, "enabled": path.exists()}
     try:
@@ -960,7 +1071,12 @@ UNINSTALL_RECIPES={
     "docker-service":("systemctl disable --now docker.service docker.socket",False),
     "redis-server-service":("systemctl disable --now redis-server.service",False),
     "vnstat-service":("systemctl disable --now vnstat.service",False),
+    "fail2ban-service":("systemctl disable --now fail2ban.service",False),
+    "nginx-service":("systemctl disable --now nginx.service",False),
     "cron-service":("systemctl disable --now cron.service",False),
+    "timezone-vn":("timedatectl set-timezone UTC",False),
+    "certbot-venv":("rm -rf /opt/certbot /usr/local/bin/certbot",False),
+    "certbot-snap":("snap remove certbot",False),
     "certbot-timer":("systemctl disable --now certbot.timer",False),
     "yt-nightly-timer":("systemctl disable --now zm-yt-nightly.timer",False),
 }
@@ -1075,10 +1191,163 @@ def native_plan(name, apt, dnf):
     return {"target":target,"summary":summary}, args
 
 
+PROTECTED_UNIT_EXACT = {
+    "ssh.service", "sshd.service", "dbus.service", "dbus-broker.service",
+    "NetworkManager.service", "polkit.service", "rsyslog.service", "syslog.service",
+    "blk-availability.service", "finalrd.service", "rc-local.service",
+}
+PROTECTED_UNIT_PREFIXES = (
+    "systemd-", "network", "netplan", "udev", "getty@", "serial-getty@",
+    "user@", "cloud-init", "waagent", "oracle-cloud-agent",
+    "plymouth", "console-", "kmod", "lvm2", "multipathd", "dm-event",
+    "apt-daily", "dpkg-db-backup", "e2scrub", "fstrim", "man-db", "motd-news",
+    "emergency", "rescue", "ua-timer", "ubuntu-advantage",
+)
+
+
+APP_UNIT_EXACT = {
+    "nginx.service", "mongod.service", "redis-server.service", "redis.service",
+    "docker.service", "containerd.service", "fail2ban.service", "vnstat.service",
+    "certbot.timer", "certbot.service", "zm-yt-nightly.timer", "zm-yt-nightly.service",
+    "mongodb-manager.service", "vps-manager.service",
+}
+APP_UNIT_PREFIXES = ("pm2-",)
+
+
+def _is_protected_unit(unit):
+    return unit in PROTECTED_UNIT_EXACT or unit.startswith(PROTECTED_UNIT_PREFIXES)
+
+
+def _unit_category(unit):
+    if _is_protected_unit(unit):
+        return "system"
+    if unit in APP_UNIT_EXACT or unit.startswith(APP_UNIT_PREFIXES):
+        return "app"
+    return "system"
+
+
+def _run_systemctl(args):
+    proc = subprocess.run(
+        ["systemctl", *args],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    if proc.returncode and proc.stderr.strip():
+        raise ValueError(proc.stderr.strip().splitlines()[0][:200])
+    return proc.stdout
+
+
+def service_query():
+    if not shutil.which("systemctl"):
+        raise ValueError("VPS không có systemd (systemctl).")
+    files_out = _run_systemctl(["list-unit-files", "--plain", "--no-legend", "--no-pager"])
+    units_out = _run_systemctl(["list-units", "--all", "--plain", "--no-legend", "--no-pager"])
+    records = {}
+    for raw in files_out.splitlines():
+        parts = raw.split()
+        if len(parts) < 2:
+            continue
+        name, state = parts[0], parts[1]
+        if not re.fullmatch(r"[A-Za-z0-9_.@-]+\.(service|timer)", name) or "@." in name:
+            continue
+        records[name] = {
+            "name": name,
+            "kind": "timer" if name.endswith(".timer") else "service",
+            "category": _unit_category(name),
+            "enabled": state,
+            "active": "inactive",
+            "sub": "dead",
+            "description": "",
+            "pid": None,
+            "memory_bytes": None,
+            "protected": _is_protected_unit(name),
+        }
+    for raw in units_out.splitlines():
+        line = raw.lstrip("● ").strip()
+        parts = line.split(None, 4)
+        if len(parts) < 4:
+            continue
+        name, _load, active, sub = parts[:4]
+        desc = parts[4] if len(parts) > 4 else ""
+        if not re.fullmatch(r"[A-Za-z0-9_.@-]+\.(service|timer)", name) or "@." in name:
+            continue
+        entry = records.setdefault(name, {
+            "name": name,
+            "kind": "timer" if name.endswith(".timer") else "service",
+            "category": _unit_category(name),
+            "enabled": "transient",
+            "active": active,
+            "sub": sub,
+            "description": desc,
+            "pid": None,
+            "memory_bytes": None,
+            "protected": _is_protected_unit(name),
+        })
+        entry["active"] = active
+        entry["sub"] = sub
+        if desc:
+            entry["description"] = desc
+    active_names = [u["name"] for u in records.values() if u["active"] == "active"][:80]
+    if active_names:
+        show_out = _run_systemctl(["show", *active_names, "--property=Id,MainPID,MemoryCurrent", "--no-pager"])
+        for block in show_out.strip().split("\n\n"):
+            props = {}
+            for line in block.splitlines():
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    props[k] = v
+            uid = props.get("Id", "")
+            if uid not in records:
+                continue
+            pid_val = props.get("MainPID", "")
+            if pid_val.isdigit() and int(pid_val) > 0:
+                records[uid]["pid"] = int(pid_val)
+            mem_val = props.get("MemoryCurrent", "")
+            if mem_val.isdigit():
+                mem = int(mem_val)
+                if 0 <= mem < (1 << 60):
+                    records[uid]["memory_bytes"] = mem
+    items = sorted(
+        records.values(),
+        key=lambda r: (
+            0 if r["category"] == "app" else 1,
+            0 if r["active"] == "active" else 1 if r["active"] == "failed" else 2,
+            -(r["memory_bytes"] or 0),
+            r["name"],
+        ),
+    )
+    return {"items": items}
+
+
+def service_control(unit, operation):
+    if not shutil.which("systemctl"):
+        raise ValueError("VPS không có systemd (systemctl).")
+    if not re.fullmatch(r"[A-Za-z0-9_.@-]+\.(service|timer)", unit) or "@." in unit:
+        raise ValueError("Tên dịch vụ không hợp lệ.")
+    if operation not in {"start", "stop", "restart", "enable", "disable"}:
+        raise ValueError("Thao tác dịch vụ không hợp lệ.")
+    if operation in {"stop", "disable"} and _is_protected_unit(unit):
+        raise ValueError("Không thể tắt hoặc vô hiệu hóa dịch vụ hệ thống quan trọng: " + unit)
+    event(f"systemctl {operation} {unit}")
+    if operation == "enable":
+        command(["systemctl", "enable", "--now", unit], timeout=60)
+    elif operation == "disable":
+        command(["systemctl", "disable", "--now", unit], timeout=60)
+    else:
+        command(["systemctl", operation, unit], timeout=60)
+    return {"unit": unit, "operation": operation}
+
+
 def execute(action, p):
     apt = shutil.which("apt-get")
     dnf = shutil.which("dnf")
     packages = p["catalog"]
+    if action == "service-query":
+        return service_query()
+    if action == "service-control":
+        return service_control(p.get("name", ""), p.get("operation", ""))
     if action == "package-query":
         return package_query(p["scope"],p["query"],p["offset"],apt,dnf,p.get("limit",30))
     if action in {"package-plan","native-install"}:
@@ -1242,7 +1511,7 @@ def execute(action, p):
                 path.symlink_to(record["target"])
                 raise
             return {"removed":record["path"],"backup":str(backup/path.name)}
-    if action in {"detail","logs","apply","diff","check","lifecycle","ssl-status","external-certificate","renew-ssl"}:
+    if action in {"detail","logs","apply","diff","check","lifecycle","ssl-status","external-certificate","renew-ssl","renew-test"}:
         return website_file(action,p,Path("/etc/nginx"))
     if action == "inventory":
         return discover_sites(Path("/etc/nginx"))
@@ -1267,6 +1536,15 @@ def execute(action, p):
         command(["nginx", "-t"])
         command(["systemctl", "reload", "nginx"])
         return {"reloaded": True}
+    if action == "ssl-renew-enable":
+        event("Bật tự động gia hạn SSL…")
+        return {"renewal": True, **enable_certbot_renewal()}
+    if action == "ssl-renew-test":
+        if not shutil.which("certbot"):
+            raise ValueError("Cần cài Certbot trong Software Center trước.")
+        event("Certbot · Kiểm tra gia hạn toàn bộ chứng chỉ…")
+        command(["certbot", "renew", "--dry-run"], timeout=600)
+        return {"renewal_test": "ok"}
     if action == "nginx-export":
         root = Path("/etc/nginx")
         inv = discover_sites(root)

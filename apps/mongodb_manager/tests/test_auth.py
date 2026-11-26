@@ -183,3 +183,94 @@ def test_recovery_rotates_code_and_invalidates_session(tmp_path):
         assert api.post('/api/auth/recover', json=body).status_code == 403
         assert api.post('/api/auth/login', json=original).status_code == 401
         assert api.post('/api/auth/login', json=dict(original,password='new-password')).status_code == 200
+
+
+def test_user_registration_and_toggle(directory):
+    with client_for(directory) as user_api, client_for(directory) as admin_api:
+        # Public user registration creates a 'user' role with recovery code
+        reg = user_api.post('/api/auth/register', json={'username': 'alice', 'password': 'alice-password'})
+        assert reg.status_code == 200
+        body = reg.json()
+        assert body['authenticated'] and body['role'] == 'user' and body['recovery_code']
+        user_api.headers['X-CSRF-Token'] = body['csrf']
+        assert user_api.get('/api/users').status_code == 403
+
+        # Duplicate username (case-insensitive) is rejected
+        assert user_api.post('/api/auth/register', json={'username': 'Alice', 'password': 'alice-password'}).status_code == 409
+
+        # User with recovery PIN can reset password automatically
+        pin_reg = user_api.post('/api/auth/register', json={'username': 'pinuser', 'password': 'old-password', 'recovery_pin': '246810'})
+        assert pin_reg.status_code == 200
+        assert user_api.post('/api/auth/recover', json={'username': 'pinuser', 'recovery_code': '246810', 'password': 'new-password'}).status_code == 200
+        assert user_api.post('/api/auth/login', json={'username': 'pinuser', 'password': 'new-password'}).status_code == 200
+
+        # Admin disables self-registration
+        login(admin_api)
+        assert admin_api.post('/api/auth/settings', json={'allow_registration': False}).status_code == 200
+        assert user_api.post('/api/auth/register', json={'username': 'bob', 'password': 'bob-password'}).status_code == 403
+
+
+def test_rbac_manager_and_admin_permissions(directory):
+    with client_for(directory) as admin_api, client_for(directory) as mgr_api, client_for(directory) as user_api:
+        login(admin_api)
+        mgr = admin_api.post('/api/users', json={'username': 'mod1', 'password': 'mod1-password', 'role': 'manager'})
+        assert mgr.status_code == 200 and mgr.json()['user']['role'] == 'manager'
+        mgr_id = mgr.json()['user']['id']
+
+        # Manager logs in
+        m_login = mgr_api.post('/api/auth/login', json={'username': 'mod1', 'password': 'mod1-password'})
+        assert m_login.status_code == 200
+        mgr_api.headers['X-CSRF-Token'] = m_login.json()['csrf']
+
+        # Manager can create 'user', cannot create 'manager' or 'admin'
+        assert mgr_api.post('/api/users', json={'username': 'u1', 'password': 'u1-password', 'role': 'manager'}).status_code == 403
+        u1 = mgr_api.post('/api/users', json={'username': 'u1', 'password': 'u1-password', 'role': 'user'})
+        assert u1.status_code == 200
+        u1_id = u1.json()['user']['id']
+
+        # Manager cannot lock/delete admin, can lock/unlock user
+        admin_id = admin_api.get('/api/auth/status').json()['user_id']
+        assert mgr_api.patch(f'/api/users/{admin_id}', json={'active': False}).status_code == 403
+        assert mgr_api.patch(f'/api/users/{u1_id}', json={'active': False}).status_code == 200
+        assert user_api.post('/api/auth/login', json={'username': 'u1', 'password': 'u1-password'}).status_code == 401
+        assert mgr_api.patch(f'/api/users/{u1_id}', json={'active': True}).status_code == 200
+        assert user_api.post('/api/auth/login', json={'username': 'u1', 'password': 'u1-password'}).status_code == 200
+
+        # Last active admin cannot lock or demote self
+        assert admin_api.patch(f'/api/users/{admin_id}', json={'active': False}).status_code == 422
+        assert admin_api.patch(f'/api/users/{admin_id}', json={'role': 'user'}).status_code == 422
+
+        # Manager can delete user, cannot delete self or admin
+        assert mgr_api.delete(f'/api/users/{mgr_id}').status_code == 422
+        assert mgr_api.delete(f'/api/users/{u1_id}?delete_data=true').status_code == 200
+
+
+def test_workspace_isolation_and_cross_access(directory):
+    with client_for(directory) as admin_api, client_for(directory) as alice_api, client_for(directory) as bob_api:
+        login(admin_api)
+        admin_api.post('/api/machines', json={'name': 'admin-local', 'mode': 'local'})
+        mgr = admin_api.post('/api/users', json={'username': 'mgr', 'password': 'mgr-password', 'role': 'manager'}).json()['user']
+
+        r_a = alice_api.post('/api/auth/register', json={'username': 'alice', 'password': 'alice-password'}).json()
+        alice_api.headers['X-CSRF-Token'] = r_a['csrf']
+        alice_api.post('/api/machines', json={'name': 'alice-local', 'mode': 'local'})
+
+        r_b = bob_api.post('/api/auth/register', json={'username': 'bob', 'password': 'bob-password'}).json()
+        bob_api.headers['X-CSRF-Token'] = r_b['csrf']
+
+        # Bob only sees his own empty workspace, not Alice's or Admin's
+        assert bob_api.get('/api/state').json()['machines'] == []
+        # Bob cannot access Alice's workspace
+        assert bob_api.get('/api/state', headers={'X-Workspace-User': r_a['user_id']}).status_code == 403
+
+        # Admin can inspect Alice's workspace via X-Workspace-User
+        alice_machines = admin_api.get('/api/state', headers={'X-Workspace-User': r_a['user_id']}).json()['machines']
+        assert [m['name'] for m in alice_machines] == ['alice-local']
+
+        # Manager can inspect Alice's workspace, but NOT Admin's workspace
+        with client_for(directory) as mgr_api:
+            m_login = mgr_api.post('/api/auth/login', json={'username': 'mgr', 'password': 'mgr-password'}).json()
+            mgr_api.headers['X-CSRF-Token'] = m_login['csrf']
+            assert mgr_api.get('/api/state', headers={'X-Workspace-User': r_a['user_id']}).status_code == 200
+            admin_id = admin_api.get('/api/auth/status').json()['user_id']
+            assert mgr_api.get('/api/state', headers={'X-Workspace-User': admin_id}).status_code == 403

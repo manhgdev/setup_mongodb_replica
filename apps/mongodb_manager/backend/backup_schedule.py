@@ -7,6 +7,7 @@ from croniter import croniter
 from pydantic import BaseModel, ConfigDict, Field
 
 from shared.manager_core.job_slots import Busy
+from shared.manager_core.workspaces import use_store
 from .operations import validate_params
 
 KIND = "backup-schedules"
@@ -31,9 +32,11 @@ def next_run(expression, current):
 
 
 class BackupScheduler:
-    def __init__(self, store, dispatch):
+    def __init__(self, store, dispatch, workspaces=None, auth=None):
         self.store = store
         self.dispatch = dispatch
+        self.workspaces = workspaces
+        self.auth = auth
         self.settings_lock = threading.Lock()
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self.run, name="backup-scheduler", daemon=True)
@@ -63,19 +66,37 @@ class BackupScheduler:
 
     def tick(self, current):
         with self.settings_lock:
-            due = sorted((s for s in self.store.all(KIND) if s["enabled"] and
-                          datetime.fromisoformat(s["next_run"]) <= current), key=lambda s: s["next_run"])
-            for schedule in due:
-                try:
-                    profile = self.store.get("profiles", schedule["id"])
-                    machine = self.store.get("machines", schedule["machine_id"])
-                except KeyError:
-                    machine = None
-                if not machine or machine.get("profile_id") != schedule["id"]:
-                    self.store.update_fields(KIND, schedule["id"], {"enabled": False, "next_run": None})
-                    continue
-                schedule["next_run"] = next_run(schedule["cron"], current)
-                try:
-                    self.dispatch(schedule, profile, machine)
-                except Busy:
-                    continue  # Stored due time stays unchanged until this host is available.
+            if self.workspaces and self.auth:
+                ws_ids = ["default"]
+                seen = {"default"}
+                for user in self.auth.users():
+                    ws_id = user.get("workspace_id") or "default"
+                    if ws_id not in seen:
+                        seen.add(ws_id)
+                        ws_ids.append(ws_id)
+                for ws_id in ws_ids:
+                    ws_store = self.workspaces.get_store(ws_id)
+                    with use_store(ws_store, ws_id):
+                        self._tick_store(ws_store, current, ws_id)
+            else:
+                self._tick_store(self.store, current, "default")
+
+    def _tick_store(self, store, current, ws_id):
+        due = sorted((s for s in store.all(KIND) if s["enabled"] and
+                      datetime.fromisoformat(s["next_run"]) <= current), key=lambda s: s["next_run"])
+        for schedule in due:
+            try:
+                profile = store.get("profiles", schedule["id"])
+                machine = store.get("machines", schedule["machine_id"])
+            except KeyError:
+                machine = None
+            if not machine or machine.get("profile_id") != schedule["id"]:
+                store.update_fields(KIND, schedule["id"], {"enabled": False, "next_run": None})
+                continue
+            schedule["next_run"] = next_run(schedule["cron"], current)
+            try:
+                self.dispatch(schedule, profile, machine, store, ws_id)
+            except TypeError:
+                self.dispatch(schedule, profile, machine)
+            except Busy:
+                continue  # Stored due time stays unchanged until this host is available.

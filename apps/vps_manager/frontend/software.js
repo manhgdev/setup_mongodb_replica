@@ -1,21 +1,258 @@
 const softwareDrafts=new Map();
+const packagePages=new Map();
+const VALID_SC_TABS=new Set(['kits','services','installed','repository']);
+
+function getSoftwareTab(host){
+  if(packagePages.has(host))return packagePages.get(host);
+  let tab='kits';
+  try{const saved=localStorage.getItem('vps-sc-tab:'+host);if(VALID_SC_TABS.has(saved))tab=saved;}catch{}
+  packagePages.set(host,tab);
+  return tab;
+}
+
+function setSoftwareTab(host,tab){
+  const next=VALID_SC_TABS.has(tab)?tab:'kits';
+  packagePages.set(host,next);
+  try{localStorage.setItem('vps-sc-tab:'+host,next);}catch{}
+}
+
+function bindSoftwareTabs(view,host){
+  for(const btn of view.querySelectorAll('[data-sc-tab]'))btn.onclick=()=>{setSoftwareTab(host,btn.dataset.scTab);render();};
+}
+
+function softwareToolbarHtml(activeTab,tr,extraHtml=''){
+  const tabBtn=(id,label)=>`<button type="button" data-sc-tab="${id}" aria-pressed="${activeTab===id}">${label}</button>`;
+  return `<header class="sc-toolbar">
+    <div class="sc-modes" role="tablist" aria-label="Software Center">
+      ${tabBtn('kits',tr('Bộ cài của tôi','My kits'))}
+      ${tabBtn('services',tr('Dịch vụ','Services'))}
+      ${tabBtn('installed',tr('Gói hệ điều hành','System packages'))}
+      ${tabBtn('repository',tr('Kho phần mềm','Repository'))}
+    </div>
+    ${extraHtml}
+    <button type="button" class="button small" data-tone="configure" id="pkg-maintain">${tr('Bảo trì gói','Package maintenance')}</button>
+  </header>`;
+}
+
+function bindPackageMaintenance(){
+  const btn=$('#pkg-maintain');
+  if(!btn)return;
+  btn.onclick=()=>{
+    const host=$('#hosts').selectedOptions[0].textContent;
+    modal('Bảo trì gói','<p>'+escapeHTML(host)+'</p><label class="field">Thao tác<select name="task"><option value="update-index">Cập nhật danh mục gói</option><option value="upgrade-packages">Nâng cấp các gói hệ thống</option><option value="refresh-ca">Làm mới kho chứng chỉ CA</option><option value="repair-ca">Cài lại OpenSSL và chứng chỉ CA</option></select></label>',form=>submit('maintain',{operation:form.get('task')}));
+  };
+}
+
+function servicesView(view,path,host,tr){
+  view.innerHTML=`<article class="sc-workbench">${softwareToolbarHtml('services',tr)}
+    <section class="vps-box" style="border:0;border-radius:0 0 12px 12px">
+      <div class="vps-search">
+        <input type="search" id="svc-search" maxlength="100" placeholder="${tr('Tìm tên hoặc mô tả dịch vụ…','Filter by service name or description…')}">
+        <select id="svc-filter" aria-label="${tr('Trạng thái','Status')}">
+          <option value="">${tr('Tất cả dịch vụ','All services')}</option>
+          <option value="active">${tr('Đang chạy','Running')}</option>
+          <option value="enabled">${tr('Tự khởi động (enabled)','Enabled at boot')}</option>
+          <option value="inactive">${tr('Đã dừng','Stopped')}</option>
+          <option value="failed">${tr('Lỗi (failed)','Failed')}</option>
+        </select>
+        <label class="svc-check"><input type="checkbox" id="svc-sys"> ${tr('Hiện dịch vụ khác','Show other services')}</label>
+        <button type="button" class="button small" data-tone="info" id="svc-refresh" style="margin-left:auto">${tr('Làm mới','Refresh')}</button>
+      </div>
+      <div id="svc-summary" class="svc-summary"></div>
+      <div class="table-wrap"><table class="svc-table"><thead><tr>
+        <th>${tr('Dịch vụ','Service')}</th>
+        <th>${tr('Trạng thái','State')}</th>
+        <th>${tr('Khởi động','Boot')}</th>
+        <th>${tr('RAM / PID','RAM / PID')}</th>
+        <th>${tr('Thao tác','Actions')}</th>
+      </tr></thead><tbody id="svc-body"></tbody></table></div>
+    </section></article>`;
+  bindSoftwareTabs(view,host);
+  bindPackageMaintenance();
+  const body=$('#svc-body'),summary=$('#svc-summary'),search=$('#svc-search'),filter=$('#svc-filter'),showSys=$('#svc-sys');
+  try{
+    const saved=JSON.parse(localStorage.getItem('vps-sc-svc:'+host)||'{}');
+    if(typeof saved.search==='string')search.value=saved.search;
+    if(typeof saved.filter==='string')filter.value=saved.filter;
+    if(typeof saved.showSys==='boolean')showSys.checked=saved.showSys;
+  }catch{}
+  let items=[];
+  const fmtMem=b=>b==null?'—':b>=1073741824?(b/1073741824).toFixed(2)+' GiB':(b/1048576).toFixed(1)+' MiB';
+  function drawServices(){
+    try{localStorage.setItem('vps-sc-svc:'+host,JSON.stringify({search:search.value,filter:filter.value,showSys:showSys.checked}));}catch{}
+    const q=search.value.trim().toLowerCase(),f=filter.value,sys=showSys.checked;
+    const pool=sys?items:items.filter(s=>(s.category?s.category==='app':!s.protected));
+    const filtered=pool.filter(s=>{
+      if(f==='active'&&s.active!=='active')return false;
+      if(f==='inactive'&&s.active==='active')return false;
+      if(f==='failed'&&s.active!=='failed')return false;
+      if(f==='enabled'&&s.enabled!=='enabled')return false;
+      return !q||(s.name+' '+(s.description||'')).toLowerCase().includes(q);
+    });
+    const activeCount=pool.filter(s=>s.active==='active').length;
+    const enabledCount=pool.filter(s=>s.enabled==='enabled').length;
+    summary.textContent=`${activeCount} ${tr('đang chạy','running')} · ${enabledCount} ${tr('tự khởi động','enabled')} · ${filtered.length}/${pool.length} ${tr('hiển thị','shown')}`;
+    body.replaceChildren();
+    if(!filtered.length){
+      body.innerHTML=`<tr><td colspan="5">${escapeHTML(tr('Không có dịch vụ phù hợp.','No matching services.'))}</td></tr>`;
+      return;
+    }
+    for(const s of filtered){
+      const trEl=document.createElement('tr');
+      const stateCls=s.active==='active'?'success':s.active==='failed'?'error':'';
+      const bootCls=s.enabled==='enabled'?'blue':s.enabled==='masked'?'warn':'';
+      const badges=(s.kind==='timer'?' <span class="badge">timer</span>':'')+(s.protected?' <span class="badge warn">'+tr('Hệ thống','System')+'</span>':'');
+      trEl.innerHTML=`<td><strong>${escapeHTML(s.name)}</strong>${badges}${s.description?'<br><small style="color:#56685c">'+escapeHTML(s.description)+'</small>':''}</td>
+        <td><span class="badge ${stateCls}">${escapeHTML(s.active)} · ${escapeHTML(s.sub)}</span></td>
+        <td><span class="badge ${bootCls}">${escapeHTML(s.enabled)}</span></td>
+        <td><code>${escapeHTML(fmtMem(s.memory_bytes))}</code>${s.pid?'<br><small>PID '+escapeHTML(String(s.pid))+'</small>':''}</td>
+        <td><div class="actions"></div></td>`;
+      const act=trEl.querySelector('.actions');
+      const addAct=(label,op,tone)=>{
+        const b=document.createElement('button');b.type='button';b.className='button small';b.dataset.tone=tone;b.textContent=label;
+        b.onclick=()=>modal(tr('Quản lý dịch vụ','Service control'),
+          `<p><strong>${escapeHTML(s.name)}</strong> · ${escapeHTML(label)}</p><p>${escapeHTML(tr('Thực hiện lệnh systemctl trên VPS đang chọn?','Run systemctl on the selected server?'))}</p>`,
+          ()=>submit('service-control',{name:s.name,operation:op}));
+        act.append(b);
+      };
+      if(s.active==='active'){
+        addAct(tr('Khởi động lại','Restart'),'restart','configure');
+        if(!s.protected)addAct(tr('Dừng','Stop'),'stop','remove');
+      }else{
+        addAct(tr('Chạy','Start'),'start','create');
+      }
+      if(s.enabled==='enabled'){
+        if(!s.protected)addAct(tr('Tắt tự chạy','Disable'),'disable','warning');
+      }else if(s.enabled==='disabled'){
+        addAct(tr('Bật tự chạy','Enable'),'enable','info');
+      }
+      body.append(trEl);
+    }
+  }
+  async function loadServices(){
+    body.innerHTML=`<tr><td colspan="5"><span class="spinner"></span> ${escapeHTML(tr('Đang đọc danh sách dịch vụ…','Reading services…'))}</td></tr>`;
+    summary.textContent='';
+    try{
+      const data=await api(path+'/services');
+      if(!body.isConnected)return;
+      items=data.items||[];
+      drawServices();
+    }catch(err){
+      if(body.isConnected)body.innerHTML=`<tr><td colspan="5">${escapeHTML(err.message)}</td></tr>`;
+    }
+  }
+  search.oninput=drawServices;
+  filter.onchange=drawServices;
+  showSys.onchange=drawServices;
+  $('#svc-refresh').onclick=loadServices;
+  loadServices();
+  return null;
+}
+
+function softwarePage(view,path,host){
+  const page=getSoftwareTab(host);
+  if(page==='kits')return view;
+  const tr=(vi,en)=>vpsEnglish?en:vi;
+  if(page==='services')return servicesView(view,path,host,tr);
+  const remote=page==='repository';
+  view.innerHTML=`<article class="sc-workbench">${softwareToolbarHtml(page,tr)}
+    <section class="vps-box" style="border:0;border-radius:0 0 12px 12px"><form class="vps-search"><input type="search" maxlength="100" aria-label="${tr('Tên gói','Package name')}" placeholder="${remote?tr('Tên gói trong kho, ví dụ tree','Repository package, e.g. tree'):tr('Lọc theo tên gói…','Filter by package name…')}"><button class="button small" data-tone="info">${tr('Tìm','Search')}</button></form>
+    <div class="vps-package-results" aria-live="polite"></div><div class="vps-pager"></div></section></article>`;
+  bindSoftwareTabs(view,host);
+  bindPackageMaintenance();
+  const form=view.querySelector('form'),results=view.querySelector('.vps-package-results'),pager=view.querySelector('.vps-pager');
+  results.classList.toggle('installed-grid',!remote);
+  let generation=0,offset=0,query='';
+  function capacity(){
+    if(remote)return 30;
+    const grid=getComputedStyle(results);
+    const columns=grid.gridTemplateColumns.split(' ').length;
+    const rowHeight=parseFloat(grid.gridAutoRows)+parseFloat(grid.rowGap);
+    const top=form.getBoundingClientRect().bottom+window.scrollY;
+    const available=window.innerHeight-top-parseFloat(grid.paddingTop)-parseFloat(grid.paddingBottom)-64;
+    return Math.min(240,columns*Math.max(1,Math.floor(available/rowHeight)));
+  }
+  let limit=capacity();
+  if(!remote){
+    let timer;
+    function resize(){
+      clearTimeout(timer);
+      if(!results.isConnected){
+        observer.disconnect();
+        window.removeEventListener('resize',resize);
+        return;
+      }
+      timer=setTimeout(()=>{
+        if(!results.isConnected)return;
+        const next=capacity();
+        if(next===limit)return;
+        offset=Math.floor(offset/next)*next;
+        limit=next;load();
+      },150);
+    }
+    const observer=new ResizeObserver(resize);
+    observer.observe(results);
+    window.addEventListener('resize',resize);
+  }
+  async function load(){
+    const current=++generation;
+    pager.replaceChildren();
+    if(remote&&!query){results.textContent=tr('Nhập tên để tìm trong kho của VPS.','Enter a name to search this server’s repositories.');return;}
+    results.textContent=tr('Đang đọc danh sách gói…','Reading packages…');
+    try{
+      const data=await api(path+'/packages?'+new URLSearchParams({scope:page,query,offset,limit}));
+      if(current!==generation||!results.isConnected)return;
+      results.replaceChildren();
+      for(const item of data.items){
+        const row=document.createElement('div');row.className='vps-package';
+        const title=document.createElement('strong');title.textContent=title.title=item.name;
+        const version=document.createElement('code');version.textContent=version.title=item.version;row.append(title,version);
+        if(remote){
+          const btn=document.createElement('button');btn.className='button small';btn.dataset.tone='info';btn.textContent=tr('Xem kế hoạch','Preview');
+          btn.onclick=async()=>{
+            btn.disabled=true;
+            try{
+              const plan=await api(path+'/package-plan?'+new URLSearchParams({name:item.name}));
+              if(!btn.isConnected)return;
+              modal(tr('Cài gói từ kho','Install repository package'),'<p>'+escapeHTML($('#hosts').selectedOptions[0].textContent)+' · '+escapeHTML(plan.target)+'</p><pre>'+escapeHTML(plan.summary)+'</pre>',()=>submit('native-install',{name:item.name,target:plan.target}));
+            }catch(err){if(btn.isConnected)row.append(document.createTextNode(err.message));}
+            finally{btn.disabled=false;}
+          };row.append(btn);
+        }
+        results.append(row);
+      }
+      if(!data.total){results.textContent=tr('Không tìm thấy gói.','No packages found.');return;}
+      const count=document.createElement('span');count.textContent=(offset+1)+'–'+(offset+data.items.length)+' / '+data.total;pager.append(count);
+      for(const [delta,label] of [[-limit,tr('Trước','Previous')],[limit,tr('Sau','Next')]]){
+        const btn=document.createElement('button');btn.className='button small';btn.dataset.tone='info';btn.textContent=label;
+        btn.disabled=offset+delta<0||offset+delta>=data.total;btn.onclick=()=>{offset+=delta;load();};pager.append(btn);
+      }
+    }catch(err){if(current===generation&&results.isConnected)results.textContent=err.message;}
+  }
+  form.onsubmit=e=>{e.preventDefault();offset=0;query=form.querySelector('input').value.trim();load();};
+  load();
+  return null;
+}
 
 function softwareCenter(view,info){
   const tr=(vi,en)=>vpsEnglish?en:vi;
-  const catalog=info.catalog, ids=Object.keys(catalog);
+  const catalog=info.catalog, hidden=new Set(info.hidden||[]);
+  const ids=Object.keys(catalog).filter(id=>!hidden.has(id));
   const host=$('#hosts').value;
-  if(!softwareDrafts.has(host)){let saved={};try{saved=JSON.parse(sessionStorage.getItem('vps-sc:'+host)||'{}');}catch{}softwareDrafts.set(host,{selected:new Set(),mode:saved.mode||'kits',group:saved.group||'',kit:saved.kit||'',search:saved.search||'',filter:saved.filter??'no'});}
+  if(!softwareDrafts.has(host)){
+    let saved={};
+    try{saved=JSON.parse(localStorage.getItem('vps-sc:'+host)||'{}');}catch{}
+    softwareDrafts.set(host,{selected:new Set(),mode:saved.mode||'kits',kit:saved.kit||'',search:saved.search||'',filter:saved.filter??'no'});
+  }
   const draft=softwareDrafts.get(host), selected=draft.selected;
-  for(const id of selected)if(!Object.hasOwn(catalog,id))selected.delete(id);
+  for(const id of selected)if(!Object.hasOwn(catalog,id)||hidden.has(id))selected.delete(id);
   const presets={'*':ids,...info.kits};
   const kits=Object.keys(presets);
   if(!kits.includes(draft.kit))draft.kit='*';
   const groupName=name=>name==='*'?tr('Tất cả','All'):(vpsEnglish?(englishLabels[name]||({'Công cụ VPS':'VPS tools','Web cơ bản':'Basic web'})[name]||name):name);
   const status=id=>info.probe_errors?.[id]||!Object.hasOwn(info.packages,id)?'unknown':info.packages[id]?'yes':'no';
-  for(const id of selected)if(!Object.hasOwn(catalog,id))selected.delete(id);
   view.innerHTML=`<article class="sc-workbench">
-    <header class="sc-toolbar"><strong>${tr('Bộ cài của tôi','My kits')}</strong>
-      <input type="search" id="pkg-search" placeholder="${tr('Tìm gói phần mềm…','Find a package…')}" aria-label="${tr('Tìm gói phần mềm','Find a package')}"></header>
+    ${softwareToolbarHtml('kits',tr,`<input type="search" id="pkg-search" placeholder="${tr('Tìm gói phần mềm…','Find a package…')}" aria-label="${tr('Tìm gói phần mềm','Find a package')}">`)}
     <div class="sc-columns"><div class="sc-index" id="sc-index"></div><section class="sc-detail">
       <div class="sc-title"><h2 id="sc-title"></h2><button id="sc-all" class="text-button"></button>
       <select id="pkg-filter" aria-label="${tr('Trạng thái','Status')}"><option value="">${tr('Mọi trạng thái','Any status')}</option>
@@ -24,15 +261,11 @@ function softwareCenter(view,info){
     <footer class="sc-order"><button class="text-button" id="pkg-count"></button>
       <div class="actions"><button class="button small" data-tone="remove" id="uninstall">${tr('Gỡ đã chọn','Uninstall')}</button>
       <button class="button primary small" id="install">${tr('Tiếp tục →','Continue →')}</button></div></footer>
-  </article><div class="sc-utils"><details><summary>${tr('Công cụ VPS','Server tools')}</summary>
-  <button class="button small" data-tool="installed">${tr('Gói hệ điều hành','System packages')}</button>
-  <button class="button small" data-tool="repository">${tr('Kho phần mềm','Repository')}</button>
-  <button class="button small" id="pkg-maintain">${tr('Bảo trì gói','Package maintenance')}</button>
-  <button class="button small" id="account">${tr('Tài khoản & SSH','Account & SSH')}</button></details></div>`;
+  </article>`;
   $('#pkg-search').value=draft.search;
   $('#pkg-filter').value=draft.filter;
   function draw(){
-    try{sessionStorage.setItem('vps-sc:'+host,JSON.stringify({mode:draft.mode,group:draft.group,kit:draft.kit,search:draft.search,filter:draft.filter}));}catch{}
+    try{localStorage.setItem('vps-sc:'+host,JSON.stringify({mode:draft.mode,kit:draft.kit,search:draft.search,filter:draft.filter}));}catch{}
     const query=draft.search.trim().toLowerCase();
     const selectionMode=draft.mode==='selection';
     const included=key=>presets[key].filter(id=>id in catalog);
@@ -73,17 +306,11 @@ function softwareCenter(view,info){
     $('#install').disabled=![...selected].some(id=>status(id)!=='yes');
     $('#uninstall').disabled=![...selected].some(id=>status(id)==='yes');
   }
-  function changeMode(mode){
-    draft.mode=mode;draft.search='';$('#pkg-search').value='';draw();
-  }
-  for(const btn of view.querySelectorAll('[data-tool]'))btn.onclick=()=>{packagePages.set(host,btn.dataset.tool);render();};
-  $('#pkg-count').onclick=()=>changeMode('selection');
+  bindSoftwareTabs(view,host);
+  bindPackageMaintenance();
+  $('#pkg-count').onclick=()=>{draft.mode='selection';draft.search='';$('#pkg-search').value='';draw();};
   $('#pkg-search').oninput=e=>{draft.search=e.target.value;draw();};
   $('#pkg-filter').onchange=e=>{draft.filter=e.target.value;draw();};
-  $('#pkg-maintain').onclick=()=>{
-    const host=$('#hosts').selectedOptions[0].textContent;
-    modal('Bảo trì gói','<p>'+escapeHTML(host)+'</p><label class="field">Thao tác<select name="task"><option value="update-index">Cập nhật danh mục gói</option><option value="upgrade-packages">Nâng cấp các gói hệ thống</option><option value="refresh-ca">Làm mới kho chứng chỉ CA</option><option value="repair-ca">Cài lại OpenSSL và chứng chỉ CA</option></select></label>',form=>submit('maintain',{operation:form.get('task')}));
-  };
   $('#install').onclick=()=>reviewInstall([...selected]);
   $('#uninstall').onclick=()=>{
     const packages=[...selected].filter(id=>status(id)==='yes');
@@ -102,7 +329,7 @@ function softwareCenter(view,info){
       const boxes=[...form.querySelectorAll('[name=machines]:checked')];
       reviewed='';confirm.disabled=true;review.textContent='Đang đọc thông tin VPS…';
       const rows=await Promise.all(boxes.map(async b=>{
-        const host=b.parentElement.textContent.trim();
+        const hostName=b.parentElement.textContent.trim();
         try{
           const state=(b.value===$('#hosts').value&&info.packages&&Object.keys(info.packages).length&&!info.checkError)?info:await api('vps/machines/'+encodeURIComponent(b.value));
           const needed=new Set();
@@ -117,12 +344,12 @@ function softwareCenter(view,info){
           const missing=[...needed].filter(id=>!state.packages[id]);
           const installed=[...needed].filter(id=>state.packages[id]);
           const dependencies=[...needed].filter(id=>!packages.includes(id));
-          return {host,missing,lines:[
+          return {host:hostName,missing,lines:[
             [tr('Cần cài','To install'),missing],
             [tr('Đã có','Installed'),installed.map(id=>id+' '+state.packages[id])],
             [tr('Phụ thuộc','Dependencies'),dependencies]
           ].filter(([,items])=>items.length)};
-        }catch(err){return {host,error:err.message};}
+        }catch(err){return {host:hostName,error:err.message};}
       }));
       if(version!==current||!review.isConnected)return;
       review.replaceChildren();
@@ -144,109 +371,6 @@ function softwareCenter(view,info){
     }
     for(const box of form.querySelectorAll('[name=machines]'))box.onchange=refresh;
     refresh();
-  };
+  }
   draw();
-}
-
-async function accountDialog(){
-  const path=endpoint(), rev=revision, btn=$('#account'), orig=btn?.textContent;
-  if(btn){btn.disabled=true;btn.textContent=vt('Đang tải…','Loading…');}
-  let state;
-  try{state=await api(path+'/account');}
-  finally{if(btn){btn.disabled=false;if(orig)btn.textContent=orig;}}
-  if(rev!==revision)return;
-  const target=state.user+'@'+state.host+':'+state.port;
-  const canChange=state.sudo&&state.user!=='root'&&state.auth==='key';
-  const fields='<p><strong>'+escapeHTML(target)+'</strong> · '+escapeHTML(state.auth)+'</p><p>sudo -n · '+(state.sudo?'✓':'—')+'　 SSH PasswordAuthentication · '+escapeHTML(state.password||'—')+'</p>';
-  if(!canChange){modal('Tài khoản & SSH',fields+'<p>Chọn user thường dùng SSH key và có quyền sudo -n để đặt mật khẩu.</p>',async()=>{});return;}
-  modal('Tài khoản & SSH',fields+'<div class="form-grid"><label class="field">Mật khẩu Linux mới<input name="password" type="password" autocomplete="new-password" required></label><label class="field">Nhập lại mật khẩu<input name="repeat" type="password" autocomplete="new-password" required></label></div><p><label><input id="show-secret" type="checkbox"> Hiện mật khẩu</label></p><p><label><input name="enable" type="checkbox"> Cho phép user này đăng nhập SSH bằng mật khẩu</label></p><p><label><input name="set_root" type="checkbox"> '+vt('Đặt mật khẩu này cho cả root (và cho phép SSH root nếu bật ở trên)','Also set this password for root (and allow root SSH if enabled above)')+'</label></p>',async form=>{
-    if(form.get('password')!==form.get('repeat'))throw new Error('Hai mật khẩu chưa khớp.');
-    await submit('password',{password:form.get('password'),enable:form.has('enable'),set_root:form.has('set_root')});
-  });
-  $('#show-secret').onchange=e=>{for(const input of $('#popup').querySelectorAll('[autocomplete=new-password]'))input.type=e.target.checked?'text':'password';};
-}
-
-function addVps(record=null){
-  let verified=false,expected='',detected='',autoConnect;
-  const field=(name,label,value='',type='text',hint='',extra='')=>'<label class="field"'+(extra.includes('wide')?' data-wide':'')+'>'+label+'<input name="'+name+'" type="'+type+'" value="'+escapeHTML(value)+'"'+(type==='number'?' min="0"':'')+(extra==='placeholder'?' placeholder="'+vt('Tự đọc hostname','Detect hostname')+'"':'')+' autocomplete="'+(type==='password'?'new-password':'off')+'">'+(hint?'<small>'+hint+'</small>':'')+'</label>';
-  const select=(name,label,options,value)=>'<label class="field">'+label+'<select name="'+name+'">'+options.map(o=>'<option value="'+o[0]+'"'+(o[0]===String(value)?' selected':'')+'>'+o[1]+'</option>').join('')+'</select></label>';
-  // Same fields and order as the MongoDB Manager server form; both write the shared machine record.
-  modal(record?vt('Sửa máy chủ','Edit server'):vt('Thêm máy chủ','Add server'),'<div class="form-grid">'
-    +field('name',vt('Tên máy','Server name'),'','text','','placeholder')
-    +field('mongo_host',vt('Địa chỉ IP public','Public IP address'),'','text','')
-    +field('mongo_port',vt('Cổng MongoDB','MongoDB port'),27017,'number')
-    +select('votes','Votes',[['1','1'],['0','0']],1)
-    +field('priority',vt('Ưu tiên bầu primary','Primary election priority'),1,'number',vt('Áp dụng khi thêm Secondary.','Used when adding a secondary.'))
-    +select('mode',vt('Kiểu kết nối','Connection type'),[['ssh','ssh'],['local','local']],'ssh')
-    +field('user','User SSH','root')+field('port','Port SSH',22,'number')
-    +select('ssh_auth',vt('Xác thực SSH','SSH authentication'),[['password',vt('Mật khẩu SSH','SSH password')],['key','SSH key / Agent']],'password')
-    +'<label class="field">'+vt('Mật khẩu SSH','SSH password')+'<span class="input-eye-wrap"><input name="ssh_password" type="password" autocomplete="new-password"><button type="button" id="show-ssh-pw" class="input-eye" aria-label="'+vt('Hiện mật khẩu','Show password')+'"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button></span></label>'
-    +field('identity',vt('SSH private key (tùy chọn)','SSH private key (optional)'),'','text',vt('Để trống để dùng SSH agent hoặc ~/.ssh/config.','Leave empty to use the SSH agent or ~/.ssh/config.'))
-    +'<details class="field wide"><summary>'+vt('Địa chỉ SSH riêng','Separate SSH address')+'</summary>'+field('host',vt('Địa chỉ SSH (nếu khác)','SSH address (if different)'),'','text',vt('Để trống để dùng địa chỉ IP public ở trên.','Leave empty to use the public address above.'))+'</details></div>'
-    +'<p><button type="button" class="button" id="test-connection">'+vt('Kiểm tra kết nối','Test connection')+'</button></p><output id="ssh-feedback"></output>',async form=>{
-    let data=payload(form);
-    const moved=record&&(data.host!==record.host||data.port!==record.port||data.user!==record.user||data.mode!==record.mode);
-    if(data.mode==='ssh'&&(!record||moved)){await autoConnect();data=payload(form);}
-    const saved=await api(record?'vps/servers/'+encodeURIComponent(record.id):'vps/machines',data,record?'PUT':undefined);await loadHosts(saved.id);
-    if(location.hash==='#servers')render();
-  });
-  const form=$('#popup'), fields=form.elements, test=$('#test-connection'), feedback=$('#ssh-feedback');
-  function payload(source){
-    const raw=source instanceof FormData?Object.fromEntries(source):Object.fromEntries(new FormData(form));
-    const v=k=>(raw[k]||'').trim(),ssh=v('mode')==='ssh',address=v('mongo_host').replace(/^\[|\]$/g,'');
-    const mongoPort=Number(v('mongo_port')||27017);
-    const data={mode:v('mode'),name:v('name'),auto_name:!v('name'),votes:Number(raw.votes),priority:Number(raw.priority||0),port:Number(v('port')||22),user:v('user'),
-      ssh_auth:v('ssh_auth'),ssh_password:ssh&&v('ssh_auth')==='password'?(raw.ssh_password||null):'',identity:ssh&&v('ssh_auth')==='key'?v('identity'):'',
-      host:ssh?(v('host')||address):'127.0.0.1',mongo_endpoint:address?(address.includes(':')?'['+address+']':address)+':'+mongoPort:''};
-    if(!data.votes&&data.priority)throw new Error(vt('Votes = 0 yêu cầu ưu tiên bằng 0.','Votes = 0 requires priority 0.'));
-    if(ssh&&!data.host)throw new Error(vt('Nhập địa chỉ IP public hoặc địa chỉ SSH.','Enter the public IP or an SSH address.'));
-    if(ssh&&data.ssh_auth==='password'&&!data.ssh_password&&!record?.has_ssh_password)throw new Error(vt('Nhập mật khẩu SSH.','Enter the SSH password.'));
-    data.name=data.name||detected||(ssh?data.host:'Local');
-    return data;
-  }
-  let generation=0;
-  function update(){
-    generation++;verified=false;expected='';feedback.textContent='';test.textContent=vt('Kiểm tra kết nối','Test connection');
-    const ssh=fields.mode.value==='ssh';test.hidden=!ssh;
-    for(const name of ['user','port','ssh_auth','identity','ssh_password','host']){
-      const visible=ssh&&(name!=='identity'||fields.ssh_auth.value==='key')&&(name!=='ssh_password'||fields.ssh_auth.value==='password');
-      fields[name].disabled=!visible;fields[name].closest('label').hidden=!visible;
-    }
-    fields.votes.onchange=fields.votes.oninput=()=>{if(fields.votes.value==='0')fields.priority.value=0;fields.priority.readOnly=fields.votes.value==='0';};
-    form.querySelector('details').hidden=!ssh;
-  }
-  if(record){
-    const m=(record.mongo_endpoint||'').match(/^\[?([^\]]+?)\]?:(\d+)$/);
-    Object.entries({name:record.auto_name?'':record.name,mongo_host:m?m[1]:'',mongo_port:m?m[2]:27017,votes:record.votes,priority:record.priority,mode:record.mode,user:record.user,port:record.port,ssh_auth:record.ssh_auth||'key',identity:record.identity||'',host:m&&m[1]===record.host?'':record.host}).forEach(([k,v])=>{fields[k].value=v;});
-    if(!m&&record.mode==='ssh')fields.mongo_host.value=record.host;
-    if(record.has_ssh_password)fields.ssh_password.placeholder='••••••••';
-  }
-  $('#show-ssh-pw').onclick=async()=>{
-    const inp=fields.ssh_password,btn=$('#show-ssh-pw');
-    if(inp.type==='password'){
-      if(!inp.value&&record?.has_ssh_password){
-        btn.disabled=true;
-        try{const r=await api('vps/servers/'+encodeURIComponent(record.id)+'/reveal-password',{});inp.value=r.password||'';}
-        finally{btn.disabled=false;}
-      }
-      inp.type='text';btn.setAttribute('aria-pressed','true');
-    }else{inp.type='password';btn.setAttribute('aria-pressed','false');}
-  };
-  $('#fields').oninput=update;setupSshKeyDropzone(form);update();
-  // Trust on first use, like the MongoDB Manager: the host key is stored on the first successful connection.
-  async function connect(){
-    const data=payload(),id=generation;
-    let result=await api('vps/connection-test',{...data,expected});
-    if(result.fingerprint){expected=result.fingerprint;result=await api('vps/connection-test',{...data,expected});}
-    if(id!==generation)return false;
-    verified=true;detected=result.hostname||'';
-    feedback.textContent=result.user+' · sudo -n '+(result.sudo?'✓':'—')+' · '+expected;
-    return true;
-  }
-  test.onclick=async()=>{
-    test.disabled=true;feedback.textContent=vt('Đang kết nối…','Connecting…');
-    try{await connect();}catch(err){feedback.textContent=err.message;}finally{test.disabled=false;}
-  };
-  autoConnect=async()=>{if(!verified&&!await connect())throw new Error(vt('Thông tin kết nối đã đổi, thử lại.','Connection details changed, try again.'));};
-  form.closest('dialog').addEventListener('close',()=>{$('#fields').oninput=null;},{once:true});
 }

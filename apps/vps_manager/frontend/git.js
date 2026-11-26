@@ -73,7 +73,7 @@ async function gitPage(view, path, rev) {
     row.className='git-key';
     const params={name:key.name,fingerprint:key.fingerprint};
     row.innerHTML=`<div class="docker-row"><div><strong>${e(key.name)}</strong><small>${e(key.type)} · ${key.loaded?vt('Đã nạp vào agent','Loaded in agent'):key.paired?vt('Chưa nạp','Not loaded'):vt('Chỉ có public key','Public key only')}</small></div>
-      <div class="actions">${key.paired?button('test')+button('alias')+button('load'):''}${button('delete','danger')}</div></div>
+      <div class="actions">${key.paired?button('test')+button('alias')+button('load'):''}${button('delete','remove')}</div></div>
       <details><summary>Public key · ${e(key.fingerprint)}</summary><code>${e(key.public)}</code>${button('copy')}</details>`;
     list.append(row);
     row.querySelector('[data-git="copy"]').onclick=async ev=>{

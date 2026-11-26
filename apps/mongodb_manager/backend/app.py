@@ -29,6 +29,7 @@ from .releases import catalog
 from . import ubuntu
 from shared.manager_core.job_slots import Busy, JobSlots, machine_keys
 from shared.manager_core.store import Store
+from shared.manager_core.workspaces import WorkspaceRegistry, WorkspaceStoreProxy, current_workspace_id, use_store
 from shared.manager_core.auth import Auth
 from .backup_schedule import BackupScheduler, KIND as SCHEDULES, ScheduleInput
 
@@ -83,28 +84,35 @@ def rename_generated_machines(store):
 def create_app(data_dir=None):
     @asynccontextmanager
     async def lifespan(app):
-        app.state.store = Store(data_dir or os.environ.get("MONGO_MANAGER_DATA", DATA_DIR), app_name="mongo")
-        rename_generated_machines(app.state.store)
-        app.state.auth = Auth(app.state.store)
+        root_dir = data_dir or os.environ.get("MONGO_MANAGER_DATA", DATA_DIR)
+        app.state.workspaces = WorkspaceRegistry(root_dir, app_name="mongo")
+        system_store = app.state.workspaces.get_store("default")
+        app.state.system_store = system_store
+        app.state.store = WorkspaceStoreProxy(app.state.workspaces)
+        rename_generated_machines(system_store)
+        app.state.auth = Auth(system_store)
         app.state.pool = ThreadPoolExecutor(max_workers=8)
         app.state.admin_lock = threading.Lock()
         app.state.slots = JobSlots()
         app.state.plans = {}
         app.state.stop = threading.Event()
-        for job in app.state.store.all("jobs"):
-            if job["status"] in {"queued", "running"}:
-                if job.get("action") == "ubuntu_upgrade":
-                    ctx = app.state.store.get("ubuntu-jobs", job["id"])
-                    try:
-                        reserve_job(ctx["plan"], job["id"])
-                    except Busy:
-                        pass
-                    else:
-                        app.state.pool.submit(run_job, ctx["plan"], job)
-                        continue
-                job.update(status="interrupted", finished_at=now(), error="Ứng dụng đã dừng giữa tác vụ. Kiểm tra máy đích trước khi chạy lại.")
-                app.state.store.save("jobs", job, job["id"])
-        scheduler = BackupScheduler(app.state.store, dispatch_scheduled)
+        ws_ids = ["default"] + [u.get("workspace_id") for u in app.state.auth.users() if u.get("workspace_id") and u.get("workspace_id") != "default"]
+        for ws_id in dict.fromkeys(ws_ids):
+            ws_store = app.state.workspaces.get_store(ws_id)
+            for job in ws_store.all("jobs"):
+                if job["status"] in {"queued", "running"}:
+                    if job.get("action") == "ubuntu_upgrade":
+                        ctx = ws_store.get("ubuntu-jobs", job["id"])
+                        try:
+                            reserve_job(ctx["plan"], job["id"])
+                        except Busy:
+                            pass
+                        else:
+                            app.state.pool.submit(run_job, ctx["plan"], job, ws_store, ws_id)
+                            continue
+                    job.update(status="interrupted", finished_at=now(), error="Ứng dụng đã dừng giữa tác vụ. Kiểm tra máy đích trước khi chạy lại.")
+                    ws_store.save("jobs", job, job["id"])
+        scheduler = BackupScheduler(app.state.store, dispatch_scheduled, workspaces=app.state.workspaces, auth=app.state.auth)
         app.state.scheduler = scheduler
         scheduler.thread.start()
         try:
@@ -834,11 +842,15 @@ def create_app(data_dir=None):
         app.state.plans = {k: v for k, v in app.state.plans.items() if v["expires"] > current}
         if len(app.state.plans) >= 100:
             raise HTTPException(429, "Có quá nhiều bản xem trước; hãy chờ hết hạn.")
-        app.state.plans[plan_id] = {"public": plan, "ubuntu_info": ubuntu_info, "destination": destination, "params": params, "profile": profile, "machine": machine, "source_machine": source_machine, "receiver": receiver, "expires": current + 600}
+        app.state.plans[plan_id] = {"public": plan, "ubuntu_info": ubuntu_info, "destination": destination, "params": params, "profile": profile, "machine": machine, "source_machine": source_machine, "receiver": receiver, "workspace_id": current_workspace_id(), "expires": current + 600}
         return plan
 
-    def run_job(plan, job):
-        store = app.state.store
+    def run_job(plan, job, ws_store=None, ws_id=None):
+        store = ws_store or app.state.store.current()
+        with use_store(store, ws_id or plan.get("workspace_id", "default")):
+            _run_job_inner(plan, job, store)
+
+    def _run_job_inner(plan, job, store):
         secret_values = [(plan.get("destination") or {}).get("password", ""), plan["params"].get("password", ""), (plan["profile"] or {}).get("password", ""), (plan["machine"] or {}).get("ssh_password", ""), (plan.get("source_machine") or {}).get("ssh_password", "")]
         def emit(message):
             sample = re.fullmatch(r"APT_PROGRESS (dlstatus|pmstatus) ([0-9.]+) (-?\d+)", message)
@@ -951,7 +963,9 @@ def create_app(data_dir=None):
             finally:
                 app.state.slots.release(job["id"])
 
-    def enqueue(plan, job_id, schedule=None):
+    def enqueue(plan, job_id, schedule=None, ws_store=None, ws_id=None):
+        store = ws_store or app.state.store.current()
+        active_ws = ws_id or current_workspace_id()
         public = plan["public"]
         job = {"id": job_id, "machine_id": (plan["machine"] or {}).get("id", ""), "profile_id": (plan["profile"] or {}).get("id") or (plan["machine"] or {}).get("profile_id", ""), "action": public["action"], "label": public["label"], "target": public["target"],
                "status": "queued", "created_at": now(), "events": [], "result": None, "error": None}
@@ -962,21 +976,21 @@ def create_app(data_dir=None):
         if schedule:
             job["scheduled"] = True
             records.append((SCHEDULES, schedule, schedule["id"]))
-        app.state.store.save_many(records)
+        store.save_many(records)
         try:
-            app.state.pool.submit(run_job, plan, job)
+            app.state.pool.submit(run_job, plan, job, store, active_ws)
         except Exception:
-            app.state.store.update_fields("jobs", job["id"], {"status": "failed", "finished_at": now(), "error": "Không khởi chạy được tác vụ."})
+            store.update_fields("jobs", job["id"], {"status": "failed", "finished_at": now(), "error": "Không khởi chạy được tác vụ."})
             raise
         return job
 
-    def dispatch_scheduled(schedule, profile, machine):
+    def dispatch_scheduled(schedule, profile, machine, ws_store=None, ws_id=None):
         public = {"action": "backup", "label": "Backup định kỳ", "target": machine["name"] + " → " + profile["name"]}
-        plan = {"public": public, "params": schedule["params"], "profile": profile, "machine": machine}
+        plan = {"public": public, "params": schedule["params"], "profile": profile, "machine": machine, "workspace_id": ws_id or "default"}
         job_id = uuid4().hex
         reserve_job(plan, job_id)
         try:
-            enqueue(plan, job_id, schedule)
+            enqueue(plan, job_id, schedule, ws_store=ws_store, ws_id=ws_id)
         except Exception:
             app.state.slots.release(job_id)
             raise
@@ -986,6 +1000,8 @@ def create_app(data_dir=None):
         plan = app.state.plans.get(body.plan_id)
         if not plan or plan["expires"] < time.monotonic():
             raise HTTPException(409, "Bản xem trước đã hết hạn. Tạo lại trước khi chạy.")
+        if plan.get("workspace_id", "default") != current_workspace_id():
+            raise HTTPException(403, "Kế hoạch không thuộc workspace hiện tại.")
         if plan["public"].get("already_current"):
             raise ValueError("MongoDB đã ở bản mới nhất của nhánh.")
         if plan["public"].get("install_blocked"):
@@ -1052,7 +1068,7 @@ def create_app(data_dir=None):
             job.update(status="queued", error=None)
             job.pop("finished_at", None)
             store.save_many([("ubuntu-jobs", ctx, job_id), ("jobs", job, job_id)])
-            app.state.pool.submit(run_job, plan, job)
+            app.state.pool.submit(run_job, plan, job, store.current() if hasattr(store, "current") else store, current_workspace_id())
             return job
         except Exception:
             app.state.slots.release(job_id)

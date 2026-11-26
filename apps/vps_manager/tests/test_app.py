@@ -75,7 +75,8 @@ def test_account_job_failure_keeps_stage_and_redacts_password(tmp_path, monkeypa
 
 def test_install_catalog_dependencies_and_shell_syntax():
     import subprocess
-    from apps.vps_manager.backend.app import INSTALL,CATALOG
+    from apps.vps_manager.backend.app import INSTALL,CATALOG,KITS
+    from apps.vps_manager.backend.worker import UNINSTALL_RECIPES
     assert set(INSTALL)==set(CATALOG)
     def visit(item,path):
         assert item not in path
@@ -86,6 +87,10 @@ def test_install_catalog_dependencies_and_shell_syntax():
         for key in ("probe","install"):
             if key in entry:
                 subprocess.run(["bash","-n"],input=entry[key],text=True,check=True)
+        if "install" in entry:
+            assert item in UNINSTALL_RECIPES
+    kit_items={pkg for items in KITS.values() for pkg in items}
+    assert {item for item,entry in INSTALL.items() if not entry.get("hidden")} <= kit_items
     assert INSTALL["libasound2"]["apt"]==["libasound2t64","libasound2"]
     assert INSTALL["g++"]["dnf"]==["gcc-c++"]
 

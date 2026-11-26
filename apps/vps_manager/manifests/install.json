@@ -114,7 +114,8 @@
     ],
     "dnf": [
       "snapd"
-    ]
+    ],
+    "hidden": true
   },
   "htop": {
     "group": "Giám sát",
@@ -150,7 +151,8 @@
     ],
     "dnf": [
       "vnstat"
-    ]
+    ],
+    "hidden": true
   },
   "net-tools": {
     "group": "Giám sát",
@@ -205,7 +207,8 @@
     ],
     "dnf": [
       "cronie"
-    ]
+    ],
+    "hidden": true
   },
   "netcat-openbsd": {
     "group": "Giám sát",
@@ -250,7 +253,8 @@
     ],
     "dnf": [
       "python3"
-    ]
+    ],
+    "hidden": true
   },
   "python-is-python3": {
     "group": "Phát triển",
@@ -277,7 +281,8 @@
     ],
     "dnf": [
       "nss"
-    ]
+    ],
+    "hidden": true
   },
   "libasound2": {
     "group": "Phát triển",
@@ -287,7 +292,8 @@
     ],
     "dnf": [
       "alsa-lib"
-    ]
+    ],
+    "hidden": true
   },
   "ca-certificates": {
     "group": "Bảo mật",
@@ -305,7 +311,8 @@
     ],
     "dnf": [
       "augeas-libs"
-    ]
+    ],
+    "hidden": true
   },
   "fail2ban": {
     "group": "Bảo mật",
@@ -608,7 +615,8 @@
     "apt": [
       "software-properties-common"
     ],
-    "dnf": []
+    "dnf": [],
+    "hidden": true
   },
   "pm2-startup": {
     "group": "Node.js",

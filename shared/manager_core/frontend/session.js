@@ -11,7 +11,7 @@ window.addEventListener('storage',event=>{
 window.zmStorageModal=async function({csrfToken,openModal,closeModal,onSwitched,en=false}){
   const t=(vi,e)=>en?e:vi;
   const req=async(url,body)=>{
-    const res=await fetch(url,{method:body?'POST':'GET',headers:{'Content-Type':'application/json','X-MongoDB-Manager':'1','X-CSRF-Token':csrfToken||''},body:body?JSON.stringify(body):undefined});
+    const res=await fetch(url,{method:body?'POST':'GET',headers:{'Content-Type':'application/json','X-MongoDB-Manager':'1','X-CSRF-Token':csrfToken||'',...(window.zmWorkspaceHelper?window.zmWorkspaceHelper.headers():{})},body:body?JSON.stringify(body):undefined});
     const data=await res.json().catch(()=>({}));
     if(!res.ok)throw new Error(typeof data.detail==='string'?data.detail:'HTTP '+res.status);
     return data;

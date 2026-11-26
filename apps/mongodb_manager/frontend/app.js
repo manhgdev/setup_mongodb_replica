@@ -82,9 +82,10 @@ const formatDate = s => s ? new Date(s).toLocaleString(uiLanguage==='en'?'en-US'
 const bytes = n => !Number.isFinite(n) ? '—' : n>=1024**3?`${(n/1024**3).toFixed(1)} GB`:n>=1024**2?`${(n/1024**2).toFixed(1)} MB`:`${(n/1024).toFixed(1)} KB`;
 const statusNames = {queued:uiText("Đang chờ"),running:uiText("Đang chạy"),succeeded:uiText("Hoàn tất"),failed:uiText("Thất bại"),interrupted:uiText("Bị gián đoạn")};
 const jobBadge = j => badge(statusNames[j.status]||j.status, j.status==='succeeded'?'success':j.status==='failed'||j.status==='interrupted'?'error':'warn');
-let csrfToken='';
+let csrfToken='',currentAuth=null;
 async function api(path, options={}) {
-  const response = await fetch('/api'+path,{...options,headers:{'X-MongoDB-Manager':'1','Content-Type':'application/json',...(csrfToken?{'X-CSRF-Token':csrfToken}:{}),...options.headers}});
+  const wsHeaders=window.zmWorkspaceHelper?window.zmWorkspaceHelper.headers():{};
+  const response = await fetch('/api'+path,{...options,headers:{'X-MongoDB-Manager':'1','Content-Type':'application/json',...(csrfToken?{'X-CSRF-Token':csrfToken}:{}),...wsHeaders,...options.headers}});
   if(response.status===401&&path!=='/auth/login')showLogin(uiText("Phiên đăng nhập đã hết hạn. Đăng nhập lại để tiếp tục."));
   if(response.ok && response.headers.get("content-type")?.includes("application/x-ndjson"))return response.body;
   let data;
@@ -128,7 +129,7 @@ narrowSidebar.addEventListener('change',syncSidebarToggle);
 function updateChrome(){
   $('#navigation').innerHTML=nav.map(([id,title,glyph,group])=>`${group?`<div class="nav-label">${group}</div>`:''}<a class="nav-link ${currentRoute===id?'active':''}" href="#${id}" aria-label="${esc(title)}" title="${esc(title)}">${icon(glyph)}<span>${title}</span>${id==='jobs'&&jobs().some(j=>j.status==='running')?'<span class="nav-count">LIVE</span>':''}</a>`).join('');
   $('#profile-select').innerHTML=profiles().length?profiles().map(p=>`<option value="${esc(p.id)}" ${profile()?.id===p.id?'selected':''}>${esc(p.name)}</option>`).join(''):("<option>"+uiText("Chưa có cụm")+"</option>");
-  $('#breadcrumb').textContent=nav.find(n=>n[0]===currentRoute)?.[1]||uiText("Tổng quan");
+  $('#breadcrumb').textContent=currentRoute==='accounts'?uiText('Người dùng'):(nav.find(n=>n[0]===currentRoute)?.[1]||uiText("Tổng quan"));
   $('#demo-toggle').textContent=demo?uiText("● Đang xem thử"):uiText("Xem thử giao diện");
   $('#demo-banner').hidden=!demo;
   $('#footer-time').textContent=demo?uiText("Chế độ minh họa"):'127.0.0.1 · Local workspace';
@@ -475,7 +476,7 @@ document.addEventListener('submit',async event=>{
  await api('/machines/batch',{method:'POST',body:JSON.stringify(records)});form.elements.ssh_password.value='';$('#modal').close();await refreshState();await render();toast((uiText("Đã lưu SSH cho")+" ")+records.length+' VPS.');
  }catch(error){formError(error);}finally{submit.disabled=false;}
 });
-function settingsPage(){const p=profile();return heading(uiText("Cấu hình workspace"),uiText("Thông tin kết nối và các thiết lập của cụm đang chọn."),button(uiText("Chỉnh kết nối"),'profile-edit','settings','primary'))+(demo?'':panel(dataLabel('Quản trị MongoDB Manager','Manager administrator'),'',dataLabel('Tài khoản đăng nhập giao diện web.','Login for the web interface.'),`<div class="actions">${button(dataLabel('Lưu trữ dữ liệu (SQLite / MongoDB)','Data Storage (SQLite / MongoDB)'),'storage-settings','db','small','data-tone="info"')}${button(dataLabel('Sửa tài khoản quản trị','Edit administrator account'),'manager-admin','settings','small','data-tone="configure"')}</div>`))+sshSettingsPanel()+panel(uiText("Hồ sơ MongoDB"),p?`<div class="panel-body">${[[uiText("Tên cụm"),p.name],['Seed list',p.seeds.join(', ')],['Replica set',p.replica_set||'Standalone'],['Username',p.username||uiText("Không dùng")],['Auth database',p.auth_db],['TLS',p.tls?uiText("Bật"):uiText("Tắt")]].map(([k,v])=>`<div class="key-value"><span>${k}</span><strong>${esc(v)}</strong></div>`).join('')}<div class="section-title"></div><div class="actions">${button(uiText("Chỉnh kết nối"),'profile-edit','settings','primary')}${button(uiText("Chuỗi kết nối"),'connection','external')}${button(uiText("Xóa hồ sơ"),'profile-delete','trash','danger')}</div></div>`:empty(uiText("Chưa chọn cụm"),uiText("Tạo hồ sơ kết nối trước khi cấu hình.")))+`<div class="callout neutral">${uiText("Hồ sơ và mật khẩu được mã hóa trên máy quản trị. Khóa mã hóa nằm cùng thư mục dữ liệu, chỉ tài khoản hệ điều hành hiện tại có quyền đọc. SSH hỗ trợ mật khẩu hoặc key/agent của tài khoản chạy ứng dụng.")}</div>`;}
+function settingsPage(){const p=profile();const usersBtn=currentAuth?.can_manage_users?button(dataLabel('Quản lý người dùng →','Manage users →'),'manage-users','users','small','data-tone="info"'):'';return heading(uiText("Cấu hình workspace"),uiText("Thông tin kết nối và các thiết lập của cụm đang chọn."),button(uiText("Chỉnh kết nối"),'profile-edit','settings','primary'))+(demo?'':panel(dataLabel('Tài khoản & Lưu trữ','Account & Storage'),'',dataLabel('Tài khoản đăng nhập, phân quyền người dùng và chế độ lưu trữ.','Web login, user roles, and data storage.'),`<div class="actions">${usersBtn}${button(dataLabel('Lưu trữ dữ liệu (SQLite / MongoDB)','Data Storage (SQLite / MongoDB)'),'storage-settings','db','small','data-tone="info"')}${button(dataLabel('Tài khoản của tôi','My account'),'manager-admin','settings','small','data-tone="configure"')}</div>`))+sshSettingsPanel()+panel(uiText("Hồ sơ MongoDB"),p?`<div class="panel-body">${[[uiText("Tên cụm"),p.name],['Seed list',p.seeds.join(', ')],['Replica set',p.replica_set||'Standalone'],['Username',p.username||uiText("Không dùng")],['Auth database',p.auth_db],['TLS',p.tls?uiText("Bật"):uiText("Tắt")]].map(([k,v])=>`<div class="key-value"><span>${k}</span><strong>${esc(v)}</strong></div>`).join('')}<div class="section-title"></div><div class="actions">${button(uiText("Chỉnh kết nối"),'profile-edit','settings','primary')}${button(uiText("Chuỗi kết nối"),'connection','external')}${button(uiText("Xóa hồ sơ"),'profile-delete','trash','danger')}</div></div>`:empty(uiText("Chưa chọn cụm"),uiText("Tạo hồ sơ kết nối trước khi cấu hình.")))+`<div class="callout neutral">${uiText("Hồ sơ và mật khẩu được mã hóa trên máy quản trị. Khóa mã hóa nằm cùng thư mục dữ liệu, chỉ tài khoản hệ điều hành hiện tại có quyền đọc. SSH hỗ trợ mật khẩu hoặc key/agent của tài khoản chạy ứng dụng.")}</div>`;}
 function diagnosticsPage(){return heading(uiText("Chẩn đoán & nâng cấp"),uiText("Kiểm tra kết nối MongoDB, môi trường máy chủ và nâng cấp phiên bản."),`<a class="button" data-tone="configure" href="#upgrade">${icon('arrow')}${uiText("Phiên bản & nâng cấp")}</a>`+button(uiText("Kiểm tra kết nối"),'diagnose','pulse','primary'))+`<div class="cards">${feature(uiText("Kết nối các node"),uiText("Kết nối trực tiếp từng seed, xác thực và đọc vai trò từ máy quản trị."),'cluster','diagnose',uiText("Chạy chẩn đoán"))}${feature(uiText("Môi trường VPS"),uiText("Kiểm tra Ubuntu, CPU, kernel, đĩa, package và service qua SSH."),'server','preflight',uiText("Kiểm tra máy"))}${feature(uiText("Nhật ký MongoDB"),uiText("Xem journal của service để xác định lỗi startup, quyền hoặc port."),'terminal','logs',uiText("Đọc nhật ký"))}</div><div class="section-title"><h2>${uiText("Kết quả kiểm tra")}</h2></div><div id="query-result">${empty(uiText("Sẵn sàng kiểm tra"),uiText("Chọn một phép kiểm tra phía trên. Các bước chẩn đoán chỉ đọc thông tin."),'','','pulse')}</div>`;}
 function hostCompatibilityPanel(){
   const hosts=machines().filter(m=>(m.profile_id||'')===(profile()?.id||''));
@@ -587,7 +588,7 @@ async function loadCompatibility(){
 }
 
 function upgradePage(){return heading(uiText("Phiên bản & nâng cấp"),uiText("Kiểm tra tương thích trước khi thay đổi phiên bản MongoDB."),button(uiText("Kiểm tra điều kiện"),'upgrade-check','pulse','primary'))+`${hostCompatibilityPanel()}<div class="layout-two">${panel(uiText("Quy trình nâng 8.0 → 9.0"),`<div class="panel-body"><ol class="step-list"><li><strong>${uiText("Kiểm tra và backup")}</strong>${uiText("Xác minh driver, FCV và sức khỏe tất cả member. Restore thử trước khi thay phiên bản.")}</li><li><strong>${uiText("Nâng secondary tuần tự")}</strong>${uiText("Đợi từng member quay lại SECONDARY rồi mới chuyển sang node tiếp theo.")}</li><li><strong>${uiText("Chuyển primary")}</strong>${uiText("Step down, chờ primary mới rồi nâng node còn lại.")}</li><li><strong>${uiText("Kiểm chứng ứng dụng")}</strong>${uiText("Giữ FCV cũ trong thời gian kiểm tra. Nâng FCV bằng bước riêng sau đó.")}</li></ol></div>`)}${panel(uiText("Phạm vi tự động hóa"),`<div class="panel-body"><div class="callout">${uiText("Arbiter 8.0 trên Ubuntu 26.04 có thể nâng binary ngay trong bảng trên. Với node chứa dữ liệu và bước nâng FCV, xem quy trình nâng cụm.")}</div><p class="help-links"><a href="https://www.mongodb.com/docs/manual/tutorial/install-mongodb-on-ubuntu/" target="_blank" rel="noopener noreferrer">${dataLabel('Cài MongoDB Community trên Ubuntu ↗','Install MongoDB Community on Ubuntu ↗')}</a></p><p class="help-links"><a href="https://www.mongodb.com/docs/manual/release-notes/9.0-upgrade-from-8.0-replica-set/" target="_blank" rel="noopener noreferrer">${uiText("Mở hướng dẫn MongoDB chính thức ↗")}</a></p>${button(uiText("Xem kết quả kiểm tra"),'upgrade-check','pulse')}</div>`)}</div>`;}
-function jobsPage(){return heading(uiText("Lịch sử tác vụ"),uiText("Theo dõi tiến độ, kết quả và những thao tác cần kiểm tra."),button(uiText("Làm mới"),'refresh','refresh'))+panel(uiText("Tác vụ"),jobs().length?table([uiText("TÁC VỤ"),uiText("ĐÍCH"),uiText("THỜI GIAN"),uiText("TRẠNG THÁI"),''],jobs().map(j=>`<tr><td><strong>${esc(j.label)}</strong></td><td>${esc(j.target)}</td><td>${formatDate(j.created_at)}</td><td>${jobBadge(j)}</td><td>${button(uiText("Chi tiết"),'job-open','','small',`data-id="${esc(j.id)}"`)}</td></tr>`)):empty(uiText("Chưa có tác vụ"),uiText("Các thao tác thực hiện từ web sẽ xuất hiện tại đây."),'','','clock'));}
+function jobsPage(){return heading(uiText("Lịch sử tác vụ"),uiText("Theo dõi tiến độ, kết quả và những thao tác cần kiểm tra."),button(uiText("Làm mới"),'refresh','refresh'))+panel(uiText("Tác vụ"),jobs().length?table([uiText("TÁC VỤ"),uiText("ĐÍCH"),uiText("THỜI GIAN"),uiText("TRẠNG THÁI"),''],jobs().map(j=>`<tr data-act="job-open" data-id="${esc(j.id)}" style="cursor:pointer"><td><strong>${esc(j.label)}</strong></td><td>${esc(j.target)}</td><td>${formatDate(j.created_at)}</td><td>${jobBadge(j)}</td><td>${button(uiText("Chi tiết"),'job-open','','small',`data-id="${esc(j.id)}"`)}</td></tr>`)):empty(uiText("Chưa có tác vụ"),uiText("Các thao tác thực hiện từ web sẽ xuất hiện tại đây."),'','','clock'));}
 async function render(){
   documentTailObserver?.disconnect();
   const id=++renderId,hashBase=location.hash.slice(1).split('?')[0],savedTab=localStorage.getItem('mongo-active-tab');
@@ -602,7 +603,7 @@ async function render(){
       if(!demo)localStorage.setItem('mongo-manager-profile',selected);
     }
   }
-  if(!nav.some(n=>n[0]===currentRoute)&&currentRoute!=='upgrade')currentRoute='overview';
+  if(!nav.some(n=>n[0]===currentRoute)&&currentRoute!=='upgrade'&&currentRoute!=='accounts')currentRoute='overview';
   updateChrome();document.body.classList.remove('nav-open');syncSidebarToggle();
   const needsStatus=['overview','machines','replica'].includes(currentRoute);
   if(demo){currentStatus=profile()?structuredClone(demoStatus):null;statusError='';}
@@ -613,6 +614,11 @@ async function render(){
   }else if(!profile()){currentStatus=null;statusError='';}
   if(id!==renderId)return;
   const pages={overview,clusters:clustersPage, machines:machinePage, replica:replicaPage,backup:backupPage,settings:settingsPage,diagnostics:diagnosticsPage,upgrade:upgradePage,jobs:jobsPage};
+  if(currentRoute==='accounts'){
+    $('#content').innerHTML=heading(uiText('Người dùng'),uiText('Quản lý tài khoản đăng nhập, vai trò và workspace của người dùng.'))+'<div id="zm-users-page"></div>';
+    await window.zmUsersPage({container:$('#zm-users-page'),csrfToken,auth:currentAuth,en:uiLanguage==='en'});
+    return;
+  }
   if(currentRoute==='backup'){await loadArchiveCatalog(id);return;}
   if(pages[currentRoute]){
     $('#content').innerHTML=pages[currentRoute]();
@@ -1355,6 +1361,11 @@ document.addEventListener('click',async event=>{
   const act=target.dataset.act;
   try{
     if(act==='manager-admin'){managerLogin(true);return;}
+    if(act==='manage-users'){
+      event.preventDefault();
+      location.hash='accounts';
+      return;
+    }
     if(act==='storage-settings'){
       window.zmStorageModal({
         csrfToken,
@@ -1705,14 +1716,25 @@ async function refreshTopology(){
 }
 function showLogin(){managerLogin();}
 async function enterWorkspace(auth){
+  currentAuth=auth;
   csrfToken=auth.csrf||'';$('#login-root').replaceChildren();$('#login-root').hidden=true;document.body.classList.remove('auth-pending');
   $('#logout-button').hidden=!auth.enabled;$('#logout-button').textContent=uiText("Đăng xuất");
+  const roleTag=window.zmWorkspaceHelper?window.zmWorkspaceHelper.roleLabel(auth.role,uiLanguage==='en'):(auth.role||'');
   $('#admin-username').textContent=auth.username||'';
-  const accountLabel=dataLabel('Sửa tài khoản quản trị','Edit administrator account')+' · '+auth.username;
+  const accountLabel=dataLabel('Tài khoản của tôi','My account')+' · '+auth.username;
   const accountButton=$('.account-profile');
   accountButton.title=accountLabel;
   accountButton.setAttribute('aria-label',accountLabel);
   $('#admin-avatar').textContent=(auth.username||'AD').slice(0,2).toUpperCase();
+  const topActions=$('.account-actions');
+  topActions.querySelectorAll('.zm-extra-btn').forEach(el=>el.remove());
+  if(auth.workspace_owner&&auth.workspace_owner.id&&auth.workspace_owner.id!==auth.user_id){
+    const wsBtn=document.createElement('button');
+    wsBtn.type='button';wsBtn.className='button small warn zm-extra-btn';
+    wsBtn.textContent=dataLabel('Workspace: ','Workspace: ')+auth.workspace_owner.username+' ✕';
+    wsBtn.onclick=()=>window.zmWorkspaceHelper.setTarget('');
+    topActions.prepend(wsBtn);
+  }
   await refreshState();await render();clearInterval(pollTimer);pollTimer=setInterval(poll,2500);
 }
 async function boot(){
@@ -1727,7 +1749,7 @@ boot();
 document.querySelector('#open-vps').addEventListener('click',async event=>{
   event.preventDefault();
   try{
-    const links=await api('/manager-links');
+    const links=await api('/manager-links').catch(()=>({vps:'/vps/'}));
     sessionStorage.setItem('zm-mongo-route',location.hash);
     const url=new URL(links.vps,location.href);
     const machine=document.querySelector('[name=compatibility_host]')?.value;

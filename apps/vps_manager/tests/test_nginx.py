@@ -117,3 +117,58 @@ def test_batch_rejects_shared_alias_before_writing(tmp_path):
     with pytest.raises(ValueError, match="shared.test"):
         worker.create_websites(rows,tmp_path)
     assert not list((tmp_path/"conf.d").iterdir())
+
+
+def test_certbot_renewal_status_detects_snap_timer(monkeypatch, tmp_path):
+    monkeypatch.setattr(worker, "Path", lambda *parts: tmp_path / "missing")
+
+    def fake_cmd(args, check=True, timeout=60):
+        if args == ["systemctl", "is-active", "snap.certbot.renew.timer"]:
+            return "active"
+        if args[:2] == ["systemctl", "show"]:
+            return "6h"
+        return "inactive"
+
+    monkeypatch.setattr(worker, "command", fake_cmd)
+    status = worker.certbot_renewal_status()
+    assert status == {"enabled": True, "method": "systemd", "unit": "snap.certbot.renew.timer", "cron": False, "stagger": "6h", "detail": "snap.certbot.renew.timer · giãn cách 6h"}
+
+
+def test_enable_certbot_renewal_creates_cron_fallback_when_no_timer(monkeypatch, tmp_path):
+    cron_file = tmp_path / "zm-certbot-renew"
+    monkeypatch.setattr(worker, "Path", lambda *parts: cron_file if "zm-certbot-renew" in str(parts[0]) else tmp_path / "none")
+    monkeypatch.setattr(worker, "command", lambda args, check=True, timeout=60: "")
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/opt/certbot/bin/certbot" if name == "certbot" else None)
+
+    result = worker.enable_certbot_renewal()
+    assert result["enabled"] is True
+    assert result["method"] == "cron"
+    assert cron_file.is_file()
+    assert (cron_file.stat().st_mode & 0o777) == 0o644
+    content = cron_file.read_text()
+    assert "/opt/certbot/bin/certbot renew --quiet --deploy-hook" in content
+    assert "random.randrange(900)" in content
+
+
+def test_website_file_renew_test_runs_dry_run_for_unmanaged_site(monkeypatch, tmp_path):
+    site = tmp_path / "app.conf"
+    site.write_text("server { listen 443 ssl; server_name app.example.test; ssl_certificate /etc/letsencrypt/live/app.example.test/fullchain.pem; }")
+    monkeypatch.setattr(worker.shutil, "which", lambda _: "/usr/bin/certbot")
+    monkeypatch.setattr(worker, "discover_sites", lambda root: {
+        "sites": [{
+            "file_id": "fid-1",
+            "source": str(site),
+            "domain": "app.example.test",
+            "enabled": True,
+            "https": True,
+            "renewal_names": ["app.example.test"],
+        }],
+        "diagnostics": [],
+        "broken": [],
+    })
+    run = Mock(return_value="")
+    monkeypatch.setattr(worker, "command", run)
+
+    res = worker.website_file("renew-test", {"file_id": "fid-1", "domain": "app.example.test"}, tmp_path)
+    assert res == {"domain": "app.example.test", "renewal_test": "ok"}
+    assert run.call_args.args[0] == ["certbot", "renew", "--dry-run", "--cert-name", "app.example.test"]

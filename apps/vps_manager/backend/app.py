@@ -10,7 +10,7 @@ from pathlib import Path
 from uuid import uuid4
 from typing import Literal
 from .hostname_worker import valid_hostname
-from . import firewall_service, oci_firewall
+from . import firewall_service, oci_firewall, stack_transfer
 from .terminal import run_terminal_session
 
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
@@ -25,6 +25,7 @@ from shared.manager_core.job_slots import Busy, JobSlots, machine_keys
 from shared.manager_core.machines import Machine
 from shared.manager_core.paths import DATA_DIR
 from shared.manager_core.store import Store
+from shared.manager_core.workspaces import WorkspaceRegistry, WorkspaceStoreProxy, current_workspace_id, use_store
 from shared.manager_core.transport import run_worker
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -109,6 +110,10 @@ def worker(machine, action, params, emit):
         return run_worker(machine,ROOT/"backend/firewall_worker.py",{"action":action,"params":params},True,emit)
     if action.startswith("docker-"):
         return run_worker(machine,ROOT/"backend/docker_worker.py",{"action":action,"params":params},True,emit)
+    if action.startswith("stack-"):
+        import getpass
+        params = dict(params, login_user=machine["user"] if machine["mode"] == "ssh" else getpass.getuser())
+        return run_worker(machine, ROOT / "backend/stack_worker.py", {"action": action, "params": params}, True, emit)
     if action in {"overview","install","uninstall"}:
         import getpass
         params=dict(params,entries=INSTALL,login_user=machine["user"] if machine["mode"]=="ssh" else getpass.getuser())
@@ -116,7 +121,7 @@ def worker(machine, action, params, emit):
         machine,
         ROOT / "backend/worker.py",
         {"action": action, "params": dict(params, catalog=list(CATALOG))},
-        action in {"native-install", "install", "uninstall", "maintain", "site", "sites", "inventory", "detail", "logs", "apply", "diff", "check", "repair-link", "lifecycle", "ssl-status","external-certificate","renew-ssl"},
+        action in {"native-install", "install", "uninstall", "maintain", "service-control", "site", "sites", "inventory", "detail", "logs", "apply", "diff", "check", "repair-link", "lifecycle", "ssl-status","external-certificate","renew-ssl","renew-test","ssl-renew-enable","ssl-renew-test"},
         emit,
     )
 
@@ -294,21 +299,31 @@ def register(app):
             raise HTTPException(422, str(exc)) from None
 
     @app.websocket("/api/vps/machines/{ident}/terminal")
-    async def machine_terminal(websocket: WebSocket, ident: str, cols: int = 100, rows: int = 30):
+    async def machine_terminal(websocket: WebSocket, ident: str, cols: int = 100, rows: int = 30, workspace_user: str = ""):
         auth = app.state.auth
         if not auth.allowed_request(websocket):
             await websocket.close(code=4403)
             return
-        if auth.enabled and auth.session(websocket) is None:
+        session = auth.session(websocket) if auth.enabled else None
+        if auth.enabled and session is None:
             await websocket.close(code=4401)
             return
-        try:
-            machine = app.state.store.get("machines", ident)
-        except KeyError:
-            await websocket.close(code=4404)
-            return
-        await websocket.accept()
-        await run_terminal_session(websocket, machine, cols=cols, rows=rows)
+        ws_id = session.get("workspace_id", "default") if session else "default"
+        if session and workspace_user and workspace_user != session["user_id"]:
+            target = auth.get_user(workspace_user)
+            if not target or not auth.can_access_workspace(session, target):
+                await websocket.close(code=4403)
+                return
+            ws_id = target.get("workspace_id", "default")
+        ws_store = app.state.workspaces.get_store(ws_id) if hasattr(app.state, "workspaces") else app.state.store
+        with use_store(ws_store, ws_id):
+            try:
+                machine = ws_store.get("machines", ident)
+            except KeyError:
+                await websocket.close(code=4404)
+                return
+            await websocket.accept()
+            await run_terminal_session(websocket, machine, cols=cols, rows=rows)
 
     @app.post("/api/vps/machines/{ident}/password",status_code=202)
     def password_change(ident: str,body: PasswordChange):
@@ -412,7 +427,8 @@ def register(app):
     @app.get("/api/vps/catalog")
     def catalog():
         return dict(catalog=CATALOG,kits=KITS,groups={key:value["group"] for key,value in INSTALL.items()},
-                    dependencies={key:value["deps"] for key,value in INSTALL.items() if value.get("deps")})
+                    dependencies={key:value["deps"] for key,value in INSTALL.items() if value.get("deps")},
+                    hidden=[key for key,value in INSTALL.items() if value.get("hidden")])
 
     @app.get("/api/vps/machines/{ident}")
     def overview(ident: str, refresh: bool = False):
@@ -467,6 +483,107 @@ def register(app):
         if section not in {"container","deploy"}:
             raise HTTPException(404)
         return queue_job(ident,"docker-"+section,body,record("machines",ident))
+
+    def workspace_bundles_dir():
+        ws_id = current_workspace_id() or "default"
+        safe_ws = "".join(c if c.isalnum() or c in "-_" else "_" for c in ws_id)
+        d = Path(app.state.workspaces.root_dir) / "bundles" / safe_ws
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    class StackExport(BaseModel):
+        pm2_apps: list[str] = Field(default_factory=list, max_length=100)
+        compose_projects: list[str] = Field(default_factory=list, max_length=100)
+        nginx_files: list[str] = Field(default_factory=list, max_length=100)
+        include_ssl: bool = True
+        include_mongo: bool = False
+        mongo_uri: str = Field(default="", max_length=512, repr=False)
+        bundle_name: str = Field(default="", max_length=64)
+
+    class StackDeploy(BaseModel):
+        bundle_id: str = Field(min_length=1, max_length=96)
+        install_missing: bool = True
+        restore_apps: bool = True
+        restore_nginx: bool = True
+        overwrite_nginx: bool = False
+        restore_mongo: bool = True
+        mongo_drop: bool = False
+        mongo_uri: str = Field(default="", max_length=512, repr=False)
+        open_firewall: bool = True
+
+    @app.get("/api/vps/machines/{ident}/stack/scan")
+    def stack_scan(ident: str):
+        try:
+            return worker(record("machines", ident), "stack-scan", {}, lambda _: None)
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise HTTPException(422, str(exc)) from None
+
+    @app.get("/api/vps/docker/bundles")
+    def list_bundles():
+        bdir = workspace_bundles_dir()
+        items = []
+        for p in sorted(bdir.glob("*.tar.gz"), key=lambda x: x.stat().st_mtime, reverse=True):
+            try:
+                items.append(stack_transfer.inspect_bundle(p))
+            except ValueError:
+                continue
+        return {"bundles": items}
+
+    @app.post("/api/vps/docker/bundles/upload")
+    async def upload_bundle(request: Request, filename: str = Query(default="zm-stack.tar.gz", max_length=128)):
+        raw_name = Path(filename or "zm-stack.tar.gz").name
+        safe_stem = "".join(c if c.isalnum() or c in "-_" else "-" for c in raw_name.removesuffix(".tar.gz").removesuffix(".tgz"))[:48].strip("-") or "stack"
+        bundle_id = f"{safe_stem}-{uuid4().hex[:8]}.tar.gz"
+        bdir = workspace_bundles_dir()
+        dest = stack_transfer.safe_bundle_path(bdir, bundle_id)
+        try:
+            with dest.open("wb") as out:
+                async for chunk in request.stream():
+                    if chunk:
+                        out.write(chunk)
+            return stack_transfer.inspect_bundle(dest)
+        except ValueError as exc:
+            dest.unlink(missing_ok=True)
+            raise HTTPException(422, str(exc)) from None
+        except Exception as exc:
+            dest.unlink(missing_ok=True)
+            raise HTTPException(500, f"Tải lên thất bại: {exc}") from None
+
+    @app.get("/api/vps/docker/bundles/{bundle_id}/download")
+    def download_bundle(bundle_id: str):
+        try:
+            path = stack_transfer.safe_bundle_path(workspace_bundles_dir(), bundle_id)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        if not path.is_file():
+            raise HTTPException(404, "Không tìm thấy gói bundle.")
+        return FileResponse(path, media_type="application/gzip", filename=path.name)
+
+    @app.delete("/api/vps/docker/bundles/{bundle_id}")
+    def delete_bundle(bundle_id: str):
+        try:
+            path = stack_transfer.safe_bundle_path(workspace_bundles_dir(), bundle_id)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        if not path.is_file():
+            raise HTTPException(404, "Không tìm thấy gói bundle.")
+        path.unlink()
+        return {"deleted": bundle_id}
+
+    @app.post("/api/vps/machines/{ident}/stack/export", status_code=202)
+    def stack_export(ident: str, body: StackExport):
+        if not (body.pm2_apps or body.compose_projects or body.nginx_files or body.include_mongo):
+            raise HTTPException(422, "Chọn ít nhất một thành phần (PM2, Compose, Nginx hoặc MongoDB) để đóng gói.")
+        return queue_job(ident, "stack-export", body, record("machines", ident))
+
+    @app.post("/api/vps/machines/{ident}/stack/deploy", status_code=202)
+    def stack_deploy(ident: str, body: StackDeploy):
+        try:
+            path = stack_transfer.safe_bundle_path(workspace_bundles_dir(), body.bundle_id)
+            stack_transfer.inspect_bundle(path)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        return queue_job(ident, "stack-deploy", body, record("machines", ident))
 
     def fw_call(machine, emit=lambda _: None):
         return lambda action, params: worker(machine, action, params, emit)
@@ -569,6 +686,13 @@ def register(app):
         except (RuntimeError,OSError,ValueError) as exc:
             raise HTTPException(422,str(exc)) from None
 
+    @app.get("/api/vps/machines/{ident}/services")
+    def services(ident: str):
+        try:
+            return worker(record("machines", ident), "service-query", {}, lambda _: None)
+        except (RuntimeError, OSError, ValueError) as exc:
+            raise HTTPException(422, str(exc)) from None
+
     @app.get("/api/vps/machines/{ident}/nginx/test")
     def nginx_test(ident: str):
         try:
@@ -636,7 +760,7 @@ def register(app):
 
     @app.post("/api/vps/machines/{ident}/{action}", status_code=202)
     def submit(ident: str, action: str, body: Operation):
-        if action not in {"site", "nginx-import", "nginx-reload", "install","uninstall","native-install","maintain","apply","lifecycle","repair-link","external-certificate","renew-ssl"}:
+        if action not in {"site", "nginx-import", "nginx-reload", "install","uninstall","native-install","maintain","service-control","apply","lifecycle","repair-link","external-certificate","renew-ssl","renew-test","ssl-renew-enable","ssl-renew-test"}:
             raise HTTPException(404)
         if action in {"install","uninstall"} and (
             not body.packages or set(body.packages) - CATALOG.keys()
@@ -656,7 +780,8 @@ def register(app):
                 headers={"X-Active-Job": exc.job_id} if exc.job_id else {},
             ) from None
         labels={"hostname":"Đổi hostname","docker-deploy":"Docker Compose",
-                "maintain":"Bảo trì gói hệ thống","install":"Cài phần mềm","uninstall":"Gỡ phần mềm","native-install":"Cài phần mềm","password":"Đặt mật khẩu Linux","firewall":"Firewall"}
+                "stack-export":"Đóng gói Portable Stack","stack-deploy":"Triển khai Portable Stack",
+                "maintain":"Bảo trì gói hệ thống","install":"Cài phần mềm","uninstall":"Gỡ phần mềm","native-install":"Cài phần mềm","service-control":"Quản lý dịch vụ","password":"Đặt mật khẩu Linux","firewall":"Firewall"}
         labels.update({"git-"+k:v for k,v in GIT_ACTIONS.items()})
         if action=="docker-container":
             labels[action]="Docker · "+body.operation
@@ -675,9 +800,14 @@ def register(app):
             job["resource"] = "packages"
         if actor:
             job["actor"]=actor
-        store = app.state.store
+        ws_id = current_workspace_id()
+        store = app.state.store.current() if hasattr(app.state.store, "current") else app.state.store
 
         def run():
+            with use_store(store, ws_id):
+                _run_vps_job()
+
+        def _run_vps_job():
             def emit(message):
                 job["events"].append({"time": now(), "message": message})
                 store.save("jobs", job, key)
@@ -717,6 +847,32 @@ def register(app):
                     result={"user":info["user"],"root_password_changed":body.set_root,"linux_password_changed":True,"ssh_verified":body.enable}
                 elif action=="firewall":
                     result=firewall_service.run_change(machine,store,ident,body.model_dump(),fw_call(machine,emit),emit)
+                elif action == "stack-export":
+                    params = body.model_dump()
+                    raw_name = (params.get("bundle_name") or machine["name"] or "vps").strip()
+                    safe_stem = "".join(c if c.isalnum() or c in "-_" else "-" for c in raw_name)[:36].strip("-") or "vps"
+                    bundle_id = f"zm-stack-{safe_stem}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.tar.gz"
+                    params["bundle_id"] = bundle_id
+                    res = worker(machine, "stack-export", params, emit)
+                    bdir = workspace_bundles_dir()
+                    local_dest = stack_transfer.safe_bundle_path(bdir, bundle_id)
+                    emit(f"Đang tải gói {bundle_id} về Manager…")
+                    stack_transfer.transfer_bundle(machine, "get", local_dest, res["remote_path"])
+                    if machine["mode"] != "local":
+                        try:
+                            Path(res["remote_path"])
+                        except Exception:
+                            pass
+                    result = {"bundle_id": bundle_id, "size": local_dest.stat().st_size, "manifest": res["manifest"]}
+                elif action == "stack-deploy":
+                    params = body.model_dump()
+                    bdir = workspace_bundles_dir()
+                    local_src = stack_transfer.safe_bundle_path(bdir, params["bundle_id"])
+                    remote_tmp = f"/tmp/zm-deploy-{uuid4().hex[:10]}.tar.gz"
+                    emit(f"Đang đẩy gói {params['bundle_id']} lên VPS đích…")
+                    stack_transfer.transfer_bundle(machine, "put", local_src, remote_tmp)
+                    params["remote_path"] = remote_tmp
+                    result = worker(machine, "stack-deploy", params, emit)
                 else:
                     result = worker(machine, action, body.model_dump(), emit)
                 job.update(status="succeeded", result=result)
@@ -807,21 +963,27 @@ def register(app):
 def create_app(data_dir=None):
     @asynccontextmanager
     async def lifespan(app):
-        store = Store(data_dir or os.environ.get("MONGO_MANAGER_DATA", DATA_DIR), app_name="vps")
-        app.state.store = store
-        app.state.auth = Auth(store)
+        root_dir = data_dir or os.environ.get("MONGO_MANAGER_DATA", DATA_DIR)
+        app.state.workspaces = WorkspaceRegistry(root_dir, app_name="vps")
+        system_store = app.state.workspaces.get_store("default")
+        app.state.system_store = system_store
+        app.state.store = WorkspaceStoreProxy(app.state.workspaces)
+        app.state.auth = Auth(system_store)
         app.state.slots = JobSlots()
         app.state.admin_lock = threading.Lock()
         app.state.plans = {}
         with ThreadPoolExecutor(max_workers=16) as app_pool:
             app.state.pool = app_pool
-            for job in store.all("jobs"):
-                if job["action"].startswith("vps_") and job["status"] in {
-                    "queued",
-                    "running",
-                }:
-                    job.update(status="interrupted", finished_at=now())
-                    store.save("jobs", job, job["id"])
+            ws_ids = ["default"] + [u.get("workspace_id") for u in app.state.auth.users() if u.get("workspace_id") and u.get("workspace_id") != "default"]
+            for ws_id in dict.fromkeys(ws_ids):
+                ws_store = app.state.workspaces.get_store(ws_id)
+                for job in ws_store.all("jobs"):
+                    if job["action"].startswith("vps_") and job["status"] in {
+                        "queued",
+                        "running",
+                    }:
+                        job.update(status="interrupted", finished_at=now())
+                        ws_store.save("jobs", job, job["id"])
             yield
 
     app = FastAPI(
