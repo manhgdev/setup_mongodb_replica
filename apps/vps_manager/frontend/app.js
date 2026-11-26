@@ -12,7 +12,7 @@ async function api(path,data,method){
   if(previewMode && path!=='vps/catalog' && path.startsWith('vps/'))return previewVps(path,data);
   const verb=method||(data?'POST':'GET');
   const base=path.split('?')[0],refresh=path.includes('refresh=true');
-  const cacheable=verb==='GET'&&path.startsWith('vps/')&&!refresh&&!path.startsWith('vps/jobs/')&&path!=='vps/machines'&&path!=='vps/servers';
+  const cacheable=verb==='GET'&&path.startsWith('vps/')&&!refresh&&!path.startsWith('vps/jobs/')&&!path.endsWith('/metrics')&&path!=='vps/machines'&&path!=='vps/servers';
   if(cacheable&&vpsGetCache.has(path))return vpsGetCache.get(path);
   const res=await fetch('/api/'+path,{method:verb,headers:{'Content-Type':'application/json','X-MongoDB-Manager':'1','X-CSRF-Token':csrf},body:data?JSON.stringify(data):undefined});
   if(res.status===401){managerLogin();throw new Error("HTTP 401");}
@@ -33,7 +33,7 @@ $('#popup').onsubmit=async e=>{
   catch(err){let p=$('#fields [role=alert]');if(!p){p=document.createElement('p');p.setAttribute('role','alert');$('#fields').append(p);}p.textContent=err.message;}
   finally{button.disabled=false;}
 };
-const titles={servers:'Máy chủ',git:'Git & SSH Key',overview:'Tổng quan VPS',software:'Software Center',docker:'Docker & Compose',firewall:'Firewall',terminal:'SSH Terminal',sysadmin:'User & Ổ đĩa',domains:'Nginx & tên miền',jobs:'Lịch sử tác vụ'};
+const titles={servers:'Máy chủ',git:'Git & SSH Key',overview:'Tổng quan VPS',software:'Software Center',docker:'Docker & Compose',firewall:'Firewall',terminal:'SSH Terminal',sysadmin:'User & Ổ đĩa',domains:'Nginx & tên miền',jobs:'Lịch sử tác vụ',settings:'Cài đặt'};
 function certificateWarning(days){
   const threshold=[0,7,14,30].find(limit=>days<=limit);
   if(threshold===undefined||days===null)return '';
@@ -154,12 +154,14 @@ async function render(){
     terminal:['Kết nối SSH trực tiếp dạng terminal (giống Termius) nhiều tab cùng lúc.','Interactive multi-tab SSH terminal (Termius-style) right in your browser.'],
     sysadmin:['Tạo user Linux, phân quyền sudo/nhóm/SSH keys và chia ổ, mount, phân quyền thư mục.','Create Linux users, manage sudo/groups/SSH keys, partitions, mounts and folder permissions.'],
     domains:['Quản lý cấu hình website, định tuyến và chứng chỉ SSL trên VPS.','Manage website configurations, routes and SSL certificates on this server.'],
-    jobs:['Theo dõi tiến độ và mở nhật ký để xem kết quả của từng tác vụ.','Track progress and open the logs to inspect each job’s result.']
+    jobs:['Theo dõi tiến độ và mở nhật ký để xem kết quả của từng tác vụ.','Track progress and open the logs to inspect each job’s result.'],
+    settings:['Quản lý nơi lưu trữ dữ liệu (SQLite / MongoDB) và tài khoản quản trị ứng dụng.','Manage app data storage (SQLite / MongoDB) and administrator account settings.']
   };
   $('#page-description').textContent=descriptions[section][vpsEnglish?1:0];
   $('#heading-actions').replaceChildren();
   $('#title').textContent=$('#crumb').textContent=vpsEnglish?(englishLabels[titles[section]]||titles[section]):titles[section];
   for(const link of document.querySelectorAll('nav a')){const active=link.hash==='#'+section;link.setAttribute('aria-current',active?'page':'false');link.classList.toggle('active',active);}
+  if(section==='settings'){await settingsPageVps(view,rev);return;}
   if(!$('#hosts').value){
     view.innerHTML='<section class="vps-box vps-empty"><h2>'+vt('Chưa có máy chủ','No servers yet')+'</h2><button class="button primary" id="first-machine">+ '+vt('Thêm VPS','Add server')+'</button></section>';
     $('#first-machine').onclick=()=>addVps();return;
@@ -541,7 +543,7 @@ async function render(){
 }
 $('#view').onclick=e=>{if(e.target.closest('[data-job]')){selectedJob=e.target.closest('[data-job]').dataset.job;sessionStorage.setItem('vps-selected-job',selectedJob);location.hash='jobs';render();}};
 async function loadHosts(id){
- const hosts=await api('vps/machines');$('#hosts').replaceChildren(...hosts.map(m=>new Option(m.name,m.id)));const savedId=id||localStorage.getItem('vps-selected-machine');if(hosts.some(m=>m.id===savedId))$('#hosts').value=savedId;if($('#hosts').value)localStorage.setItem('vps-selected-machine',$('#hosts').value);await render();
+ const hosts=(await api('vps/machines')).slice().sort((a,b)=>String(a.name||a.host||'').localeCompare(String(b.name||b.host||''),undefined,{numeric:true,sensitivity:'base'}));$('#hosts').replaceChildren(...hosts.map(m=>new Option(m.name,m.id)));const savedId=id||localStorage.getItem('vps-selected-machine');if(hosts.some(m=>m.id===savedId))$('#hosts').value=savedId;if($('#hosts').value)localStorage.setItem('vps-selected-machine',$('#hosts').value);await render();
 }
 $('#add').onclick=()=>addVps();
 $('dialog').addEventListener('close',()=>{for(const input of $('#popup').querySelectorAll('input[type=password],input[autocomplete=new-password]'))input.value='';});
@@ -692,4 +694,20 @@ function setupSshKeyDropzone(root){
     target.addEventListener('drop',e=>{e.preventDefault();e.stopPropagation();wrap.classList.remove('is-dragover');const f=e.dataTransfer?.files?.[0];if(f)handleFile(f);});
     inp.addEventListener('paste',e=>{const txt=e.clipboardData?.getData('text')||'';if(txt.includes('PRIVATE KEY')){e.preventDefault();importText('pasted_key',txt);}});
   }
+}
+
+async function settingsPageVps(view,rev){
+  let info={backend:'sqlite',database:'zm_manager',sqlite_count:0,mongo_count:null,uri_masked:''};
+  try{if(!previewMode)info=await api('storage/config');}catch{}
+  if(rev!==revision)return;
+  view.innerHTML=''
+    +'<section class="panel"><div class="panel-head"><div><h2>'+vt('Lưu trữ dữ liệu ứng dụng (SQLite / MongoDB)','App Data Storage (SQLite / MongoDB)')+'</h2><p>'+vt('Chọn lưu toàn bộ danh sách VPS, tác vụ, tài khoản OCI vào SQLite cục bộ hoặc một database MongoDB riêng biệt.','Choose to store VPS records, jobs and OCI accounts in local SQLite or a dedicated MongoDB database.')+'</p></div><div class="actions"><button type="button" class="button small" data-tone="create" id="vps-open-storage">'+vt('Cấu hình lưu trữ','Configure storage')+'</button></div></div>'
+    +'<div class="panel-body"><div class="key-value"><span>'+vt('Chế độ đang dùng','Active backend')+'</span><strong>'+(info.backend==='mongodb'?'MongoDB ('+escapeHTML(info.database)+')':'SQLite (manager.sqlite3)')+'</strong></div>'
+    +'<div class="key-value"><span>'+vt('Số bản ghi SQLite','SQLite records')+'</span><strong>'+info.sqlite_count+'</strong></div>'
+    +(info.mongo_count!=null?'<div class="key-value"><span>'+vt('Số bản ghi MongoDB','MongoDB records')+'</span><strong>'+info.mongo_count+'</strong></div>':'')
+    +(info.uri_masked?'<div class="key-value"><span>MongoDB URI</span><strong class="mono">'+escapeHTML(info.uri_masked)+'</strong></div>':'')
+    +'</div></section>'
+    +'<section class="panel"><div class="panel-head"><div><h2>'+vt('Tài khoản quản trị','Administrator account')+'</h2><p>'+vt('Tài khoản đăng nhập giao diện web ZM VPS Manager & MongoDB Manager.','Web login account for ZM VPS Manager & MongoDB Manager.')+'</p></div><div class="actions"><button type="button" class="button small" data-tone="configure" id="vps-edit-admin">'+vt('Sửa tài khoản quản trị','Edit administrator account')+'</button></div></div></section>';
+  $('#vps-open-storage').onclick=()=>window.zmStorageModal({csrfToken:csrf,en:vpsEnglish,openModal:modal,closeModal:()=>$('dialog').close(),onSwitched:()=>location.reload()}).catch(err=>modal('Storage',escapeHTML(err.message),async()=>{}));
+  $('#vps-edit-admin').onclick=()=>managerLogin(true);
 }

@@ -53,7 +53,7 @@ Mục **Bộ cài của tôi** đọc tên hiển thị, nhóm, tên gói theo A
 | Nhóm | Thành phần |
 |---|---|
 | Công cụ VPS | GCC, G++, Make, Git, curl, wget, unzip, zip, Vim, tmux, jq, rsync |
-| Giám sát và mạng | htop, btop, ncdu, vnStat, net-tools, dnsutils, lsof, cron, netcat, logrotate, Speedtest CLI, Bench.sh |
+| Giám sát và mạng | htop, btop, ncdu, vnStat, net-tools, dnsutils, iputils-ping, lsof, cron, netcat, logrotate, Speedtest CLI, Bench.sh |
 | Python và Go | Python 3, pip, venv, lệnh python, pip/setuptools/wheel trong venv, Go từ kho hệ điều hành hoặc PPA longsleep của Ubuntu |
 | Node.js | NVM, Node LTS và npm, Bun, Yarn, fast-cli, NSS, ALSA, PM2, PM2 startup/save, PM2 Logrotate 100M/3 bản/nén |
 | Media | FFmpeg, libavcodec-extra, aria2, yt-dlp stable/nightly và timer cập nhật nightly lúc 08:00 theo múi giờ VPS |

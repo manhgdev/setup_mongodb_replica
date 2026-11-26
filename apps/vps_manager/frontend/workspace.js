@@ -131,30 +131,63 @@ function hostnameControls(view,path){
 
 function overviewPage(view,info,path){
   const gib=n=>(n/2**30).toFixed(1)+' GiB';
-  const memory=info.memory_total, available=info.memory_available;
-  const loads=info.load_average;
   const resource=(label,value,caption,ratio)=>`<section><small>${label}</small><strong>${escapeHTML(value)}</strong>
     ${Number.isFinite(ratio)?'<progress max="1" value="'+Math.max(0,Math.min(1,ratio))+'" aria-label="'+label+'"></progress>':''}
     <span>${escapeHTML(caption)}</span></section>`;
-  const metrics=[
-    resource(vt('Tải CPU · 1 phút','CPU load · 1 min'),loads?loads[0].toFixed(2):'—',info.cpu+' vCPU'+(loads?' · 5 min '+loads[1].toFixed(2)+' / 15 min '+loads[2].toFixed(2):''),loads?.[0]/info.cpu),
-    resource(vt('RAM đang dùng','Memory used'),Number.isFinite(available)?gib(memory-available):'—',memory?vt('Tổng ','Total ')+gib(memory):info.memory,Number.isFinite(available)?1-available/memory:NaN),
-    resource(vt('Dung lượng đã dùng · /','Disk used · /'),info.disk_total?gib(info.disk_used):'—',vt('Còn trống ','Free ')+gib(info.disk_free),info.disk_used/info.disk_total)
-  ];
-  const panel=(id,title,route,action)=>`<section class="vps-box overview-panel"><header><h2>${title}</h2><a href="#${route}">${action} →</a></header><div id="${id}"></div></section>`;
-  const uptime=info.uptime_seconds;
+  const renderMeters=m=>{
+    const memory=m.memory_total, available=m.memory_available, loads=m.load_average;
+    return [
+      resource(vt('Tải CPU · 1 phút','CPU load · 1 min'),loads?loads[0].toFixed(2):'—',m.cpu+' vCPU'+(loads?' · 5 min '+loads[1].toFixed(2)+' / 15 min '+loads[2].toFixed(2):''),loads?.[0]/m.cpu),
+      resource(vt('RAM đang dùng','Memory used'),Number.isFinite(available)?gib(memory-available):'—',memory?vt('Tổng ','Total ')+gib(memory):m.memory,Number.isFinite(available)?1-available/memory:NaN),
+      resource(vt('Dung lượng đã dùng · /','Disk used · /'),m.disk_total?gib(m.disk_used):'—',vt('Còn trống ','Free ')+gib(m.disk_free),m.disk_used/m.disk_total)
+    ].join('');
+  };
+  const renderUptime=m=>{
+    const uptime=m.uptime_seconds;
+    return (m.kernel?'Kernel '+escapeHTML(m.kernel):'')+(Number.isFinite(uptime)?'<span>'+vt('Đã chạy ','Uptime ')+(uptime<3600?Math.floor(uptime/60)+vt(' phút',' min'):Math.floor(uptime/86400)+vt(' ngày ',' days ')+Math.floor(uptime/3600)%24+vt(' giờ',' hours'))+'</span>':'');
+  };
+  const panel=(id,title,route,action,extra='')=>`<section class="vps-box overview-panel"><header><div style="display:flex;align-items:center;gap:10px"><h2>${title}</h2>${extra}</div><a href="#${route}">${action} →</a></header><div id="${id}"></div></section>`;
   view.innerHTML=`<article class="vps-box"><header class="vps-machine"><div><h2>${escapeHTML(info.host)}</h2><p>${escapeHTML([info.os,info.arch,info.manager].filter(Boolean).join(' · '))}</p></div><button class="button small" data-tone="configure" id="account">${vt('Tài khoản & SSH','Account & SSH')}</button></header>
     <form class="hostname-form"><label>${vt('Hostname mới','New hostname')}<input name="hostname" required maxlength="63" placeholder="web-01" autocomplete="off" autocapitalize="none" spellcheck="false"></label><button type="submit" class="button small" data-tone="configure">${vt('Đổi hostname','Change hostname')}</button><output class="hostname-status" aria-live="polite"></output></form>
-    <div class="overview-meters">${metrics.join('')}</div><div class="overview-system">${info.kernel?'Kernel '+escapeHTML(info.kernel):''}
-    ${Number.isFinite(uptime)?'<span>'+vt('Đã chạy ','Uptime ')+(uptime<3600?Math.floor(uptime/60)+vt(' phút',' min'):Math.floor(uptime/86400)+vt(' ngày ',' days ')+Math.floor(uptime/3600)%24+vt(' giờ',' hours'))+'</span>':''}</div></article>
-    <div class="overview-panels">${panel('ov-sites',vt('Website & chứng chỉ','Websites & certificates'),'domains','Nginx')}
-    ${panel('ov-jobs',vt('Tác vụ gần đây','Recent jobs'),'jobs',vt('Lịch sử','History'))}
-    ${panel('ov-software',vt('Phần mềm trong bộ cài','Software in your kits'),'software','Software Center')}</div>`;
+    <div class="overview-meters" id="ov-meters">${renderMeters(info)}</div><div class="overview-system" id="ov-system">${renderUptime(info)}</div></article>
+    <div class="overview-panels">${panel('ov-processes',vt('Tác vụ đang chạy · CPU & RAM','Running processes · CPU & RAM'),'terminal','SSH Terminal','<span class="ov-live"><i></i>Live · 3s</span>')}
+    ${panel('ov-sites',vt('Website & chứng chỉ','Websites & certificates'),'domains','Nginx')}
+    ${panel('ov-jobs',vt('Tác vụ gần đây','Recent jobs'),'jobs',vt('Lịch sử','History'))}</div>`;
   if(!hostnameChanges.get(path)?.running && hostnameChanges.get(path)?.name!==info.host)hostnameChanges.delete(path);
   hostnameControls(view,path);
   const row=(title,value,job)=>`<${job?'button type="button" data-job="'+escapeHTML(job)+'"':'div'} class="overview-row"><strong>${escapeHTML(title)}</strong><span>${escapeHTML(value)}</span></${job?'button':'div'}>`;
-  const entries=Object.entries(info.packages||{}).filter(([,version])=>version);
-  $('#ov-software').innerHTML=entries.length?entries.map(([key,v])=>row(info.catalog?.[key]||key,v)).join(''):escapeHTML(vt('Chưa phát hiện gói nào trong bộ cài.','No kit packages detected.'));
+  const renderProcs=list=>{
+    if(!list.length)return escapeHTML(vt('Không có dữ liệu tiến trình.','No process data available.'));
+    const rows=list.slice(0,5).map((p,idx)=>{
+      const cpu=Number(p.cpu||0),mem=Number(p.mem||0),mib=Math.round((p.rss||0)/1048576);
+      const tone=cpu>=50?' high':cpu>=15?' warn':'';
+      const cmd=p.cmd||p.name||'';
+      return `<tr><td class="proc-td-rank">${idx+1}</td><td class="proc-td-num">${escapeHTML(String(p.pid))}</td><td class="proc-td-user">${escapeHTML(p.user||'—')}</td><td class="proc-td-cpu${tone}">${cpu.toFixed(1)}%</td><td class="proc-td-num">${mem.toFixed(1)}%</td><td class="proc-td-num">${mib}M</td><td class="proc-td-num">${escapeHTML(p.time||'—')}</td><td class="proc-td-cmd" title="${escapeHTML(cmd)}">${escapeHTML(cmd)}</td></tr>`;
+    }).join('');
+    return `<div class="proc-table-wrap"><table class="proc-table"><thead><tr><th>#</th><th>PID</th><th>USER</th><th>CPU%</th><th>MEM%</th><th>RES</th><th>TIME+</th><th>Command</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  };
+  const applyMetrics=m=>{
+    const meters=$('#ov-meters'),sys=$('#ov-system'),procsEl=$('#ov-processes');
+    if(meters)meters.innerHTML=renderMeters({...info,...m});
+    if(sys)sys.innerHTML=renderUptime({...info,...m});
+    if(procsEl&&m.top_processes)procsEl.innerHTML=renderProcs(m.top_processes);
+  };
+  if(info.top_processes===undefined){
+    populate($('#ov-processes'),path+'/metrics',fresh=>renderProcs(fresh.top_processes||[]));
+  }else{
+    $('#ov-processes').innerHTML=renderProcs(info.top_processes);
+  }
+  let polling=false;
+  const timer=setInterval(async()=>{
+    if(!view.isConnected||endpoint()!==path||(location.hash&&location.hash!=='#overview')){clearInterval(timer);return;}
+    if(document.hidden||polling)return;
+    polling=true;
+    try{
+      const m=await api(path+'/metrics');
+      if(view.isConnected&&endpoint()===path)applyMetrics(m);
+    }catch{}
+    finally{polling=false;}
+  },3000);
   async function populate(el,url,format){
     el.textContent=vt('Đang kiểm tra…','Checking…');
     try{const data=await api(url);if(el.isConnected)el.innerHTML=format(data);}

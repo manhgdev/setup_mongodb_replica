@@ -18,6 +18,7 @@
     "vnstat-service",
     "net-tools",
     "dnsutils",
+    "iputils-ping",
     "lsof",
     "jq",
     "rsync",

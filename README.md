@@ -25,7 +25,7 @@ Trong **Nginx & tên miền**, chọn VPS và bấm trực tiếp các nút sử
 
 **Git & SSH Key** hiển thị phiên bản Git, OpenSSH Client, danh tính Git và các public key của tài khoản Linux trên VPS đang chọn. Tạo key ED25519 hoặc RSA 4096-bit, mở **Public key → Sao chép**, thêm vào tài khoản Git, rồi bấm **Kiểm tra kết nối**. Dùng **+ Alias** để chọn key riêng theo tài khoản, ví dụ `git clone git@github-work:nhom/project.git`. [Ảnh quản lý Git & SSH Key](previews/vps-manager/git-ssh-keys.jpg) · [Hướng dẫn sử dụng](apps/vps_manager/docs/README.md#git--ssh-key).
 
-**SSH Terminal** mở phiên SSH tương tác nhiều tab ngay trên trình duyệt bằng `xterm.js` + WebSocket PTY, hỗ trợ truecolor, ký tự box-drawing (`btop`, `htop`), con trỏ khối rõ nét và giải mã UTF-8 theo luồng để không lỗi ký tự khi truyền qua chunk. [Ảnh SSH Terminal chạy btop](previews/vps-manager/ssh-terminal-btop.png).
+**SSH Terminal** mở phiên SSH tương tác nhiều tab ngay trên trình duyệt bằng `xterm.js` + WebSocket PTY, hỗ trợ truecolor, ký tự box-drawing (`btop`, `htop`), con trỏ khối rõ nét và giải mã UTF-8 theo luồng để không lỗi ký tự khi truyền qua chunk. Hỗ trợ **chia khung nhiều VPS (Split-pane)** qua **+ Mở nhiều VPS** hoặc **+ Chia vào tab này**, kéo thả tiêu đề khung để chia/đổi vị trí, kéo thanh chia để đổi kích thước, phóng to từng khung và bật **Broadcast** để gõ lệnh đồng thời lên nhiều VPS. [Ảnh SSH Terminal chạy btop](previews/vps-manager/ssh-terminal-btop.png) · [Ảnh SSH Terminal nhiều VPS + Broadcast](previews/vps-manager/ssh-terminal-multi.png).
 
 Sidebar VPS chia theo workspace, quản trị và hoạt động. Trên desktop, nút « thu gọn sidebar thành dải biểu tượng và lưu lựa chọn cho lần mở sau.
 

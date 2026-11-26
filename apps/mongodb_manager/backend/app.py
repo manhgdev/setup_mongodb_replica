@@ -33,6 +33,7 @@ from shared.manager_core.auth import Auth
 from .backup_schedule import BackupScheduler, KIND as SCHEDULES, ScheduleInput
 
 from shared.manager_core.http import Login, register_auth
+from shared.manager_core.storage_api import register_storage_routes
 from shared.manager_core.paths import DATA_DIR
 
 ROOT = Path(__file__).resolve().parent
@@ -82,7 +83,7 @@ def rename_generated_machines(store):
 def create_app(data_dir=None):
     @asynccontextmanager
     async def lifespan(app):
-        app.state.store = Store(data_dir or os.environ.get("MONGO_MANAGER_DATA", DATA_DIR))
+        app.state.store = Store(data_dir or os.environ.get("MONGO_MANAGER_DATA", DATA_DIR), app_name="mongo")
         rename_generated_machines(app.state.store)
         app.state.auth = Auth(app.state.store)
         app.state.pool = ThreadPoolExecutor(max_workers=8)
@@ -137,6 +138,7 @@ def create_app(data_dir=None):
         return JSONResponse({"detail": ' '.join(dict.fromkeys(errors))}, status_code=422)
 
     register_auth(app)
+    register_storage_routes(app)
 
     @app.exception_handler(KeyError)
     async def missing(request, exc):
@@ -207,7 +209,7 @@ def create_app(data_dir=None):
     def state():
         store = app.state.store
         return {"profiles": [public_profile(v) for v in store.all("profiles")], "machines": [public_machine(v) for v in store.all("machines")],
-                "jobs": list(reversed(store.all("jobs")))[0:100], "backup_schedules": store.all(SCHEDULES),
+                "jobs": [j for j in reversed(store.all("jobs")) if not str(j.get("action", "")).startswith("vps_")][0:100], "backup_schedules": store.all(SCHEDULES),
                 "local_only": not bool(app.state.auth.origin)}
 
     @app.put("/api/profiles/{record_id}/backup-schedule")

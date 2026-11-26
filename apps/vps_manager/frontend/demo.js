@@ -12,6 +12,7 @@ async function previewVps(path,data){
       case machine:{
         sampleCatalog ||= await api('vps/catalog');
         return {...sampleCatalog,host:'web-demo',os:'Ubuntu 24.04 LTS',arch:'amd64',cpu:4,memory:'8 GiB',disk_total:80*2**30,disk_used:32*2**30,memory_total:8*2**30,memory_available:5*2**30,load_average:[0.38,0.46,0.42],kernel:'6.8.0-generic',uptime_seconds:896400,disk_free:48*2**30,nginx:'active',manager:'apt',
+        top_processes:[{pid:1220,user:'root',name:'node',cmd:'node /home/api_express/src/index.js',cpu:3.4,mem:1.8,rss:148*1048576,time:'02:40.66'},{pid:842,user:'mongodb',name:'mongod',cmd:'/usr/bin/mongod --config /etc/mongod.conf',cpu:1.9,mem:4.2,rss:340*1048576,time:'01:12.30'},{pid:510,user:'www-data',name:'nginx',cmd:'nginx: worker process',cpu:0.4,mem:0.3,rss:24*1048576,time:'00:05.12'},{pid:1089,user:'root',name:'PM2',cmd:'PM2 v7.1.2: God Daemon (/root/.pm2)',cpu:0.2,mem:1.1,rss:88*1048576,time:'00:09.67'}],
         packages:{...Object.fromEntries(Object.keys(sampleCatalog.catalog).map(id=>[id,''])),git:'2.43.0',nginx:'1.24.0',curl:'8.5.0','docker-engine':'Docker 28 (demo)','docker-service':'active','docker-compose':'2.40 (demo)'}};}
       case machine+'/git/status':return {git:'git version 2.43',ssh:'OpenSSH 9.6',username:'Demo',email:'demo@example.test',keys:[],aliases:{}};
       case machine+'/docker/status':return {engine:true,active:true,compose:'2.40 (demo)',containers:[{ID:'a'.repeat(64),Names:'web-demo',State:'running',Status:'Up · demo',Image:'nginx:alpine',Ports:'127.0.0.1:8080 → 80'}]};
@@ -21,6 +22,9 @@ async function previewVps(path,data){
       case 'vps/servers':return [{id:'demo',name:'Ubuntu VPS · Demo',mode:'ssh',host:'203.0.113.10',port:22,user:'root',ssh_auth:'password',has_ssh_password:true,mongo_endpoint:'203.0.113.10:27017'}];
       case machine+'/docker/logs':return {text:'web-demo · GET / 200'};
       case machine+'/docker/plan':return {project:'web-demo',services:[{name:'web',image:'nginx:alpine'}],revision:'demo'};
+      case machine+'/metrics':{
+        return {cpu:4,disk_free:82*2**30,disk_total:120*2**30,disk_used:38*2**30,memory_total:8*2**30,memory_available:3.9*2**30,uptime_seconds:984200,load_average:[0.28,0.25,0.18],top_processes:[{pid:1220,user:'root',name:'node',cmd:'node /home/api_express/src/index.js',cpu:3.4,mem:1.8,rss:148*1048576,time:'02:40.66'},{pid:842,user:'mongodb',name:'mongod',cmd:'/usr/bin/mongod --config /etc/mongod.conf',cpu:1.9,mem:4.2,rss:340*1048576,time:'01:12.30'},{pid:510,user:'www-data',name:'nginx',cmd:'nginx: worker process',cpu:0.4,mem:0.3,rss:24*1048576,time:'00:05.12'},{pid:1089,user:'root',name:'PM2',cmd:'PM2 v7.1.2: God Daemon (/root/.pm2)',cpu:0.2,mem:1.1,rss:88*1048576,time:'00:09.67'}]};
+      }
       case machine+'/packages':{
         const params=new URL(path,location.origin).searchParams;
         const installed=params.get('scope')==='installed';

@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, SecretStr
 from shared.manager_core.ssh_transport import fingerprint, probe_host_key, enroll_host_key
 from shared.manager_core.auth import Auth
 from shared.manager_core.http import register_auth
+from shared.manager_core.storage_api import register_storage_routes
 from shared.manager_core.job_slots import Busy, JobSlots, machine_keys
 from shared.manager_core.machines import Machine
 from shared.manager_core.paths import DATA_DIR
@@ -108,14 +109,14 @@ def worker(machine, action, params, emit):
         return run_worker(machine,ROOT/"backend/firewall_worker.py",{"action":action,"params":params},True,emit)
     if action.startswith("docker-"):
         return run_worker(machine,ROOT/"backend/docker_worker.py",{"action":action,"params":params},True,emit)
-    if action in {"overview","install"}:
+    if action in {"overview","install","uninstall"}:
         import getpass
         params=dict(params,entries=INSTALL,login_user=machine["user"] if machine["mode"]=="ssh" else getpass.getuser())
     return run_worker(
         machine,
         ROOT / "backend/worker.py",
         {"action": action, "params": dict(params, catalog=list(CATALOG))},
-        action in {"native-install", "install", "maintain", "site", "sites", "inventory", "detail", "logs", "apply", "diff", "check", "repair-link", "lifecycle", "ssl-status","external-certificate","renew-ssl"},
+        action in {"native-install", "install", "uninstall", "maintain", "site", "sites", "inventory", "detail", "logs", "apply", "diff", "check", "repair-link", "lifecycle", "ssl-status","external-certificate","renew-ssl"},
         emit,
     )
 
@@ -575,6 +576,13 @@ def register(app):
         except (RuntimeError, OSError) as exc:
             raise HTTPException(422, str(exc)) from None
 
+    @app.get("/api/vps/machines/{ident}/metrics")
+    def machine_metrics(ident: str):
+        try:
+            return worker(record("machines", ident), "metrics", {}, lambda _: None)
+        except (RuntimeError, ValueError, OSError) as exc:
+            raise HTTPException(502, str(exc)) from None
+
     @app.get("/api/vps/machines/{ident}/nginx")
     def inventory(ident: str):
         try:
@@ -623,14 +631,14 @@ def register(app):
         return [
             j
             for j in reversed(app.state.store.all("jobs"))
-            if j.get("machine_id") == ident
+            if j.get("machine_id") == ident and str(j.get("action", "")).startswith("vps_")
         ][:50]
 
     @app.post("/api/vps/machines/{ident}/{action}", status_code=202)
     def submit(ident: str, action: str, body: Operation):
-        if action not in {"site", "nginx-import", "nginx-reload", "install","native-install","maintain","apply","lifecycle","repair-link","external-certificate","renew-ssl"}:
+        if action not in {"site", "nginx-import", "nginx-reload", "install","uninstall","native-install","maintain","apply","lifecycle","repair-link","external-certificate","renew-ssl"}:
             raise HTTPException(404)
-        if action == "install" and (
+        if action in {"install","uninstall"} and (
             not body.packages or set(body.packages) - CATALOG.keys()
         ):
             raise HTTPException(422, "Chọn gói trong danh mục.")
@@ -648,7 +656,7 @@ def register(app):
                 headers={"X-Active-Job": exc.job_id} if exc.job_id else {},
             ) from None
         labels={"hostname":"Đổi hostname","docker-deploy":"Docker Compose",
-                "maintain":"Bảo trì gói hệ thống","install":"Cài phần mềm","native-install":"Cài phần mềm","password":"Đặt mật khẩu Linux","firewall":"Firewall"}
+                "maintain":"Bảo trì gói hệ thống","install":"Cài phần mềm","uninstall":"Gỡ phần mềm","native-install":"Cài phần mềm","password":"Đặt mật khẩu Linux","firewall":"Firewall"}
         labels.update({"git-"+k:v for k,v in GIT_ACTIONS.items()})
         if action=="docker-container":
             labels[action]="Docker · "+body.operation
@@ -663,7 +671,7 @@ def register(app):
             created_at=now(),
             events=[],
         )
-        if action in {"install","native-install","maintain","git-install","git-update"}:
+        if action in {"install","uninstall","native-install","maintain","git-install","git-update"}:
             job["resource"] = "packages"
         if actor:
             job["actor"]=actor
@@ -730,7 +738,7 @@ def register(app):
                                     store.save("vps-overviews",cached,ident)
                             elif cached:
                                 store.delete("vps-overviews",ident)
-                    if action in {"install","native-install","maintain","git-install","git-update"}:
+                    if action in {"install","uninstall","native-install","maintain","git-install","git-update"}:
                         with overview_lock(ident):
                             store.delete("vps-overviews",ident)
                     job["finished_at"] = now()
@@ -776,7 +784,7 @@ def register(app):
 
     @app.post("/api/vps/batches/{action}", status_code=202)
     def batch(action: str, body: BatchOperation):
-        if action != "install" and not (action == "site" and body.operation.operation == "create"):
+        if action not in {"install","uninstall"} and not (action == "site" and body.operation.operation == "create"):
             raise HTTPException(422, "Chọn cài phần mềm hoặc tạo website.")
         results = []
         for ident in dict.fromkeys(body.machines):
@@ -799,7 +807,7 @@ def register(app):
 def create_app(data_dir=None):
     @asynccontextmanager
     async def lifespan(app):
-        store = Store(data_dir or os.environ.get("MONGO_MANAGER_DATA", DATA_DIR))
+        store = Store(data_dir or os.environ.get("MONGO_MANAGER_DATA", DATA_DIR), app_name="vps")
         app.state.store = store
         app.state.auth = Auth(store)
         app.state.slots = JobSlots()
@@ -829,6 +837,7 @@ def create_app(data_dir=None):
         )
 
     register_auth(app, "/vps/static/manager.css")
+    register_storage_routes(app)
     register(app)
 
     @app.get("/")

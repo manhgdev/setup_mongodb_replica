@@ -940,6 +940,71 @@ def install_catalog(requested, entries, apt, dnf, user):
     return {"packages":requested}
 
 
+UNINSTALL_RECIPES={
+    "bun":("rm -rf \"$HOME/.bun\"",True),
+    "nvm":("rm -rf \"$HOME/.nvm\"",True),
+    "node-lts":("rm -rf \"$HOME/.nvm/versions/node\"",True),
+    "pm2":("npm uninstall -g pm2",True),
+    "yarn":("npm uninstall -g yarn",True),
+    "fast-cli":("npm uninstall -g fast-cli",True),
+    "pm2-logrotate":("pm2 uninstall pm2-logrotate",True),
+    "python-env":("rm -rf \"$HOME/.venvs/zm-vps\"",True),
+    "yt-dlp":("rm -f /usr/local/bin/yt-dlp",False),
+    "yt-dlp-nightly":("rm -f /usr/local/bin/yt-dlp \"$HOME/.local/bin/yt-dlp\"",True),
+    "bench-sh":("rm -f \"$HOME/.local/bin/bench.sh\"",True),
+    "docker-engine":("apt-get -o DPkg::Lock::Timeout=120 remove -y docker-ce docker-ce-cli containerd.io",False),
+    "docker-compose":("apt-get -o DPkg::Lock::Timeout=120 remove -y docker-compose-plugin",False),
+    "go-backports":("apt-get -o DPkg::Lock::Timeout=120 remove -y golang-go",False),
+    "speedtest":("apt-get -o DPkg::Lock::Timeout=120 remove -y speedtest",False),
+    "pm2-startup":("pm2 unstartup systemd -u \"$USER\" --hp \"$HOME\" || true",True),
+    "docker-service":("systemctl disable --now docker.service docker.socket",False),
+    "redis-server-service":("systemctl disable --now redis-server.service",False),
+    "vnstat-service":("systemctl disable --now vnstat.service",False),
+    "cron-service":("systemctl disable --now cron.service",False),
+    "certbot-timer":("systemctl disable --now certbot.timer",False),
+    "yt-nightly-timer":("systemctl disable --now zm-yt-nightly.timer",False),
+}
+
+
+def uninstall_catalog(requested,entries,apt,dnf,user):
+    if not apt and not dnf:
+        raise ValueError("Chỉ hỗ trợ gỡ phần mềm trên Ubuntu/Debian hoặc RHEL/CentOS.")
+    protected={"python3","ca-certificates","openssl"}
+    for item in requested:
+        if item in protected:
+            raise ValueError(f"Không cho phép gỡ gói hệ thống quan trọng: {item}")
+        if item not in entries:
+            raise ValueError("Gói không có trong danh mục: "+item)
+    for item in requested:
+        entry=entries[item]
+        if not package_version(entry,apt,user):
+            event("Chưa cài · "+item)
+            continue
+        event("Đang gỡ · "+item)
+        if item in UNINSTALL_RECIPES:
+            script,as_user=UNINSTALL_RECIPES[item]
+            result=recipe_process(script,as_user,user,600)
+            if result.returncode:
+                tail=((result.stderr or "")+"\n"+(result.stdout or "")).strip()[-350:]
+                raise ValueError(f"Gỡ {item} thất bại (exit {result.returncode})" + (f": {tail}" if tail else "."))
+        elif "install" in entry:
+            raise ValueError(f"Gói {item} chưa hỗ trợ gỡ tự động.")
+        else:
+            choices=native_names(entry,apt)
+            removed=False
+            for name in choices:
+                if apt and command(["dpkg-query","-W","-f=${db:Status-Abbrev}",name],False).strip() in {"ii","hi"}:
+                    command([apt,"-o","DPkg::Lock::Timeout=120","remove","-y",name],timeout=600)
+                    removed=True
+                elif dnf and command(["rpm","-q",name],False):
+                    command([dnf,"remove","-y",name],timeout=600)
+                    removed=True
+            if not removed:
+                raise ValueError(f"Không tìm thấy gói hệ thống để gỡ: {item}")
+        event("Đã gỡ · "+item)
+    return {"packages":requested}
+
+
 MAINTENANCE = {
     "update-index":"Cập nhật danh mục gói",
     "upgrade-packages":"Nâng cấp các gói hệ thống",
@@ -1059,12 +1124,58 @@ def execute(action, p):
             ):
                 result.append({"name": row["name"], "port": int(port)})
         return result
-    if action == "overview":
-        os_info = Path("/etc/os-release").read_text()
-        name = re.search(r'^PRETTY_NAME="?(.*?)"?$', os_info, re.M)
+    def _read_metrics():
         disk = shutil.disk_usage("/")
         meminfo = dict((key,int(value)*1024) for key,value in
                        re.findall(r"^(MemTotal|MemAvailable):\s+(\d+) kB",Path("/proc/meminfo").read_text(),re.M))
+        top_processes = []
+        ps = subprocess.run(
+            ["ps", "-eo", "pid=,user=,%cpu=,%mem=,rss=,time=,args=", "--sort=-%cpu,-%mem,-rss"],
+            capture_output=True, text=True,
+        )
+        if ps.returncode == 0:
+            self_pid = os.getpid()
+            for line in ps.stdout.splitlines():
+                parts = line.split(None, 6)
+                if len(parts) == 7:
+                    try:
+                        pid = int(parts[0])
+                        cmd = parts[6].strip()
+                        if pid == self_pid or "host_worker.py" in cmd or "ps -eo pid=,user=" in cmd:
+                            continue
+                        exe = cmd.split()[0].strip("[]") if cmd else ""
+                        top_processes.append({
+                            "pid": pid,
+                            "user": parts[1],
+                            "cpu": float(parts[2]),
+                            "mem": float(parts[3]),
+                            "rss": int(parts[4]) * 1024,
+                            "time": parts[5],
+                            "name": Path(exe).name or cmd[:24],
+                            "cmd": cmd[:180],
+                        })
+                    except ValueError:
+                        continue
+                    if len(top_processes) >= 5:
+                        break
+        return {
+            "cpu": os.cpu_count(),
+            "disk_free": disk.free,
+            "disk_total": disk.total,
+            "disk_used": disk.used,
+            "memory": str(meminfo["MemTotal"]//1024)+" kB",
+            "memory_total": meminfo["MemTotal"],
+            "memory_available": meminfo.get("MemAvailable"),
+            "uptime_seconds": int(float(Path("/proc/uptime").read_text().split()[0])),
+            "load_average": list(os.getloadavg()),
+            "top_processes": top_processes,
+        }
+    if action == "metrics":
+        return _read_metrics()
+    if action == "overview":
+        os_info = Path("/etc/os-release").read_text()
+        name = re.search(r'^PRETTY_NAME="?(.*?)"?$', os_info, re.M)
+        metrics = _read_metrics()
         versions = {}
         probe_errors = {}
         if apt or dnf:
@@ -1103,15 +1214,6 @@ def execute(action, p):
             "host": socket.gethostname(),
             "os": name[1] if name else platform.system(),
             "arch": platform.machine(),
-            "cpu": os.cpu_count(),
-            "disk_free": disk.free,
-            "disk_total": disk.total,
-            "disk_used": disk.used,
-            "memory": str(meminfo["MemTotal"]//1024)+" kB",
-            "memory_total": meminfo["MemTotal"],
-            "memory_available": meminfo.get("MemAvailable"),
-            "uptime_seconds": int(float(Path("/proc/uptime").read_text().split()[0])),
-            "load_average": list(os.getloadavg()),
             "kernel": platform.release(),
             "manager": "apt" if apt else "dnf" if dnf else "",
             "packages": versions,
@@ -1119,6 +1221,7 @@ def execute(action, p):
             "nginx": command(["systemctl", "is-active", "nginx"], False)
             if shutil.which("systemctl")
             else "unknown",
+            **metrics,
         }
     if action == "repair-link":
         root = Path("/etc/nginx")
@@ -1153,6 +1256,8 @@ def execute(action, p):
         return package_maintenance(p["operation"],apt,dnf)
     if action=="install":
         return install_catalog(p["packages"],p["entries"],apt,dnf,p["login_user"])
+    if action=="uninstall":
+        return uninstall_catalog(p["packages"],p["entries"],apt,dnf,p["login_user"])
     if action == "nginx-test":
         proc = subprocess.run(["nginx", "-t"], capture_output=True, text=True, timeout=30)
         out = ((proc.stderr or "") + "\n" + (proc.stdout or "")).strip()

@@ -8,7 +8,8 @@ const paths = {
   cluster:'M9 3h6v5H9z M2 16h6v5H2z M16 16h6v5h-6z M12 8v4 M5 16v-4h14v4',
   users:'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2 M9 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8 M20 21v-2a4 4 0 0 0-3-3.87 M16 3.13a4 4 0 0 1 0 7.75',
   backup:'M4 7h16v14H4z M3 3h18v4H3z M9 11h6 M12 14v4 M10 16l2 2 2-2',
-  settings:'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8 M12 2v3 M12 19v3 M2 12h3 M19 12h3 M5 5l2 2 M17 17l2 2 M5 19l2-2 M17 7l2-2',
+  settings:'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z',
+  replica:'M12 3a2 2 0 1 0 0 4 2 2 0 0 0 0-4 M5 17a2 2 0 1 0 0 4 2 2 0 0 0 0-4 M19 17a2 2 0 1 0 0 4 2 2 0 0 0 0-4 M12 7v4 M12 11l-7 6 M12 11l7 6',
   pulse:'M2 12h5l3-8 4 16 3-8h5',
   arrow:'M12 19V5 M5 12l7-7 7 7',
   clock:'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18 M12 7v5l3 2',
@@ -25,8 +26,9 @@ const paths = {
 };
 const icon = name => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${paths[name] || paths.grid}"/></svg>`;
 const nav = [
-  ['overview',uiText("Tổng quan"),'grid',uiText("QUẢN LÝ")],['clusters',uiText("Các cụm MongoDB"),'cluster'],['machines',uiText("Máy chủ"),'server'],['replica','Replica Set','cluster'],['users',uiText("User & phân quyền"),'users'],
-  ['backup','Backup & restore','backup',uiText("VẬN HÀNH")],['data',uiText("Dữ liệu"),'db'],['settings',uiText("Cấu hình"),'settings'],['diagnostics',uiText("Chẩn đoán"),'pulse'],['upgrade',uiText("Phiên bản & nâng cấp"),'arrow'],['jobs',uiText("Lịch sử tác vụ"),'clock'],
+  ['overview',uiText("Tổng quan"),'grid',uiText("QUẢN LÝ")],['clusters',uiText("Các cụm MongoDB"),'cluster'],['machines',uiText("Máy chủ"),'server'],['replica','Replica Set','replica'],['users',uiText("User & phân quyền"),'users'],
+  ['backup','Backup & restore','backup',uiText("VẬN HÀNH")],['data',uiText("Dữ liệu"),'db'],['diagnostics',uiText("Chẩn đoán & nâng cấp"),'pulse'],['jobs',uiText("Lịch sử tác vụ"),'clock'],
+  ['settings',uiText("Cài đặt"),'settings',uiText("HỆ THỐNG")],
 ];
 let state = {profiles:[],machines:[],jobs:[]};
 let demo = localStorage.getItem('mongo-manager-demo') === 'true';
@@ -439,7 +441,7 @@ function scheduleSummary(){
   return [dataLabel('Lịch đang bật','Schedule enabled'),schedule.cron,next && dataLabel('Lần tới ','Next ')+next+' (UTC+7)'].filter(Boolean).join(' · ');
 }
 function backupPage(){return heading('Backup & restore',dataLabel('Sao lưu theo database, đồng bộ dữ liệu mới hoặc khôi phục sang cụm khác.','Back up databases, sync current data or restore to another cluster.'),button(dataLabel('Đồng bộ ngay','Sync now'),'backup-sync','refresh')+button(uiText("Làm mới"),'refresh','refresh')+button(uiText("Tạo backup"),'backup-new','plus','primary'))+`<div class="callout">${uiText("Backup được lưu trên máy thực thi tại")} <code>/var/backups/mongodb-manager</code>${dataLabel('. Backup toàn replica set có oplog. Các database được chọn được sao lưu tuần tự.','. Full replica set backups include the oplog. Selected databases are backed up sequentially.')}</div>`+panel(uiText("Các bản backup"),(archiveHosts().length?`<label class="field panel-body">${dataLabel('Máy lưu backup','Archive host')}<select id="archive-host">${archiveHosts().map(m=>`<option value="${esc(m.id)}" ${m.id===selectedArchiveHost()?.id?'selected':''}>${esc(m.name)}</option>`).join('')}</select></label>`:'')+backupCatalog(),esc(scheduleSummary()),button(dataLabel('Lịch backup','Backup schedule'),'backup-schedule','clock'))+`<div class="cards compact-cards">${feature(uiText("Backup toàn cụm hoặc một phần"),dataLabel('Chọn một, nhiều database hoặc toàn cụm.','Select one or more databases or the entire cluster.'),'backup','backup-new',uiText("Tạo bản sao"))}${feature(uiText("Restore từ bản backup"),uiText("Chọn đúng máy chứa backup và cụm đích. Xem lại toàn bộ thông tin trước khi ghi dữ liệu."),'db','restore',uiText("Khôi phục dữ liệu"))}</div>`;}
-function sshSettingsPanel(){return panel(uiText(currentRoute==='clusters'?"SSH cho tất cả các cụm":"SSH cho cụm hiện tại"),`<div class="panel-body"><p>${uiText("Mỗi VPS giữ thông tin SSH riêng, không phụ thuộc vai trò primary/secondary. Có thể áp dụng cùng tài khoản cho các node được chọn, sau đó sửa riêng từng VPS khi cần.")}</p>${button(uiText("Cấu hình SSH nhiều VPS"),'ssh-bulk','server','primary')}</div>`);}
+function sshSettingsPanel(){return panel(uiText(currentRoute==='clusters'?"SSH cho tất cả các cụm":"SSH cho cụm hiện tại"),'',uiText("Mỗi VPS giữ thông tin SSH riêng, có thể áp dụng chung cho các node được chọn."),button(uiText("Cấu hình SSH nhiều VPS"),'ssh-bulk','server','small','data-tone="configure"'));}
 let pendingJoin=false,pendingJoinOptions={};
 function showNodeAdd(arbiter=false){
   const role=arbiter?'Arbiter':'Secondary';
@@ -473,8 +475,8 @@ document.addEventListener('submit',async event=>{
  await api('/machines/batch',{method:'POST',body:JSON.stringify(records)});form.elements.ssh_password.value='';$('#modal').close();await refreshState();await render();toast((uiText("Đã lưu SSH cho")+" ")+records.length+' VPS.');
  }catch(error){formError(error);}finally{submit.disabled=false;}
 });
-function settingsPage(){const p=profile();return heading(uiText("Cấu hình workspace"),uiText("Thông tin kết nối và các thiết lập của cụm đang chọn."),button(uiText("Chỉnh kết nối"),'profile-edit','settings','primary'))+(demo?'':panel(dataLabel('Quản trị MongoDB Manager','Manager administrator'),'',dataLabel('Tài khoản đăng nhập giao diện web.','Login for the web interface.'),button(dataLabel('Sửa tài khoản quản trị','Edit administrator account'),'manager-admin','settings')))+sshSettingsPanel()+panel(uiText("Hồ sơ MongoDB"),p?`<div class="panel-body">${[[uiText("Tên cụm"),p.name],['Seed list',p.seeds.join(', ')],['Replica set',p.replica_set||'Standalone'],['Username',p.username||uiText("Không dùng")],['Auth database',p.auth_db],['TLS',p.tls?uiText("Bật"):uiText("Tắt")]].map(([k,v])=>`<div class="key-value"><span>${k}</span><strong>${esc(v)}</strong></div>`).join('')}<div class="section-title"></div><div class="actions">${button(uiText("Chỉnh kết nối"),'profile-edit','settings','primary')}${button(uiText("Chuỗi kết nối"),'connection','external')}${button(uiText("Xóa hồ sơ"),'profile-delete','trash','danger')}</div></div>`:empty(uiText("Chưa chọn cụm"),uiText("Tạo hồ sơ kết nối trước khi cấu hình.")))+`<div class="callout neutral">${uiText("Hồ sơ và mật khẩu được mã hóa trên máy quản trị. Khóa mã hóa nằm cùng thư mục dữ liệu, chỉ tài khoản hệ điều hành hiện tại có quyền đọc. SSH hỗ trợ mật khẩu hoặc key/agent của tài khoản chạy ứng dụng.")}</div>`;}
-function diagnosticsPage(){return heading(uiText("Chẩn đoán"),uiText("Kiểm tra kết nối MongoDB và môi trường máy chủ."),button(uiText("Kiểm tra kết nối"),'diagnose','pulse','primary'))+`<div class="cards">${feature(uiText("Kết nối các node"),uiText("Kết nối trực tiếp từng seed, xác thực và đọc vai trò từ máy quản trị."),'cluster','diagnose',uiText("Chạy chẩn đoán"))}${feature(uiText("Môi trường VPS"),uiText("Kiểm tra Ubuntu, CPU, kernel, đĩa, package và service qua SSH."),'server','preflight',uiText("Kiểm tra máy"))}${feature(uiText("Nhật ký MongoDB"),uiText("Xem journal của service để xác định lỗi startup, quyền hoặc port."),'terminal','logs',uiText("Đọc nhật ký"))}</div><div class="section-title"><h2>${uiText("Kết quả kiểm tra")}</h2></div><div id="query-result">${empty(uiText("Sẵn sàng kiểm tra"),uiText("Chọn một phép kiểm tra phía trên. Các bước chẩn đoán chỉ đọc thông tin."),'','','pulse')}</div>`;}
+function settingsPage(){const p=profile();return heading(uiText("Cấu hình workspace"),uiText("Thông tin kết nối và các thiết lập của cụm đang chọn."),button(uiText("Chỉnh kết nối"),'profile-edit','settings','primary'))+(demo?'':panel(dataLabel('Quản trị MongoDB Manager','Manager administrator'),'',dataLabel('Tài khoản đăng nhập giao diện web.','Login for the web interface.'),`<div class="actions">${button(dataLabel('Lưu trữ dữ liệu (SQLite / MongoDB)','Data Storage (SQLite / MongoDB)'),'storage-settings','db','small','data-tone="info"')}${button(dataLabel('Sửa tài khoản quản trị','Edit administrator account'),'manager-admin','settings','small','data-tone="configure"')}</div>`))+sshSettingsPanel()+panel(uiText("Hồ sơ MongoDB"),p?`<div class="panel-body">${[[uiText("Tên cụm"),p.name],['Seed list',p.seeds.join(', ')],['Replica set',p.replica_set||'Standalone'],['Username',p.username||uiText("Không dùng")],['Auth database',p.auth_db],['TLS',p.tls?uiText("Bật"):uiText("Tắt")]].map(([k,v])=>`<div class="key-value"><span>${k}</span><strong>${esc(v)}</strong></div>`).join('')}<div class="section-title"></div><div class="actions">${button(uiText("Chỉnh kết nối"),'profile-edit','settings','primary')}${button(uiText("Chuỗi kết nối"),'connection','external')}${button(uiText("Xóa hồ sơ"),'profile-delete','trash','danger')}</div></div>`:empty(uiText("Chưa chọn cụm"),uiText("Tạo hồ sơ kết nối trước khi cấu hình.")))+`<div class="callout neutral">${uiText("Hồ sơ và mật khẩu được mã hóa trên máy quản trị. Khóa mã hóa nằm cùng thư mục dữ liệu, chỉ tài khoản hệ điều hành hiện tại có quyền đọc. SSH hỗ trợ mật khẩu hoặc key/agent của tài khoản chạy ứng dụng.")}</div>`;}
+function diagnosticsPage(){return heading(uiText("Chẩn đoán & nâng cấp"),uiText("Kiểm tra kết nối MongoDB, môi trường máy chủ và nâng cấp phiên bản."),`<a class="button" data-tone="configure" href="#upgrade">${icon('arrow')}${uiText("Phiên bản & nâng cấp")}</a>`+button(uiText("Kiểm tra kết nối"),'diagnose','pulse','primary'))+`<div class="cards">${feature(uiText("Kết nối các node"),uiText("Kết nối trực tiếp từng seed, xác thực và đọc vai trò từ máy quản trị."),'cluster','diagnose',uiText("Chạy chẩn đoán"))}${feature(uiText("Môi trường VPS"),uiText("Kiểm tra Ubuntu, CPU, kernel, đĩa, package và service qua SSH."),'server','preflight',uiText("Kiểm tra máy"))}${feature(uiText("Nhật ký MongoDB"),uiText("Xem journal của service để xác định lỗi startup, quyền hoặc port."),'terminal','logs',uiText("Đọc nhật ký"))}</div><div class="section-title"><h2>${uiText("Kết quả kiểm tra")}</h2></div><div id="query-result">${empty(uiText("Sẵn sàng kiểm tra"),uiText("Chọn một phép kiểm tra phía trên. Các bước chẩn đoán chỉ đọc thông tin."),'','','pulse')}</div>`;}
 function hostCompatibilityPanel(){
   const hosts=machines().filter(m=>(m.profile_id||'')===(profile()?.id||''));
   if(!hosts.length)return panel('Ubuntu',empty(dataLabel('Chưa có máy để kiểm tra','No hosts to inspect'),'', 'machine-new',uiText('Thêm máy')));
@@ -600,7 +602,7 @@ async function render(){
       if(!demo)localStorage.setItem('mongo-manager-profile',selected);
     }
   }
-  if(!nav.some(n=>n[0]===currentRoute))currentRoute='overview';
+  if(!nav.some(n=>n[0]===currentRoute)&&currentRoute!=='upgrade')currentRoute='overview';
   updateChrome();document.body.classList.remove('nav-open');syncSidebarToggle();
   const needsStatus=['overview','machines','replica'].includes(currentRoute);
   if(demo){currentStatus=profile()?structuredClone(demoStatus):null;statusError='';}
@@ -1353,6 +1355,19 @@ document.addEventListener('click',async event=>{
   const act=target.dataset.act;
   try{
     if(act==='manager-admin'){managerLogin(true);return;}
+    if(act==='storage-settings'){
+      window.zmStorageModal({
+        csrfToken,
+        en:uiLanguage==='en',
+        openModal:(title,html,onSave)=>{
+          modal(title,`<form id="zm-storage-form"><div class="modal-body">${html}<div id="form-error"></div></div><div class="modal-footer">${button(uiText('Hủy'),'modal-close')}<button class="button primary" type="submit">${icon('check')}${uiText('Lưu & Áp dụng')}</button></div></form>`);
+          $('#zm-storage-form').onsubmit=async e=>{e.preventDefault();const b=e.submitter;b.disabled=true;try{await onSave(e.target);}catch(err){formError(err);}finally{b.disabled=false;}};
+        },
+        closeModal:()=>$('#modal').close(),
+        onSwitched:()=>location.reload()
+      }).catch(err=>toast(err.message,true));
+      return;
+    }
     if(act==='arbiter-upgrade'||act==='ubuntu-upgrade-required'){
       const machine=machines().find(m=>m.id===target.dataset.id);
       if(!machine||(machine.profile_id||'')!==(profile()?.id||''))return;

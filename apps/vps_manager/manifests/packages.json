@@ -24,6 +24,7 @@
   "lsof": "lsof",
   "logrotate": "logrotate",
   "dnsutils": "dnsutils",
+  "iputils-ping": "ping (iputils-ping)",
   "cron": "cron",
   "netcat-openbsd": "netcat-openbsd",
   "g++": "g++",

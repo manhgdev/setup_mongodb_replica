@@ -189,6 +189,15 @@
       "bind-utils"
     ]
   },
+  "iputils-ping": {
+    "group": "Giám sát",
+    "apt": [
+      "iputils-ping"
+    ],
+    "dnf": [
+      "iputils"
+    ]
+  },
   "cron": {
     "group": "Giám sát",
     "apt": [

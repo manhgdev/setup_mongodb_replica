@@ -12,7 +12,7 @@ function softwareCenter(view,info){
   if(!kits.includes(draft.kit))draft.kit='*';
   const groupName=name=>name==='*'?tr('Tất cả','All'):(vpsEnglish?(englishLabels[name]||({'Công cụ VPS':'VPS tools','Web cơ bản':'Basic web'})[name]||name):name);
   const status=id=>info.probe_errors?.[id]||!Object.hasOwn(info.packages,id)?'unknown':info.packages[id]?'yes':'no';
-  for(const id of selected)if(!Object.hasOwn(catalog,id)||status(id)==='yes')selected.delete(id);
+  for(const id of selected)if(!Object.hasOwn(catalog,id))selected.delete(id);
   view.innerHTML=`<article class="sc-workbench">
     <header class="sc-toolbar"><strong>${tr('Bộ cài của tôi','My kits')}</strong>
       <input type="search" id="pkg-search" placeholder="${tr('Tìm gói phần mềm…','Find a package…')}" aria-label="${tr('Tìm gói phần mềm','Find a package')}"></header>
@@ -22,7 +22,8 @@ function softwareCenter(view,info){
       <option value="yes">${tr('Đã cài','Installed')}</option><option value="no">${tr('Còn thiếu','Missing')}</option><option value="unknown">${tr('Chưa xác minh','Unverified')}</option></select></div>
       <div id="pkg-list"></div></section></div>
     <footer class="sc-order"><button class="text-button" id="pkg-count"></button>
-      <button class="button primary small" id="install">${tr('Tiếp tục →','Continue →')}</button></footer>
+      <div class="actions"><button class="button small" data-tone="remove" id="uninstall">${tr('Gỡ đã chọn','Uninstall')}</button>
+      <button class="button primary small" id="install">${tr('Tiếp tục →','Continue →')}</button></div></footer>
   </article><div class="sc-utils"><details><summary>${tr('Công cụ VPS','Server tools')}</summary>
   <button class="button small" data-tool="installed">${tr('Gói hệ điều hành','System packages')}</button>
   <button class="button small" data-tool="repository">${tr('Kho phần mềm','Repository')}</button>
@@ -68,7 +69,9 @@ function softwareCenter(view,info){
     }
     if(!visible.length)list.textContent=tr('Không có gói phù hợp.','No matching packages.');
     $('#pkg-count').textContent=selected.size+tr(' gói đã chọn',' selected');
-    $('#pkg-count').disabled=$('#install').disabled=!selected.size;
+    $('#pkg-count').disabled=!selected.size;
+    $('#install').disabled=![...selected].some(id=>status(id)!=='yes');
+    $('#uninstall').disabled=![...selected].some(id=>status(id)==='yes');
   }
   function changeMode(mode){
     draft.mode=mode;draft.search='';$('#pkg-search').value='';draw();
@@ -82,6 +85,13 @@ function softwareCenter(view,info){
     modal('Bảo trì gói','<p>'+escapeHTML(host)+'</p><label class="field">Thao tác<select name="task"><option value="update-index">Cập nhật danh mục gói</option><option value="upgrade-packages">Nâng cấp các gói hệ thống</option><option value="refresh-ca">Làm mới kho chứng chỉ CA</option><option value="repair-ca">Cài lại OpenSSL và chứng chỉ CA</option></select></label>',form=>submit('maintain',{operation:form.get('task')}));
   };
   $('#install').onclick=()=>reviewInstall([...selected]);
+  $('#uninstall').onclick=()=>{
+    const packages=[...selected].filter(id=>status(id)==='yes');
+    if(!packages.length)return;
+    modal(tr('Gỡ phần mềm','Uninstall packages'),
+      machineChoices()+'<div class="callout error" style="margin-top:10px">'+tr('Sẽ gỡ bỏ các gói đã chọn trên các máy được đánh dấu: ','Will uninstall selected packages on checked servers: ')+'<strong>'+packages.map(id=>escapeHTML(catalog[id]||id)).join(', ')+'</strong></div>',
+      form=>submitTargets(form,'uninstall',{packages}));
+  };
   function reviewInstall(packages){
     let reviewed='',targets=[];
     modal('Cài phần mềm',machineChoices()+'<div id="pkg-review"></div>',form=>{if(!reviewed||reviewed!==JSON.stringify(form.getAll('machines')))throw new Error('Chờ kiểm tra các máy đã chọn.');form.delete('machines');for(const id of targets)form.append('machines',id);return submitTargets(form,'install',{packages});});
@@ -139,8 +149,11 @@ function softwareCenter(view,info){
 }
 
 async function accountDialog(){
-  const path=endpoint(), rev=revision;
-  const state=await api(path+'/account');
+  const path=endpoint(), rev=revision, btn=$('#account'), orig=btn?.textContent;
+  if(btn){btn.disabled=true;btn.textContent=vt('Đang tải…','Loading…');}
+  let state;
+  try{state=await api(path+'/account');}
+  finally{if(btn){btn.disabled=false;if(orig)btn.textContent=orig;}}
   if(rev!==revision)return;
   const target=state.user+'@'+state.host+':'+state.port;
   const canChange=state.sudo&&state.user!=='root'&&state.auth==='key';
