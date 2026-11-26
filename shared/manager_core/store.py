@@ -354,10 +354,30 @@ def migrate_store(source, target) -> dict:
     """Copy all records from source backend into target backend (idempotent upsert)."""
     total = 0
     kinds = source.list_kinds()
+    existing_machines = {
+        (m.get("mode"), m.get("host"), int(m.get("port") or 22), m.get("user")): m.get("id")
+        for m in (target.all("machines") if "machines" in kinds else [])
+    }
+    existing_users = {
+        u.get("username"): u.get("id")
+        for u in (target.all("users") if "users" in kinds else [])
+        if u.get("username")
+    }
     batch = []
     for kind in kinds:
         for item in source.all(kind):
-            batch.append((kind, item, item.get("id")))
+            rid = item.get("id")
+            if kind == "machines":
+                key = (item.get("mode"), item.get("host"), int(item.get("port") or 22), item.get("user"))
+                if key in existing_machines and existing_machines[key] != rid:
+                    rid = existing_machines[key]
+                    item = dict(item, id=rid)
+            elif kind == "users":
+                uname = item.get("username")
+                if uname and uname in existing_users and existing_users[uname] != rid:
+                    rid = existing_users[uname]
+                    item = dict(item, id=rid)
+            batch.append((kind, item, rid))
             total += 1
     if batch:
         target.save_many(batch)
