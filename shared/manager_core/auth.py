@@ -197,7 +197,7 @@ class Auth:
 
     def allowed_request(self, request):
         if self.origin:
-            return request.url.scheme == 'https' and request.headers.get('host', '').lower() == urlsplit(self.origin).netloc
+            return request.url.scheme in {'https', 'wss'} and request.headers.get('host', '').lower() == urlsplit(self.origin).netloc
         return request.url.hostname in {'localhost', '127.0.0.1', '::1'}
 
     def session(self, request):
