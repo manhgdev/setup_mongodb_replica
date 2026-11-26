@@ -27,6 +27,7 @@ async function serversPage(view,path,rev){
     const act=tr.querySelector('.actions');
     const mk=(text,tone,fn)=>{const b=document.createElement('button');b.type='button';b.className='button small';b.dataset.tone=tone;b.textContent=text;b.onclick=fn;act.append(b);};
     mk(vt('Tổng quan','Overview'),'info',()=>{$('#hosts').value=m.id;localStorage.setItem('vps-selected-machine',m.id);location.hash='overview';});
+    mk('Terminal','create',()=>{$('#hosts').value=m.id;localStorage.setItem('vps-selected-machine',m.id);location.hash='terminal?machine='+encodeURIComponent(m.id);});
     mk('Nginx','configure',()=>{$('#hosts').value=m.id;localStorage.setItem('vps-selected-machine',m.id);location.hash='domains';});
     mk('Firewall','warning',()=>{$('#hosts').value=m.id;localStorage.setItem('vps-selected-machine',m.id);location.hash='firewall';});
     mk(vt('Kiểm tra','Check'),'create',async()=>{

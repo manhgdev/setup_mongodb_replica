@@ -12,6 +12,7 @@ function softwareCenter(view,info){
   if(!kits.includes(draft.kit))draft.kit='*';
   const groupName=name=>name==='*'?tr('Tất cả','All'):(vpsEnglish?(englishLabels[name]||({'Công cụ VPS':'VPS tools','Web cơ bản':'Basic web'})[name]||name):name);
   const status=id=>info.probe_errors?.[id]||!Object.hasOwn(info.packages,id)?'unknown':info.packages[id]?'yes':'no';
+  for(const id of selected)if(!Object.hasOwn(catalog,id)||status(id)==='yes')selected.delete(id);
   view.innerHTML=`<article class="sc-workbench">
     <header class="sc-toolbar"><strong>${tr('Bộ cài của tôi','My kits')}</strong>
       <input type="search" id="pkg-search" placeholder="${tr('Tìm gói phần mềm…','Find a package…')}" aria-label="${tr('Tìm gói phần mềm','Find a package')}"></header>
@@ -145,9 +146,9 @@ async function accountDialog(){
   const canChange=state.sudo&&state.user!=='root'&&state.auth==='key';
   const fields='<p><strong>'+escapeHTML(target)+'</strong> · '+escapeHTML(state.auth)+'</p><p>sudo -n · '+(state.sudo?'✓':'—')+'　 SSH PasswordAuthentication · '+escapeHTML(state.password||'—')+'</p>';
   if(!canChange){modal('Tài khoản & SSH',fields+'<p>Chọn user thường dùng SSH key và có quyền sudo -n để đặt mật khẩu.</p>',async()=>{});return;}
-  modal('Tài khoản & SSH',fields+'<div class="form-grid"><label class="field">Mật khẩu Linux mới<input name="password" type="password" autocomplete="new-password" required></label><label class="field">Nhập lại mật khẩu<input name="repeat" type="password" autocomplete="new-password" required></label></div><p><label><input id="show-secret" type="checkbox"> Hiện mật khẩu</label></p><label><input name="enable" type="checkbox"> Cho phép user này đăng nhập SSH bằng mật khẩu</label>',async form=>{
+  modal('Tài khoản & SSH',fields+'<div class="form-grid"><label class="field">Mật khẩu Linux mới<input name="password" type="password" autocomplete="new-password" required></label><label class="field">Nhập lại mật khẩu<input name="repeat" type="password" autocomplete="new-password" required></label></div><p><label><input id="show-secret" type="checkbox"> Hiện mật khẩu</label></p><p><label><input name="enable" type="checkbox"> Cho phép user này đăng nhập SSH bằng mật khẩu</label></p><p><label><input name="set_root" type="checkbox"> '+vt('Đặt mật khẩu này cho cả root (và cho phép SSH root nếu bật ở trên)','Also set this password for root (and allow root SSH if enabled above)')+'</label></p>',async form=>{
     if(form.get('password')!==form.get('repeat'))throw new Error('Hai mật khẩu chưa khớp.');
-    await submit('password',{password:form.get('password'),enable:form.has('enable')});
+    await submit('password',{password:form.get('password'),enable:form.has('enable'),set_root:form.has('set_root')});
   });
   $('#show-secret').onchange=e=>{for(const input of $('#popup').querySelectorAll('[autocomplete=new-password]'))input.type=e.target.checked?'text':'password';};
 }

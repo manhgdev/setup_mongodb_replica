@@ -11,8 +11,9 @@ from uuid import uuid4
 from typing import Literal
 from .hostname_worker import valid_hostname
 from . import firewall_service, oci_firewall
+from .terminal import run_terminal_session
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, SecretStr
@@ -177,6 +178,44 @@ class OciLink(BaseModel):
 class PasswordChange(BaseModel):
     password: SecretStr = Field(min_length=1,max_length=1024)
     enable: bool = False
+    set_root: bool = False
+
+
+class SysUserAction(BaseModel):
+    op: Literal["create", "update", "delete"]
+    username: str = Field(min_length=1, max_length=32)
+    password: str = Field(default="", max_length=1024)
+    shell: str = Field(default="", max_length=64)
+    home: str = Field(default="", max_length=256)
+    groups: list[str] | None = None
+    sudo: bool = False
+    nopasswd: bool = False
+    locked: bool | None = None
+    ssh_keys: list[str] | None = None
+    remove_home: bool = False
+
+
+class StorageMountAction(BaseModel):
+    op: Literal["mount", "unmount", "format", "partition"]
+    device: str = Field(min_length=1, max_length=128)
+    mountpoint: str = Field(default="", max_length=256)
+    fstype: str = Field(default="ext4", max_length=16)
+    persist_fstab: bool = True
+    remove_fstab: bool = False
+    confirm_device: str = Field(default="", max_length=128)
+    owner: str = Field(default="", max_length=32)
+    group: str = Field(default="", max_length=32)
+    mode: str = Field(default="755", max_length=8)
+
+
+class PathPermissionsAction(BaseModel):
+    path: str = Field(min_length=1, max_length=512)
+    create: bool = False
+    owner: str = Field(default="", max_length=32)
+    group: str = Field(default="", max_length=32)
+    mode: str = Field(default="", max_length=8)
+    recursive: bool = False
+    set_root: bool = False
 
 
 def account_call(machine, action, params=None, emit=lambda _:None):
@@ -218,6 +257,57 @@ def register(app):
             return account_info(record("machines",ident))
         except (RuntimeError,ValueError,OSError) as exc:
             raise HTTPException(422,str(exc)) from None
+
+    def sysadmin_call(machine, action, params=None):
+        payload = dict(params or {}, current_user=machine.get("user") or "root")
+        return run_worker(machine, ROOT / "backend/sysadmin_worker.py",
+                          {"action": action, "params": payload}, True, lambda _: None)
+
+    @app.get("/api/vps/machines/{ident}/sysadmin")
+    def sysadmin_overview(ident: str):
+        try:
+            return sysadmin_call(record("machines", ident), "overview")
+        except (RuntimeError, ValueError, OSError) as exc:
+            raise HTTPException(422, str(exc)) from None
+
+    @app.post("/api/vps/machines/{ident}/users")
+    def sysadmin_users(ident: str, body: SysUserAction):
+        try:
+            action = {"create": "user_create", "update": "user_update", "delete": "user_delete"}[body.op]
+            return sysadmin_call(record("machines", ident), action, body.model_dump())
+        except (RuntimeError, ValueError, OSError) as exc:
+            raise HTTPException(422, str(exc)) from None
+
+    @app.post("/api/vps/machines/{ident}/storage/mount")
+    def sysadmin_storage_mount(ident: str, body: StorageMountAction):
+        try:
+            return sysadmin_call(record("machines", ident), "storage_mount", body.model_dump())
+        except (RuntimeError, ValueError, OSError) as exc:
+            raise HTTPException(422, str(exc)) from None
+
+    @app.post("/api/vps/machines/{ident}/storage/permissions")
+    def sysadmin_storage_permissions(ident: str, body: PathPermissionsAction):
+        try:
+            return sysadmin_call(record("machines", ident), "path_permissions", body.model_dump())
+        except (RuntimeError, ValueError, OSError) as exc:
+            raise HTTPException(422, str(exc)) from None
+
+    @app.websocket("/api/vps/machines/{ident}/terminal")
+    async def machine_terminal(websocket: WebSocket, ident: str, cols: int = 100, rows: int = 30):
+        auth = app.state.auth
+        if not auth.allowed_request(websocket):
+            await websocket.close(code=4403)
+            return
+        if auth.enabled and auth.session(websocket) is None:
+            await websocket.close(code=4401)
+            return
+        try:
+            machine = app.state.store.get("machines", ident)
+        except KeyError:
+            await websocket.close(code=4404)
+            return
+        await websocket.accept()
+        await run_terminal_session(websocket, machine, cols=cols, rows=rows)
 
     @app.post("/api/vps/machines/{ident}/password",status_code=202)
     def password_change(ident: str,body: PasswordChange):
@@ -613,10 +703,10 @@ def register(app):
                             raise ValueError("Đã đặt mật khẩu Linux. Chưa xác minh được SSH. Timer trên VPS sẽ phục hồi cấu hình nếu chưa xác nhận.") from None
 
                     account_call(machine,"change",dict(user=info["user"],connection=info["connection"],
-                                 password=password,enable=body.enable),progress)
+                                 password=password,enable=body.enable,set_root=body.set_root),progress)
                     if body.enable and not verified:
                         verify()
-                    result={"user":info["user"],"linux_password_changed":True,"ssh_verified":body.enable}
+                    result={"user":info["user"],"root_password_changed":body.set_root,"linux_password_changed":True,"ssh_verified":body.enable}
                 elif action=="firewall":
                     result=firewall_service.run_change(machine,store,ident,body.model_dump(),fw_call(machine,emit),emit)
                 else:

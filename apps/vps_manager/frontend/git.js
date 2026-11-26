@@ -26,11 +26,30 @@ async function gitPage(view, path, rev) {
   if (!state.keys.length && !state.missing_public?.length) list.textContent=vt('Chưa có public key trong ~/.ssh của tài khoản này.','No public keys in this account’s ~/.ssh directory.');
   const providers = '<label class="field">Git provider<select name="provider">'+['github.com','gitlab.com','bitbucket.org'].map(p=>'<option>'+p+'</option>').join('')+'</select></label>';
   const pass = '<label class="field">Passphrase<input name="passphrase" type="password" autocomplete="new-password" maxlength="1024"></label>';
+  function bindKeyNameCheck(){
+    const input=$('#fields input[name="name"]'),hint=$('#fields .key-name-hint');
+    if(!input||!hint)return;
+    const defaultMsg=hint.textContent;
+    const check=()=>{
+      const v=input.value;
+      let err='';
+      if(v){
+        if(/\s/.test(v))err=vt('Không được chứa khoảng trắng (thử: '+v.trim().replace(/\s+/g,'_')+')','Spaces are not allowed (try: '+v.trim().replace(/\s+/g,'_')+')');
+        else if(!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(v))err=vt('Chỉ dùng chữ cái, số, ., _, - và bắt đầu bằng chữ hoặc số.','Use letters, numbers, ., _, - only and start with a letter or number.');
+        else if(v.toLowerCase().endsWith('.pub')||/^(authorized_keys|known_hosts|config)/i.test(v)||['environment','rc','authorized_principals'].includes(v.toLowerCase()))err=vt('Tên này trùng file hệ thống SSH, hãy chọn tên khác.','This name is reserved by SSH, choose another.');
+      }
+      input.setCustomValidity(err);
+      hint.textContent=err||defaultMsg;
+      hint.style.color=err?'#c93c37':'';
+    };
+    input.addEventListener('input',check);
+  }
   function open(action, fields, params={}) {
     modal(labels[action], fields, form=>{
       if(path!==endpoint() || !view.isConnected) throw new Error(vt('Máy chủ đã thay đổi.','Selected server changed.'));
       return submit('git/'+action,{...params,...Object.fromEntries(form)});
     });
+    bindKeyNameCheck();
     const password = $('#fields input[type="password"]');
     if(password) $('dialog').addEventListener('close',()=>{password.value='';},{once:true});
   }
@@ -42,10 +61,10 @@ async function gitPage(view, path, rev) {
     `<label class="field">Git Username<input name="username" required maxlength="128" value="${e(state.username)}"></label>
      <label class="field">Git Email<input type="email" name="email" required maxlength="254" value="${e(state.email)}"></label>`);
   if(state.ssh) view.querySelector('[data-git="import"]').onclick=()=>open('import',
-    `<label class="field">${vt('Tên key','Key name')}<input name="name" required maxlength="64"></label>
+    `<label class="field">${vt('Tên key','Key name')}<input name="name" required maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,63}" title="${vt('Chỉ dùng chữ, số, ., _, - và không có khoảng trắng','Letters, numbers, ., _, - only, no spaces')}" placeholder="id_work"><small class="key-name-hint">${vt('Chỉ dùng chữ cái, số, ., _, -, bắt đầu bằng chữ/số, không có khoảng trắng.','Letters, numbers, ., _, - only; start with letter/number, no spaces.')}</small></label>
      <label class="field">Public key<textarea name="public_key" required maxlength="16384" placeholder="ssh-ed25519 AAAA…"></textarea></label>`);
   if(state.ssh) view.querySelector('[data-git="create"]').onclick=()=>open('create',
-    `<label class="field">${vt('Tên key','Key name')}<input name="name" required maxlength="64" placeholder="id_work"></label>
+    `<label class="field">${vt('Tên key (tuỳ chọn)','Key name (optional)')}<input name="name" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,63}" title="${vt('Chỉ dùng chữ, số, ., _, - và không có khoảng trắng','Letters, numbers, ., _, - only, no spaces')}" placeholder="id_ed25519"><small class="key-name-hint">${vt('Để trống sẽ tự đặt id_ed25519 / id_rsa (dùng thẳng cho git clone). Nếu đặt riêng, chỉ dùng chữ, số, ., _, -.','Leave blank to use id_ed25519 / id_rsa (works out of the box with git clone). Custom names: letters, numbers, ., _, - only.')}</small></label>
     <label class="field">${vt('Loại key','Key type')}<select name="kind"><option value="ed25519">ED25519</option><option value="rsa">RSA 4096-bit</option></select></label>
     <label class="field">Email<input type="email" name="email" value="${e(state.email)}"></label>${pass}
     <small>${vt('Có thể để trống passphrase. Nếu dùng, nhập ít nhất 5 ký tự.','Optional passphrase, at least 5 characters when set.')}</small>`);

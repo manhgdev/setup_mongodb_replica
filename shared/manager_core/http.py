@@ -80,7 +80,7 @@ def register_auth(app, stylesheet_url="/static/styles.css"):
         response.headers['X-Frame-Options'] = 'DENY'
         if auth.origin:
             response.headers['Strict-Transport-Security'] = 'max-age=31536000'
-        response.headers["Content-Security-Policy"] = "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+        response.headers["Content-Security-Policy"] = "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
         return response
 
     @app.get('/api/auth/status')

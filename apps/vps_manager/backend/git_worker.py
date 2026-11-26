@@ -246,7 +246,10 @@ def apply(action, p):
         fd = os.open(folder, os.O_RDONLY)
         stack.callback(os.close,fd)
         fcntl.flock(fd,fcntl.LOCK_EX)
-        name = safe_name(p["name"])
+        raw_name = (p.get("name") or "").strip()
+        if action == "create" and not raw_name:
+            raw_name = "id_rsa" if p.get("kind", "ed25519") == "rsa" else "id_ed25519"
+        name = safe_name(raw_name)
         key, pub = ssh/name, ssh/(name+".pub")
         secret = p.get("passphrase","")
         if any(x in secret for x in ("\r","\n","\0")):

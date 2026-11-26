@@ -3,15 +3,22 @@ async function fwSubmit(data,path){
   const job=await api(path+'/firewall/change',data);
   if($('dialog')?.open)$('dialog').close();
   const view=$('#view');
-  const banner=document.createElement('div');banner.className='fw-job-banner';banner.innerHTML='<span class="spinner"></span><span></span><button type="button" class="banner-close" aria-label="Đóng">×</button>';banner.querySelector('.banner-close').onclick=()=>banner.remove();vpsToastStack().append(banner);
+  const stack=vpsToastStack();
+  if(stack.querySelector('.fw-job-banner[data-job="'+CSS.escape(job.id)+'"]'))return;
+  const banner=document.createElement('div');banner.className='fw-job-banner';banner.dataset.job=job.id;banner.innerHTML='<span class="spinner"></span><span></span><button type="button" class="banner-close" aria-label="Đóng">×</button>';banner.querySelector('.banner-close').onclick=()=>banner.remove();stack.append(banner);
   const spin=banner.querySelector('.spinner'),msg=banner.querySelector('span:not(.spinner)');banner.dataset.state='running';if(spin)spin.hidden=false;msg.textContent=vt('Đang thực hiện…','Running…');
   for(let i=0;i<600;i++){
     await new Promise(r=>setTimeout(r,1000));
-    if(location.hash!=='#firewall')return;
+    if(location.hash!=='#firewall'){banner.remove();return;}
     const j=await api('vps/jobs/'+encodeURIComponent(job.id));
     const last=j.events?.at(-1)?.message;
     msg.textContent=(last||vt('Đang thực hiện…','Running…'))+' ('+(i+1)+'s)';
-    if(j.status==='succeeded'){fwCache.delete($('#hosts').value);await vpsGetCache.clear();render();return;}
+    if(j.status==='succeeded'){
+      banner.dataset.state='ok';if(spin)spin.hidden=true;
+      msg.textContent='✓ '+(last||j.label||vt('Hoàn tất','Done'));
+      setTimeout(()=>banner.remove(),6000);
+      fwCache.delete($('#hosts').value);vpsGetCache.clear();render();return;
+    }
     if(j.status==='failed'||j.status==='interrupted'){
       banner.remove();
       const logs=(j.events||[]).map(e=>e.message).filter(Boolean).slice(-8).join('\n');

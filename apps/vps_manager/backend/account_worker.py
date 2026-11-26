@@ -62,12 +62,17 @@ def execute(action, p):
         secret = p["password"]
         if not secret or any(ch in secret for ch in "\r\n\x00"):
             raise ValueError("Mật khẩu không hợp lệ.")
+        set_root = bool(p.get("set_root"))
         policy = effective(user,p["connection"]) if p["enable"] else {}
-        result = run("chpasswd",input=user+":"+secret+"\n")
+        root_policy = effective("root",p["connection"]) if (p["enable"] and set_root) else {}
+        targets = [(user, secret)] + ([("root", secret)] if set_root else [])
+        result = run("chpasswd",input="".join(f"{u}:{pw}\n" for u, pw in targets))
         if result.returncode:
             raise ValueError("PAM từ chối đặt mật khẩu Linux.")
-        print(json.dumps({"event":"Đã đặt mật khẩu Linux cho "+user}),flush=True)
-        if not p["enable"] or policy.get("passwordauthentication")=="yes":
+        print(json.dumps({"event":"Đã đặt mật khẩu Linux cho "+(f"{user} và root" if set_root else user)}),flush=True)
+        need_user_ssh = p["enable"] and policy.get("passwordauthentication")!="yes"
+        need_root_ssh = p["enable"] and set_root and (root_policy.get("passwordauthentication")!="yes" or root_policy.get("permitrootlogin")!="yes")
+        if not need_user_ssh and not need_root_ssh:
             return {"changed":True}
         service = next((s for s in ("ssh.service","sshd.service") if run("systemctl","is-active","--quiet",s).returncode==0),None)
         if not service:
@@ -88,7 +93,10 @@ def execute(action, p):
         pending.write_text(ticket)
         try:
             with config.open("a") as output:
-                output.write(f"\n# ZM VPS Manager\nMatch User {user}\n    PasswordAuthentication yes\n")
+                if need_user_ssh:
+                    output.write(f"\n# ZM VPS Manager\nMatch User {user}\n    PasswordAuthentication yes\n")
+                if need_root_ssh:
+                    output.write("\n# ZM VPS Manager (root)\nMatch User root\n    PermitRootLogin yes\n    PasswordAuthentication yes\n")
             require("/usr/sbin/sshd","-t",message="sshd -t thất bại.")
             checked = effective(user,p["connection"])
             if checked.get("passwordauthentication")!="yes" or checked.get("pubkeyauthentication")!="yes":

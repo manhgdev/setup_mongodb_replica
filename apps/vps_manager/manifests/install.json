@@ -418,7 +418,7 @@
   "bun": {
     "group": "Node.js",
     "probe": "\"$HOME/.bun/bin/bun\" --version",
-    "install": "script=$(mktemp); trap 'rm -f \"$script\"' EXIT; curl -fsSL https://bun.sh/install -o \"$script\"; bash \"$script\"",
+    "install": "script=$(mktemp); trap 'rm -f \"$script\"' EXIT; curl -fsSL https://bun.sh/install -o \"$script\"; bash \"$script\"; touch \"$HOME/.bashrc\"; grep -Eq '(\\.bun/bin|BUN_INSTALL)' \"$HOME/.bashrc\" || printf '\\nexport BUN_INSTALL=\"$HOME/.bun\"\\nexport PATH=\"$BUN_INSTALL/bin:$PATH\"\\n' >> \"$HOME/.bashrc\"",
     "deps": [
       "curl",
       "unzip"
@@ -578,7 +578,7 @@
   "bench-sh": {
     "group": "Giám sát",
     "probe": "test -x \"$HOME/.local/bin/bench.sh\" && echo bench.sh",
-    "install": "mkdir -p \"$HOME/.local/bin\"; tmp=$(mktemp); trap 'rm -f \"$tmp\"' EXIT; curl -fLsS https://bench.sh -o \"$tmp\"; bash -n \"$tmp\"; install -m 755 \"$tmp\" \"$HOME/.local/bin/bench.sh\"",
+    "install": "mkdir -p \"$HOME/.local/bin\"; tmp=$(mktemp); trap 'rm -f \"$tmp\"' EXIT; curl -fLsS https://bench.sh -o \"$tmp\"; bash -n \"$tmp\"; install -m 755 \"$tmp\" \"$HOME/.local/bin/bench.sh\"; touch \"$HOME/.bashrc\"; grep -Fq '.local/bin' \"$HOME/.bashrc\" || printf '\\nexport PATH=\"$HOME/.local/bin:$PATH\"\\n' >> \"$HOME/.bashrc\"",
     "deps": [
       "curl",
       "ca-certificates"

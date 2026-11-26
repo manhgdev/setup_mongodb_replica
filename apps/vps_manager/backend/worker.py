@@ -29,7 +29,8 @@ def command(args, check=True, timeout=60):
             reason = "Cấu hình Nginx không hợp lệ" if "nginx:" in proc.stderr else "Không chạy được kiểm tra cô lập"
             raise ValueError(reason + (" · "+location[1] if location else "")+".")
         tail = ((proc.stderr or "") + "\n" + (proc.stdout or "")).strip()[-350:]
-        raise ValueError(f"{args[0]} thất bại (exit {proc.returncode})" + (f": {tail}" if tail and args[0] == "certbot" else "."))
+        show_tail = tail and (args[0] == "certbot" or "apt" in os.path.basename(args[0]))
+        raise ValueError(f"{args[0]} thất bại (exit {proc.returncode})" + (f": {tail}" if show_tail else "."))
     return proc.stdout.strip()
 
 
@@ -917,6 +918,12 @@ def install_catalog(requested, entries, apt, dnf, user):
                     removed=re.findall(r"^Remv (\S+)",plan,re.M)
                     if removed and all(re.fullmatch(r"libavcodec[0-9]+(?::[a-z0-9]+)?",pkg) for pkg in removed):
                         event("Thay thư viện codec bằng bản extra · "+", ".join(removed))
+                        guard=[]
+                elif item=="ufw":
+                    plan=command([apt,"--simulate","install",name])
+                    removed=re.findall(r"^Remv (\S+)",plan,re.M)
+                    if removed and all(pkg in {"iptables-persistent","netfilter-persistent"} for pkg in removed):
+                        event("Thay thế gói xung đột firewall · "+", ".join(removed))
                         guard=[]
                 command([apt,"-o","DPkg::Lock::Timeout=120",*guard,"install","-y",name],timeout=1200)
             else:

@@ -32,6 +32,26 @@ async function previewVps(path,data){
         return {target:name,summary:vpsEnglish?'Preview only':'Kế hoạch minh họa'};
       }
       case machine+'/account':return {user:'ubuntu',host:'web.example.test',port:22,sudo:true,auth:'key',password:'no'};
+      case machine+'/sysadmin':return {
+        users:[
+          {username:'root',uid:0,gid:0,home:'/root',shell:'/bin/bash',groups:['root'],sudo:true,nopasswd:true,locked:false,ssh_keys:[],ssh_key_count:0,is_current:false},
+          {username:'ubuntu',uid:1000,gid:1000,home:'/home/ubuntu',shell:'/bin/bash',groups:['ubuntu','sudo','docker'],sudo:true,nopasswd:true,locked:false,ssh_keys:['ssh-ed25519 AAAA... demo@mac'],ssh_key_count:1,is_current:true},
+          {username:'deploy',uid:1001,gid:1001,home:'/home/deploy',shell:'/bin/bash',groups:['deploy','www-data'],sudo:false,nopasswd:false,locked:false,ssh_keys:[],ssh_key_count:0,is_current:false}
+        ],
+        groups:['adm','deploy','docker','sudo','ubuntu','www-data'],
+        disks:[
+          {name:'sda',path:'/dev/sda',size:53687091200,type:'disk',fstype:'',mountpoint:'',model:'Oracle BlockVolume',protected:true,children:[
+            {name:'sda1',path:'/dev/sda1',size:53582233600,type:'part',fstype:'ext4',mountpoint:'/',uuid:'1111-2222',protected:true}
+          ]},
+          {name:'sdb',path:'/dev/sdb',size:107374182400,type:'disk',fstype:'',mountpoint:'',model:'Data Volume',protected:false,children:[
+            {name:'sdb1',path:'/dev/sdb1',size:107373133824,type:'part',fstype:'ext4',mountpoint:'/data',uuid:'3333-4444',protected:false}
+          ]}
+        ],
+        mounts:[
+          {device:'/dev/sda1',fstype:'ext4',size:53582233600,used:12884901888,avail:40697331712,percent:'25%',mountpoint:'/',protected:true},
+          {device:'/dev/sdb1',fstype:'ext4',size:107373133824,used:1073741824,avail:106299392000,percent:'1%',mountpoint:'/data',protected:false}
+        ]
+      };
       case machine+'/nginx':return {sites:[site],diagnostics:[],capabilities:{},php_sockets:[]};
       case machine+'/nginx/web/detail':return {source:'server {\n    listen 443 ssl;\n    server_name '+domain+';\n    location / { proxy_pass http://127.0.0.1:3000; }\n}',editable:false,domains:[domain],diagnostics:[],history:[]};
       case machine+'/nginx/web/ssl-status':return {served:{names:[domain],expires:'64 days'},timer:'active'};

@@ -29,11 +29,11 @@ function modal(title,html,submit){
 $('#cancel').onclick=$('#modal-x').onclick=()=>$('dialog').close();
 $('#popup').onsubmit=async e=>{
   e.preventDefault();const button=e.submitter;button.disabled=true;
-  try{await onConfirm(new FormData(e.target));$('dialog').close();}
+  try{const res=await onConfirm(new FormData(e.target));if(res!==false)$('dialog').close();}
   catch(err){let p=$('#fields [role=alert]');if(!p){p=document.createElement('p');p.setAttribute('role','alert');$('#fields').append(p);}p.textContent=err.message;}
   finally{button.disabled=false;}
 };
-const titles={servers:'Máy chủ',git:'Git & SSH Key',overview:'Tổng quan VPS',software:'Software Center',docker:'Docker & Compose',firewall:'Firewall',domains:'Nginx & tên miền',jobs:'Lịch sử tác vụ'};
+const titles={servers:'Máy chủ',git:'Git & SSH Key',overview:'Tổng quan VPS',software:'Software Center',docker:'Docker & Compose',firewall:'Firewall',terminal:'SSH Terminal',sysadmin:'User & Ổ đĩa',domains:'Nginx & tên miền',jobs:'Lịch sử tác vụ'};
 function certificateWarning(days){
   const threshold=[0,7,14,30].find(limit=>days<=limit);
   if(threshold===undefined||days===null)return '';
@@ -46,7 +46,9 @@ async function submit(action,data){
   catch(err){if(!err.job)throw err;selectedJob=err.job;}
   if($('dialog')?.open)$('dialog').close();
   const view=$('#view');
-  const banner=document.createElement('div');banner.className='fw-job-banner';banner.innerHTML='<span class="spinner"></span><span></span><button type="button" class="banner-close" aria-label="Đóng">×</button>';banner.querySelector('.banner-close').onclick=()=>banner.remove();vpsToastStack().append(banner);
+  const stack=vpsToastStack();
+  if(stack.querySelector('.fw-job-banner[data-job="'+CSS.escape(selectedJob)+'"]'))return;
+  const banner=document.createElement('div');banner.className='fw-job-banner';banner.dataset.job=selectedJob;banner.innerHTML='<span class="spinner"></span><span></span><button type="button" class="banner-close" aria-label="Đóng">×</button>';banner.querySelector('.banner-close').onclick=()=>banner.remove();stack.append(banner);
   const spin=banner.querySelector('.spinner'),msg=banner.querySelector('span:not(.spinner)');if(spin)spin.hidden=false;
   banner.dataset.state='running';
   msg.textContent=vt('Đang thực hiện…','Running…');
@@ -67,7 +69,7 @@ async function submit(action,data){
       banner.remove();
       const logs=(j.events||[]).map(e=>e.message).filter(Boolean).slice(-8).join('\n');
       modal('✗ '+(j.label||vt('Thất bại','Failed')),'<div class="callout error" style="white-space:pre-wrap">'+escapeHTML(j.error||vt('Thao tác bị gián đoạn hoặc thất bại.','Action interrupted or failed.'))+'</div>'+(logs?'<details><summary>'+vt('Nhật ký gần nhất','Recent logs')+'</summary><pre>'+escapeHTML(logs)+'</pre></details>':''),async()=>{});
-      return;
+      return false;
     }
   }
 }
@@ -149,6 +151,8 @@ async function render(){
     docker:['Quản lý container và triển khai project Compose trên VPS.','Manage containers and deploy Compose projects on this server.'],
     servers:['Quản lý kết nối SSH, cài đặt và dịch vụ trên từng máy.','Manage SSH connections, installs and services on each server.'],
     firewall:['Quản lý UFW và Oracle Cloud Firewall, mở hoặc đóng port ở cả hai lớp.','Manage UFW and Oracle Cloud Firewall, opening or closing ports on both layers.'],
+    terminal:['Kết nối SSH trực tiếp dạng terminal (giống Termius) nhiều tab cùng lúc.','Interactive multi-tab SSH terminal (Termius-style) right in your browser.'],
+    sysadmin:['Tạo user Linux, phân quyền sudo/nhóm/SSH keys và chia ổ, mount, phân quyền thư mục.','Create Linux users, manage sudo/groups/SSH keys, partitions, mounts and folder permissions.'],
     domains:['Quản lý cấu hình website, định tuyến và chứng chỉ SSL trên VPS.','Manage website configurations, routes and SSL certificates on this server.'],
     jobs:['Theo dõi tiến độ và mở nhật ký để xem kết quả của từng tác vụ.','Track progress and open the logs to inspect each job’s result.']
   };
@@ -166,6 +170,8 @@ async function render(){
     if(section==='docker'){await dockerPage(view,path,rev);return;}
     if(section==='servers'){await serversPage(view,path,rev);return;}
     if(section==='firewall'){await firewallPage(view,path,rev);return;}
+    if(section==='terminal'){await terminalPage(view,path,rev);return;}
+    if(section==='sysadmin'){await sysadminPage(view,path,rev);return;}
     if(section==='jobs'){
       const jobs=await api(path+'/jobs');if(rev!==revision)return;
       jobsPage(view,jobs,selectedJob);

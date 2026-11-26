@@ -180,6 +180,9 @@ def change(p):
         done = run(["ufw", "--force", "enable"], 60)
         if done.returncode:
             raise ValueError("UFW · " + done.stderr.strip()[:300])
+        if run(["systemctl", "is-enabled", "--quiet", "netfilter-persistent"]).returncode == 0:
+            emit("Tắt netfilter-persistent để tránh xung đột với UFW")
+            run(["systemctl", "disable", "--now", "netfilter-persistent"])
         return {"results": [{"layer": "ufw", "status": "enabled", "detail": "UFW đã bật; SSH " + ", ".join(map(str, protected)) + "/tcp được giữ mở."}]}
     lo, hi = parse_range(p["port"])
     source = norm_source(p.get("source"))
