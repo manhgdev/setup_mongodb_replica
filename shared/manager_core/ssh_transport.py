@@ -4,6 +4,7 @@ import codecs
 import hashlib
 import fcntl
 import os
+import re
 import socket
 import json
 import time
@@ -157,3 +158,26 @@ def run_password(machine, command, payload, emit):
         if channel is not None:
             channel.close()
         ssh.close()
+
+
+def save_imported_ssh_key(directory: Path, filename: str, content: str) -> str:
+    """Validate and save an uploaded SSH key file (.pem, .key, .ppk, .pub, etc.) with 0600 permissions."""
+    normalized = (content or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not normalized or len(normalized) > 65536 or "\x00" in normalized:
+        raise ValueError("File SSH key không hợp lệ hoặc quá lớn (tối đa 64 KB).")
+    prefixes = ("-----BEGIN ", "PuTTY-User-Key-File-", "ssh-ed25519 ", "ssh-rsa ", "ssh-dss ", "ecdsa-sha2-", "sk-ssh-")
+    if "PRIVATE KEY" not in normalized and not any(normalized.startswith(p) for p in prefixes):
+        raise ValueError("Định dạng file không phải SSH key hợp lệ (.pem, .key, .ppk, .pub, id_ed25519...).")
+    normalized += "\n"
+    keys_dir = Path(directory) / "ssh_keys"
+    keys_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(keys_dir, 0o700)
+    stem = re.sub(r"[^a-zA-Z0-9._-]+", "_", Path(filename or "id_key").name).strip("._") or "id_key"
+    digest = hashlib.sha256(normalized.encode()).hexdigest()[:10]
+    target = keys_dir / f"{stem}_{digest}"
+    fd = os.open(target, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(normalized)
+    os.chmod(target, 0o600)
+    return str(target)
+

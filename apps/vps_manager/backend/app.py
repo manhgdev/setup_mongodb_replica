@@ -33,6 +33,11 @@ KITS = json.loads((ROOT / "manifests/kits.json").read_text())
 INSTALL = json.loads((ROOT / "manifests/install.json").read_text())
 
 
+class ImportedSshKey(BaseModel):
+    filename: str = Field(default="id_key", max_length=128)
+    content: str = Field(min_length=1, max_length=65536)
+
+
 class WebsiteConfig(BaseModel):
     gzip: bool = False
     brotli: bool = False
@@ -255,6 +260,15 @@ def register(app):
     def reveal_server_password(ident: str):
         machine = record("machines", ident)
         return {"password": machine.get("ssh_password") or ""}
+
+    @app.post("/api/vps/ssh-keys/import")
+    def import_ssh_key(body: ImportedSshKey):
+        from shared.manager_core.ssh_transport import save_imported_ssh_key
+        try:
+            path = save_imported_ssh_key(app.state.store.directory, body.filename, body.content)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return {"path": path, "name": Path(path).name}
 
     @app.put("/api/vps/servers/{ident}")
     def edit_server(ident: str, body: Machine):

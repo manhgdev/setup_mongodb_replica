@@ -1,6 +1,7 @@
 // "Máy chủ": list and manage saved SSH machines (shared records with MongoDB Manager).
 async function serversPage(view,path,rev){
-  const list=(await api('vps/servers')).sort((a,b)=>Number(Boolean(a.profile_id))-Number(Boolean(b.profile_id)));
+  const byHost=(a,b)=>String(a.name||a.host||'').localeCompare(String(b.name||b.host||''),undefined,{numeric:true,sensitivity:'base'});
+  const list=(await api('vps/servers')).sort((a,b)=>(Number(Boolean(a.profile_id))-Number(Boolean(b.profile_id)))||byHost(a,b));
   if(rev!==revision)return;
   const add=document.createElement('button');add.type='button';add.className='button';add.dataset.tone='create';add.textContent='+ '+vt('Thêm máy chủ','Add server');add.onclick=()=>addVps();
   const bulkAdd=document.createElement('button');bulkAdd.type='button';bulkAdd.className='button';bulkAdd.dataset.tone='info';bulkAdd.textContent='+ '+vt('Thêm từ Seed list','Add from Seed list');bulkAdd.onclick=()=>addFromSeeds();
@@ -88,7 +89,8 @@ function addFromSeeds(){
     +'<label class="field">'+vt('Xác thực SSH','SSH authentication')+'<select name="ssh_auth"><option value="password">'+vt('Mật khẩu SSH','SSH password')+'</option><option value="key">SSH key / Agent</option></select></label>'
     +'<label class="field">'+vt('Mật khẩu SSH','SSH password')+'<input name="ssh_password" type="password" autocomplete="new-password"></label>'
     +'<label class="field wide" hidden>'+vt('SSH private key (tùy chọn)','SSH private key (optional)')+'<input name="identity" placeholder="~/.ssh/id_ed25519"></label>'
-    +'</div>',
+    +'</div>'
+    +'<p><button type="button" class="button" id="seed-test-connection">'+vt('Kiểm tra kết nối','Test connection')+'</button></p><output id="seed-ssh-feedback"></output>',
     async form=>{
       const raw=Object.fromEntries(form);
       const lines=[...new Set(raw.seeds.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean))];
@@ -107,7 +109,27 @@ function addFromSeeds(){
       }
       await loadHosts();render();
     });
-  const f=$('#popup'),auth=f.elements.ssh_auth;
+  const f=$('#popup'),auth=f.elements.ssh_auth,testBtn=$('#seed-test-connection'),fb=$('#seed-ssh-feedback');
   const sync=()=>{const pw=auth.value==='password';f.elements.ssh_password.closest('label').hidden=!pw;f.elements.ssh_password.disabled=!pw;f.elements.identity.closest('label').hidden=pw;f.elements.identity.disabled=pw;};
-  auth.onchange=sync;sync();
+  setupSshKeyDropzone(f);auth.onchange=sync;sync();
+  testBtn.onclick=async()=>{
+    const raw=Object.fromEntries(new FormData(f));
+    const lines=[...new Set((raw.seeds||'').split(/[\n,]+/).map(s=>s.trim()).filter(Boolean))];
+    if(!lines.length){fb.textContent=vt('Nhập ít nhất một seed.','Enter at least one seed.');return;}
+    testBtn.disabled=true;fb.textContent=vt('Đang kiểm tra kết nối…','Testing connections…');
+    const out=[];
+    try{
+      for(const line of lines){
+        const m=line.match(/^\[?([^\]]+?)\](?::(\d+))?$/)||line.match(/^([^:]+)(?::(\d+))?$/);
+        const host=m[1],port=Number(raw.port||22);
+        const payload={mode:'ssh',host,port,user:(raw.user||'').trim(),ssh_auth:raw.ssh_auth,ssh_password:raw.ssh_auth==='password'?raw.ssh_password:'',identity:raw.ssh_auth==='key'?(raw.identity||'').trim():''};
+        try{
+          let res=await api('vps/connection-test',{...payload,expected:''});
+          if(res.fingerprint)res=await api('vps/connection-test',{...payload,expected:res.fingerprint});
+          out.push('✓ '+host+': '+(res.hostname||host)+' ('+res.user+' · sudo -n '+(res.sudo?'✓':'—')+')');
+        }catch(err){out.push('✗ '+host+': '+err.message);}
+        if(fb.isConnected)fb.innerHTML=out.map(escapeHTML).join('<br>');
+      }
+    }finally{testBtn.disabled=false;}
+  };
 }

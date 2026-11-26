@@ -392,6 +392,36 @@ def create_app(data_dir=None):
             raise HTTPException(500, "Kiểm tra quyền đọc và ghi ~/.ssh/known_hosts của tài khoản chạy Manager.") from exc
         return {"saved": True}
 
+    @app.post("/api/ssh-keys/import")
+    def import_ssh_key(body: dict):
+        from shared.manager_core.ssh_transport import save_imported_ssh_key
+        try:
+            path = save_imported_ssh_key(app.state.store.directory, str(body.get("filename") or "id_key"), str(body.get("content") or ""))
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return {"path": path, "name": Path(path).name}
+
+    @app.post("/api/machines/connection-test")
+    def test_machine_connection(body: dict):
+        from shared.manager_core.ssh_transport import probe_host_key, fingerprint, enroll_host_key
+        machine = {
+            "mode": "ssh",
+            "host": str(body.get("host") or "").strip(),
+            "port": int(body.get("port") or 22),
+            "user": str(body.get("user") or "root").strip(),
+            "ssh_auth": str(body.get("ssh_auth") or "password"),
+            "ssh_password": body.get("ssh_password") or "",
+            "identity": str(body.get("identity") or "").strip(),
+        }
+        expected = str(body.get("expected") or "")
+        try:
+            if not expected:
+                return {"fingerprint": fingerprint(probe_host_key(machine))}
+            enroll_host_key(machine, expected)
+            return {"hostname": read_hostname(machine), "user": machine["user"]}
+        except (RuntimeError, ValueError, OSError) as exc:
+            raise HTTPException(422, redact(str(exc), machine.get("ssh_password") or "")) from None
+
     @app.patch("/api/profiles/{profile_id}/machines/{machine_id}/name")
     def rename_machine(profile_id: str, machine_id: str, body: MachineName):
         machine = app.state.store.update_fields("machines", machine_id, {"name": body.name, "auto_name": False},

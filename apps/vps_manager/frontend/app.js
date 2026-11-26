@@ -137,7 +137,10 @@ async function batchHistory(view,rev){
 }
 const legacySnapshots=new Set();
 async function render(){
-  const rev=++revision,view=$('#view'),hashBase=location.hash.slice(1).split('?')[0],section=Object.hasOwn(titles,hashBase)?hashBase:'overview';
+  const rev=++revision,view=$('#view'),hashBase=location.hash.slice(1).split('?')[0],savedTab=localStorage.getItem('vps-active-tab');
+  const section=Object.hasOwn(titles,hashBase)?hashBase:(Object.hasOwn(titles,savedTab)?savedTab:'overview');
+  if(!hashBase&&section!=='overview')history.replaceState(null,'','#'+section);
+  localStorage.setItem('vps-active-tab',section);
   view.closest('main').dataset.section=section;
   const descriptions={
     overview:['Xem tài nguyên, hệ điều hành và dịch vụ trên máy chủ đang chọn.','Inspect resources, the operating system and services on the selected server.'],
@@ -540,6 +543,7 @@ $('#hosts').onchange=()=>{selectedJob='';sessionStorage.removeItem('vps-selected
 function toggleMenu(open){document.body.classList.toggle('nav-open',open);$('#menu').setAttribute('aria-expanded',String(open));}
 $('#menu').onclick=()=>toggleMenu(true);
 $('#navigation').onclick=e=>{if(e.target.closest('a'))toggleMenu(false);};
+document.addEventListener('click',e=>{if(document.body.classList.contains('nav-open')&&!e.target.closest('#sidebar,#menu'))toggleMenu(false);});
 const desktopMenu=matchMedia('(min-width:681px)');
 function syncSidebar(){
   const collapsed=desktopMenu.matches&&localStorage.getItem('vps-sidebar-collapsed')==='1';
@@ -643,4 +647,43 @@ function openNginxCopy(){
   };
   srcSel.onchange=()=>{$('#copy-conf-preview').hidden=true;loadSrc();};
   loadSrc();
+}
+
+function setupSshKeyDropzone(root){
+  if(!root)return;
+  for(const inp of root.querySelectorAll('input[name="identity"],input[name$="_identity"]')){
+    if(inp.dataset.sshDropReady)continue;
+    inp.dataset.sshDropReady='1';
+    const wrap=document.createElement('span');wrap.className='ssh-key-drop';
+    inp.parentNode.insertBefore(wrap,inp);wrap.append(inp);
+    const btn=document.createElement('button');btn.type='button';btn.className='button small ssh-key-import';btn.textContent=vt('Nhập file','Import');
+    const picker=document.createElement('input');picker.type='file';picker.hidden=true;document.body.append(picker);
+    const status=document.createElement('small');status.className='ssh-key-hint';
+    wrap.append(btn);
+    const field=inp.closest('label,.field');
+    if(field){const existing=field.querySelector('small');if(existing)existing.after(status);else field.append(status);}
+    const importText=async(filename,content)=>{
+      if(previewMode){status.textContent=vt('Chế độ minh họa không lưu key thật.','Demo mode does not store real keys.');return;}
+      status.textContent=vt('Đang nhập SSH key…','Importing SSH key…');status.classList.remove('is-error');
+      try{
+        const res=await api('vps/ssh-keys/import',{filename:filename||'id_key',content});
+        inp.value=res.path;inp.dispatchEvent(new Event('input',{bubbles:true}));
+        const isPub=/^(ssh-|ecdsa-sha2-|sk-ssh-|-----BEGIN PUBLIC KEY)/.test(content.trim());
+        status.textContent=vt('Đã nhập: ','Imported: ')+res.name+(isPub?vt(' (Lưu ý: đây là public key, SSH thường cần private key)',' (Note: this is a public key; SSH usually needs the private key)'):' (0600)');
+      }catch(err){status.textContent=err.message;status.classList.add('is-error');}
+    };
+    const handleFile=async file=>{
+      if(!file)return;
+      if(file.size>65536){status.textContent=vt('File quá lớn (tối đa 64 KB).','File too large (max 64 KB).');status.classList.add('is-error');return;}
+      await importText(file.name,await file.text());
+    };
+    btn.onclick=e=>{e.preventDefault();e.stopPropagation();picker.click();};
+    picker.onchange=()=>{if(picker.files[0])handleFile(picker.files[0]);picker.value='';};
+    root.closest('dialog')?.addEventListener('close',()=>picker.remove(),{once:true});
+    const target=field||wrap;
+    for(const ev of ['dragenter','dragover']){target.addEventListener(ev,e=>{e.preventDefault();e.stopPropagation();wrap.classList.add('is-dragover');});}
+    target.addEventListener('dragleave',e=>{if(!target.contains(e.relatedTarget))wrap.classList.remove('is-dragover');});
+    target.addEventListener('drop',e=>{e.preventDefault();e.stopPropagation();wrap.classList.remove('is-dragover');const f=e.dataTransfer?.files?.[0];if(f)handleFile(f);});
+    inp.addEventListener('paste',e=>{const txt=e.clipboardData?.getData('text')||'';if(txt.includes('PRIVATE KEY')){e.preventDefault();importText('pasted_key',txt);}});
+  }
 }

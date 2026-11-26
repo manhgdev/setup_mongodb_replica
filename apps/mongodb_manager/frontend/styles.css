@@ -294,4 +294,29 @@ td .password-control input[readonly] { min-width:9rem; padding-block:7px; border
 .app-switch a {display:block;padding:12px 0;font-size:13px}
 @media(min-width:681px){body.sidebar-hidden .app-switch{display:none}body.sidebar-hidden .brand[hidden]{display:flex!important}}
 
+.ssh-key-drop{display:flex;align-items:stretch;gap:8px;padding:0;border:0;border-radius:8px;transition:outline-color .15s,background .15s}
+.ssh-key-drop input{flex:1;min-width:0}
+.ssh-key-drop .ssh-key-import{flex:0 0 auto;white-space:nowrap;height:auto;padding:0 12px;display:inline-flex;align-items:center}
+.ssh-key-drop.is-dragover{outline:1.5px dashed var(--green);outline-offset:3px;background:rgba(22,163,74,.06)}
+.ssh-key-hint:empty{display:none !important}
+.ssh-key-hint.is-error{color:#b91c1c}
+
+.topbar{position:sticky;top:0;z-index:40;backdrop-filter:blur(8px)}
+@media(max-width:680px){
+  #sidebar{z-index:60}
+  .topbar{padding:8px 14px;gap:6px}
+  .breadcrumb{min-height:32px;padding-right:128px}
+  .breadcrumb .icon-button{width:32px;height:32px;min-height:32px;font-size:20px}
+  .breadcrumb strong{font-size:14px}
+  #open-vps{position:absolute;top:11px;right:14px;min-height:26px;height:26px;padding:0 9px;font-size:10px}
+  .top-actions{flex-wrap:nowrap;gap:6px;width:100%;overflow-x:auto;scrollbar-width:none}
+  .top-actions::-webkit-scrollbar{display:none}
+  .top-actions :is(select,button){min-height:32px;height:32px;font-size:11px;white-space:nowrap}
+  .top-actions .language-picker{padding:0 8px}
+  .top-actions .demo-toggle{padding:0 10px;white-space:nowrap}
+  .top-actions .account-actions{margin-inline-start:auto;display:flex;align-items:center;gap:6px;flex-shrink:0}
+  .top-actions .account-actions .avatar{width:26px;height:26px;font-size:10px}
+}
+
+
 

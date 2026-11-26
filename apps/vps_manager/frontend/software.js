@@ -218,7 +218,7 @@ function addVps(record=null){
       inp.type='text';btn.setAttribute('aria-pressed','true');
     }else{inp.type='password';btn.setAttribute('aria-pressed','false');}
   };
-  $('#fields').oninput=update;update();
+  $('#fields').oninput=update;setupSshKeyDropzone(form);update();
   // Trust on first use, like the MongoDB Manager: the host key is stored on the first successful connection.
   async function connect(){
     const data=payload(),id=generation;

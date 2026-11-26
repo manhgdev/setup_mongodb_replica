@@ -56,7 +56,13 @@ def run_worker(machine, worker, payload, elevated, emit):
                     continue
                 if key.fileobj is proc.stderr:
                     # No remote raw stderr (might contain secrets); give useful SSH hints.
-                    if any(s in line for s in ("Host key verification failed", "Permission denied", "password is required", "Connection refused", "Could not resolve")):
+                    if "Please login as the user" in line:
+                        error = f"VPS yêu cầu đăng nhập bằng user khác ({line.strip()}). Hãy đổi User SSH (ví dụ: ubuntu)."
+                    elif "Load key" in line or "invalid format" in line:
+                        error = "File SSH private key không hợp lệ hoặc sai định dạng."
+                    elif "python3" in line and ("not found" in line or "No such file" in line):
+                        error = "Máy đích chưa cài Python 3 (`python3` không tìm thấy)."
+                    elif any(s in line for s in ("Host key verification failed", "Permission denied", "password is required", "Connection refused", "Could not resolve", "Connection timed out", "No route to host")):
                         error = "SSH/sudo chưa sẵn sàng. Kiểm tra known_hosts, SSH key và quyền sudo không hỏi mật khẩu."
                     continue
                 try:

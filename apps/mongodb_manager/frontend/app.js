@@ -279,13 +279,17 @@ function machinePage(){
  const linked=machines().filter(m=>!profile()||m.profile_id===profile().id||!m.profile_id);
  const members=profile()?(currentStatus?.members||profile().seeds.map(host=>({host}))):[];
  const memberByHost=new Map(members.map(member=>[member.host,member]));
- linked.sort((a,b)=>(Number(Boolean(b.profile_id))-Number(Boolean(a.profile_id)))||(Number(memberByHost.has(b.mongo_endpoint))-Number(memberByHost.has(a.mongo_endpoint))));
+ const findMember=m=>memberByHost.get(m.mongo_endpoint)||memberByHost.get((m.mongo_endpoint||m.host)+':27017')||memberByHost.get(m.host+':27017');
+ const memberRank=m=>{const st=findMember(m)?.state;return st==='PRIMARY'?0:st?1:m.profile_id?2:3;};
+ const byHost=(a,b)=>String(a.name||a.host||a.mongo_endpoint||'').localeCompare(String(b.name||b.host||b.mongo_endpoint||''),undefined,{numeric:true,sensitivity:'base'});
+ linked.sort((a,b)=>(memberRank(a)-memberRank(b))||byHost(a,b));
  const rows=linked.map((m,index)=>{
-   const member=memberByHost.get(m.mongo_endpoint);
+   const member=findMember(m);
    return `<tr data-node="${esc(m.mongo_endpoint)}" tabindex="-1"><td class="row-number">${index+1}</td><td><div class="host-cell"><span class="server-icon">${icon('server')}</span><div><strong>${member?.id!=null?memberLabel(member,m.name):esc(m.name)}</strong>${m.mongo_endpoint?`<small class="mongo-address">${esc(m.mongo_endpoint)}</small>`:''}${member?.state?memberBadge(member.state):''}</div></div></td><td>${badge(m.mode==='ssh'?'SSH':'LOCAL','dark')} ${m.mode==='ssh'?`<span class="mono ssh-address">${esc(m.user)}@${esc(m.host.includes(':')?'['+m.host+']':m.host)}:${esc(m.port)}</span>`:''}</td><td class="mono">${esc(m.service)}<small>${esc(profiles().find(p=>p.id===m.profile_id)?.name||uiText("Chưa liên kết cụm"))}</small></td><td><div class="actions">${!member&&profile()&&currentStatus&&m.mode==='ssh'?button(uiText("Thêm làm Secondary"),'join-fresh','plus','small',`data-id="${esc(m.id)}"`):''}${button(uiText("Kiểm tra"),'preflight','pulse','small',`data-id="${esc(m.id)}"`)}${button(uiText("Dịch vụ"),'service','','small',`data-id="${esc(m.id)}"`)}${button(dataLabel('Nhật ký','Logs'),'logs','terminal','small',`data-id="${esc(m.id)}"`)}${button(uiText("Sửa"),'machine-edit','','small',`data-id="${esc(m.id)}"`)}${button(uiText("Xoá"),'machine-delete','trash','small danger',`data-id="${esc(m.id)}"`)}</div></td></tr>`;
  });
  const discovered=[];
- for(const member of members){
+ const sortedMembers=[...members].sort((a,b)=>((a.state==='PRIMARY'?0:1)-(b.state==='PRIMARY'?0:1))||String(profile()?.member_hostnames?.[a.host]||a.host||'').localeCompare(String(profile()?.member_hostnames?.[b.host]||b.host||''),undefined,{numeric:true,sensitivity:'base'}));
+ for(const member of sortedMembers){
    if(linked.some(m=>m.mongo_endpoint===member.host))continue;
    const label=member.id!=null?memberLabel(member,'Member '+member.id):esc(profile()?.member_hostnames?.[member.host]||member.host);
    discovered.push(`<tr data-node="${esc(member.host)}" tabindex="-1"><td class="row-number">${discovered.length+1}</td><td><strong>${label}</strong><small class="mongo-address">${esc(member.host)}</small>${member.state?memberBadge(member.state):''}</td><td>${uiText("Chưa cấu hình SSH")}</td><td>—</td><td><div class="actions">${button(uiText("Cấu hình SSH"),'member-ssh','','small',`data-host="${esc(member.host)}"`)}</div></td></tr>`);
@@ -343,7 +347,7 @@ function addClusterSSH(record=null){
  const password=row.querySelector(`[name="${prefix}ssh_auth"]`).value==='password';
  for(const key of ['ssh_password','identity']){const input=row.querySelector(`[name="${prefix+key}"]`);const show=key==='ssh_password'?password:!password;input.closest('.field').hidden=!show;input.disabled=!show;}
  };
- row.addEventListener('change',sync);sync();
+ row.addEventListener('change',sync);setupSshKeyDropzone(row);sync();
 }
 function clusterSSHData(){
  return [...document.querySelectorAll('.cluster-ssh-row')].map(row=>{
@@ -452,6 +456,7 @@ function openBulkSSH(){
  if(!sshBulkTargets.length){toast(uiText("Thêm cụm MongoDB trước để cấu hình SSH cho các member."));return;}
  const rows=sshBulkTargets.map((t,i)=>`<tr><td><input type="checkbox" name="targets" value="${i}" checked aria-label="${uiText("Chọn ")}${esc(t.profile.name+' '+t.endpoint)}"></td><td>${esc(t.profile.name)}</td><td class="mono">${esc(t.endpoint)}</td><td>${t.existing?.has_ssh_password?savedPasswordControl('/machines/'+t.existing.id+'/reveal-password'):badge(t.existing?'Key / Agent':uiText("Chưa có SSH"))}</td></tr>`);
  modal(uiText(currentRoute==='clusters'?"SSH cho tất cả các cụm":"SSH cho cụm hiện tại"),`<form id="ssh-bulk-form"><div class="modal-body"><div class="callout neutral">${uiText("Chọn các VPS thực sự dùng cùng thông tin SSH. Lưu chỉ cập nhật hồ sơ trên ứng dụng, không đổi mật khẩu trên VPS. Node thêm về sau cần được cấu hình riêng.")}</div>${table([uiText("CHỌN"),uiText("CỤM"),'MEMBER','SSH'],rows)}<div class="section-title"></div><div class="form-grid">${field('user','User SSH','root')}${field('port','Port SSH',22,'number')}${field('ssh_auth',uiText("Xác thực SSH"),'password','select','',true,[{value:'password',label:uiText("Mật khẩu SSH")},{value:'key',label:'SSH key / Agent'}])}${field('ssh_password',uiText("Mật khẩu SSH"),'','password',uiText("Nhập để áp dụng cho các VPS đã chọn. Để trống chỉ giữ mật khẩu đã lưu; VPS chưa có cần nhập."),true)}${field('identity',uiText("SSH private key (tùy chọn)"),'','text',uiText("Chỉ dùng khi chọn Key / Agent."),true)}</div><div id="form-error"></div></div><div class="modal-footer">${button(uiText("Hủy"),'modal-close')}<button class="button primary" type="submit">${uiText("Lưu cho các VPS đã chọn")}</button></div></form>`);
+ setupSshKeyDropzone($('#ssh-bulk-form'));
 }
 document.addEventListener('submit',async event=>{
  if(event.target.id!=='ssh-bulk-form')return;event.preventDefault();const form=event.target,submit=form.querySelector('button[type="submit"]');submit.disabled=true;
@@ -583,7 +588,10 @@ function upgradePage(){return heading(uiText("Phiên bản & nâng cấp"),uiTex
 function jobsPage(){return heading(uiText("Lịch sử tác vụ"),uiText("Theo dõi tiến độ, kết quả và những thao tác cần kiểm tra."),button(uiText("Làm mới"),'refresh','refresh'))+panel(uiText("Tác vụ"),jobs().length?table([uiText("TÁC VỤ"),uiText("ĐÍCH"),uiText("THỜI GIAN"),uiText("TRẠNG THÁI"),''],jobs().map(j=>`<tr><td><strong>${esc(j.label)}</strong></td><td>${esc(j.target)}</td><td>${formatDate(j.created_at)}</td><td>${jobBadge(j)}</td><td>${button(uiText("Chi tiết"),'job-open','','small',`data-id="${esc(j.id)}"`)}</td></tr>`)):empty(uiText("Chưa có tác vụ"),uiText("Các thao tác thực hiện từ web sẽ xuất hiện tại đây."),'','','clock'));}
 async function render(){
   documentTailObserver?.disconnect();
-  const id=++renderId; currentRoute=location.hash.slice(1).split('?')[0]||'overview';
+  const id=++renderId,hashBase=location.hash.slice(1).split('?')[0],savedTab=localStorage.getItem('mongo-active-tab');
+  currentRoute=hashBase||savedTab||'overview';
+  if(!hashBase&&currentRoute!=='overview')history.replaceState(null,'','#'+currentRoute);
+  localStorage.setItem('mongo-active-tab',currentRoute);
   if(currentRoute==='upgrade'){
     const requested=new URLSearchParams(location.hash.split('?')[1]).get('machine');
     const linked=machines().find(m=>m.id===requested);
@@ -747,7 +755,7 @@ function showRecord(kind,record=null,draft={}){
     const syncPriority=()=>{priority.readOnly=votes.disabled||votes.value==='0';if(priority.readOnly)priority.value=0;};
     votes.addEventListener('change',syncPriority);
     syncPriority();
-    hostnameField($('#record-form').elements.name,record);syncSSHFields();$('#record-form').addEventListener('change',syncSSHFields);}
+    hostnameField($('#record-form').elements.name,record);setupSshKeyDropzone($('#record-form'));syncSSHFields();$('#record-form').addEventListener('change',syncSSHFields);}
   // Anonymous MongoDB connections are valid.
   if(kind==='profiles'){
     const linked=machines().filter(m=>record?.id&&m.profile_id===record.id&&m.mode==='ssh');linked.forEach(addClusterSSH);if(linked.length)$('.cluster-ssh').open=true;
@@ -1640,6 +1648,7 @@ document.addEventListener('change',e=>{
 $('#profile-select').addEventListener('change',async event=>{backupItems=[];backupListedHost=null;jobId=null;pendingJoin=false;pendingJoinOptions={};selected=event.target.value;if(currentRoute==='upgrade')history.replaceState(null,'','#upgrade');if(!demo)localStorage.setItem('mongo-manager-profile',selected);currentStatus=null;statusError='';await render();});
 $('#modal').addEventListener('close',()=>{if(!$('#modal').open)$('#modal-content').replaceChildren();jobId=null;if(currentRoute==='backup')$('#content').innerHTML=backupPage();});
 window.addEventListener('hashchange',()=>{if(!document.body.classList.contains('auth-pending'))render();});
+document.addEventListener('click',e=>{if(document.body.classList.contains('nav-open')&&!e.target.closest('#sidebar,.sidebar-toggle')){document.body.classList.remove('nav-open');syncSidebarToggle();}});
 let pollBusy=false, scheduleChecked=0;
 async function poll(){
   if(pollBusy)return;
@@ -1722,10 +1731,31 @@ function openMongoSeedBulk(){
     <label class="field">${uiText('Xác thực SSH')}<select name="ssh_auth"><option value="password">${uiText('Mật khẩu SSH')}</option><option value="key">SSH key / Agent</option></select></label>
     <label class="field">${uiText('Mật khẩu SSH')}<input name="ssh_password" type="password" autocomplete="new-password"></label>
     <label class="field wide" hidden>${uiText('SSH private key (tùy chọn)')}<input name="identity" placeholder="~/.ssh/id_ed25519"></label>
-  </div><div id="form-error"></div></div><div class="modal-footer">${button(uiText('Hủy'),'modal-close')}<button class="button primary" type="submit">${icon('check')}${uiText('Thêm tất cả')}</button></div></form>`);
-  const f=$('#seed-bulk-form'),auth=f.elements.ssh_auth;
+  </div><p style="margin:10px 0 6px"><button type="button" class="button" id="mongo-seed-test">${uiText('Kiểm tra kết nối')}</button></p><output id="mongo-seed-feedback" style="display:block;font-size:12px;margin-bottom:6px"></output><div id="form-error"></div></div><div class="modal-footer">${button(uiText('Hủy'),'modal-close')}<button class="button primary" type="submit">${icon('check')}${uiText('Thêm tất cả')}</button></div></form>`);
+  const f=$('#seed-bulk-form'),auth=f.elements.ssh_auth,testBtn=$('#mongo-seed-test'),fb=$('#mongo-seed-feedback');
   const sync=()=>{const pw=auth.value==='password';f.elements.ssh_password.closest('label').hidden=!pw;f.elements.ssh_password.disabled=!pw;f.elements.identity.closest('label').hidden=pw;f.elements.identity.disabled=pw;};
-  auth.onchange=sync;sync();
+  setupSshKeyDropzone(f);auth.onchange=sync;sync();
+  testBtn.onclick=async()=>{
+    const raw=Object.fromEntries(new FormData(f));
+    const lines=[...new Set((raw.seeds||'').split(/[\n,]+/).map(s=>s.trim()).filter(Boolean))];
+    if(!lines.length){fb.textContent=uiText('Nhập ít nhất một seed.');return;}
+    if(demo){fb.textContent=uiText('Chế độ minh họa không kết nối SSH thật.');return;}
+    testBtn.disabled=true;fb.textContent=uiText('Đang kiểm tra kết nối…');
+    const out=[];
+    try{
+      for(const line of lines){
+        const m=line.match(/^\[?([^\]]+?)\](?::(\d+))?$/)||line.match(/^([^:]+)(?::(\d+))?$/);
+        const host=m[1],port=Number(raw.port||22);
+        const payload={host,port,user:(raw.user||'').trim(),ssh_auth:raw.ssh_auth,ssh_password:raw.ssh_auth==='password'?raw.ssh_password:'',identity:raw.ssh_auth==='key'?(raw.identity||'').trim():''};
+        try{
+          let res=await api('/machines/connection-test',{method:'POST',body:JSON.stringify({...payload,expected:''})});
+          if(res.fingerprint)res=await api('/machines/connection-test',{method:'POST',body:JSON.stringify({...payload,expected:res.fingerprint})});
+          out.push('✓ '+host+': '+(res.hostname||host)+' ('+res.user+')');
+        }catch(err){out.push('✗ '+host+': '+err.message);}
+        if(fb.isConnected)fb.innerHTML=out.map(esc).join('<br>');
+      }
+    }finally{testBtn.disabled=false;}
+  };
   f.onsubmit=async e=>{
     e.preventDefault();const btn=e.submitter;btn.disabled=true;$('#form-error').innerHTML='';
     try{
@@ -1741,4 +1771,43 @@ function openMongoSeedBulk(){
       $('#modal').close();toast(uiText('Đã thêm các máy chủ từ Seed list.'));await refreshState();await render();
     }catch(err){formError(err);}finally{btn.disabled=false;}
   };
+}
+
+function setupSshKeyDropzone(root){
+  if(!root)return;
+  for(const inp of root.querySelectorAll('input[name="identity"],input[name$="_identity"]')){
+    if(inp.dataset.sshDropReady)continue;
+    inp.dataset.sshDropReady='1';
+    const wrap=document.createElement('span');wrap.className='ssh-key-drop';
+    inp.parentNode.insertBefore(wrap,inp);wrap.append(inp);
+    const btn=document.createElement('button');btn.type='button';btn.className='button small ssh-key-import';btn.textContent=uiText('Nhập file');
+    const picker=document.createElement('input');picker.type='file';picker.hidden=true;document.body.append(picker);
+    const status=document.createElement('small');status.className='ssh-key-hint';
+    wrap.append(btn);
+    const field=inp.closest('label,.field');
+    if(field){const existing=field.querySelector('small');if(existing)existing.after(status);else field.append(status);}
+    const importText=async(filename,content)=>{
+      if(demo){status.textContent=uiText('Chế độ minh họa không lưu key thật.');return;}
+      status.textContent=uiText('Đang nhập SSH key…');status.classList.remove('is-error');
+      try{
+        const res=await api('/ssh-keys/import',{method:'POST',body:JSON.stringify({filename:filename||'id_key',content})});
+        inp.value=res.path;inp.dispatchEvent(new Event('input',{bubbles:true}));
+        const isPub=/^(ssh-|ecdsa-sha2-|sk-ssh-|-----BEGIN PUBLIC KEY)/.test(content.trim());
+        status.textContent=uiText('Đã nhập: ')+res.name+(isPub?uiText(' (Lưu ý: đây là public key, SSH thường cần private key)'):' (0600)');
+      }catch(err){status.textContent=err.message;status.classList.add('is-error');}
+    };
+    const handleFile=async file=>{
+      if(!file)return;
+      if(file.size>65536){status.textContent=uiText('File quá lớn (tối đa 64 KB).');status.classList.add('is-error');return;}
+      await importText(file.name,await file.text());
+    };
+    btn.onclick=e=>{e.preventDefault();e.stopPropagation();picker.click();};
+    picker.onchange=()=>{if(picker.files[0])handleFile(picker.files[0]);picker.value='';};
+    root.closest('dialog')?.addEventListener('close',()=>picker.remove(),{once:true});
+    const target=field||wrap;
+    for(const ev of ['dragenter','dragover']){target.addEventListener(ev,e=>{e.preventDefault();e.stopPropagation();wrap.classList.add('is-dragover');});}
+    target.addEventListener('dragleave',e=>{if(!target.contains(e.relatedTarget))wrap.classList.remove('is-dragover');});
+    target.addEventListener('drop',e=>{e.preventDefault();e.stopPropagation();wrap.classList.remove('is-dragover');const f=e.dataTransfer?.files?.[0];if(f)handleFile(f);});
+    inp.addEventListener('paste',e=>{const txt=e.clipboardData?.getData('text')||'';if(txt.includes('PRIVATE KEY')){e.preventDefault();importText('pasted_key',txt);}});
+  }
 }

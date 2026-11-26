@@ -273,4 +273,34 @@ dialog#modal:has(.domain-form,.copy-split,.upstream-builder) .modal-body{max-hei
 #popup fieldset.site-draft .remove-site{position:absolute;top:6px;right:10px;margin:0;padding:3px 9px;font-size:12px}
 @media(max-width:780px){#popup fieldset.site-draft{grid-template-columns:1fr}#popup fieldset.site-draft .site-preview-wrap{grid-column:1;grid-row:auto}}
 
+#popup .copy-list > div{display:flex !important;flex-direction:row !important;align-items:center !important;justify-content:space-between !important;gap:8px;width:100%;min-width:0}
+#popup .copy-list > div > label{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:8px;flex-wrap:nowrap;overflow:hidden;margin:0}
+#popup .copy-list > div > label strong,#popup .copy-list > div > label small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-basis:auto;margin-top:0}
+#popup .copy-list > div > label small{color:var(--muted);font-size:12px}
+#popup .copy-list .copy-preview-btn{flex:0 0 auto;margin-left:auto;width:30px;height:30px;padding:0;display:inline-flex;align-items:center;justify-content:center}
+
+.ssh-key-drop{display:flex;align-items:stretch;gap:8px;padding:0;border:0;border-radius:8px;transition:outline-color .15s,background .15s}
+.ssh-key-drop input[type=text]{flex:1;min-width:0}
+.ssh-key-drop .ssh-key-import{flex:0 0 auto;white-space:nowrap;height:auto;padding:0 12px;display:inline-flex;align-items:center}
+.ssh-key-drop.is-dragover{outline:1.5px dashed var(--green);outline-offset:3px;background:rgba(22,163,74,.06)}
+.ssh-key-hint:empty{display:none !important}
+.ssh-key-hint.is-error{color:#b91c1c !important}
+@media(max-width:680px){
+  #sidebar{z-index:60}
+  .topbar{height:auto;flex-direction:column;align-items:stretch;padding:8px 14px;gap:6px}
+  .breadcrumb{min-height:32px;padding-right:128px}
+  .breadcrumb .icon-button{width:32px;height:32px;min-height:32px;font-size:20px}
+  .breadcrumb strong{font-size:14px}
+  #mongo{display:inline-flex;position:absolute;top:11px;right:14px;min-height:26px;height:26px;padding:0 9px;font-size:10px}
+  .top-actions{flex-wrap:nowrap;gap:6px;width:100%;overflow-x:auto;scrollbar-width:none}
+  .top-actions::-webkit-scrollbar{display:none}
+  .top-actions :is(select,button){min-height:32px;height:32px;font-size:11px;white-space:nowrap}
+  .top-actions .language-picker{padding:0 8px}
+  .top-actions .demo-toggle{padding:0 10px;white-space:nowrap}
+  .top-actions .account-profile{margin-left:auto;flex-shrink:0}
+  .top-actions .account-profile .avatar{width:26px;height:26px;font-size:10px}
+  .top-actions #logout{flex-shrink:0}
+}
+
+
 
