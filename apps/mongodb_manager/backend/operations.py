@@ -43,7 +43,10 @@ def mongo_error(error):
 def client(profile, direct=None):
     options = dict(serverSelectionTimeoutMS=5000 if direct else 15000, connectTimeoutMS=5000, socketTimeoutMS=15000, timeoutMS=20000, appname="MongoDB Manager")
     if profile.get("username"):
-        options.update(username=profile["username"], password=profile.get("password", ""), authSource=profile["auth_db"])
+        pw = profile.get("password") or ""
+        if not pw:
+            raise OperationFailure("Hồ sơ MongoDB thiếu mật khẩu. Hãy mở Cấu hình để nhập lại mật khẩu.", code=18)
+        options.update(username=profile["username"], password=pw, authSource=profile["auth_db"])
     if profile.get("tls"):
         options["tls"] = True
         if profile.get("tls_ca"):

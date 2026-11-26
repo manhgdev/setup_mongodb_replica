@@ -128,13 +128,14 @@ def register_auth(app, stylesheet_url="/static/styles.css"):
                     reset_active_store(tokens)
         else:
             response = await call_next(request)
-        response.headers["Cache-Control"] = "no-store"
+        is_static = request.url.path.startswith(("/static/", "/vps/static/", "/manager-login/"))
+        response.headers["Cache-Control"] = "public, max-age=300" if is_static else "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers['X-Frame-Options'] = 'DENY'
         if auth.origin:
             response.headers['Strict-Transport-Security'] = 'max-age=31536000'
-        response.headers["Content-Security-Policy"] = "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+        response.headers["Content-Security-Policy"] = "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
         return response
 
     def login_response(username: str, password: str, request: Request, recovery_code: str | None = None):

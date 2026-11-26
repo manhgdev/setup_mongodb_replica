@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from bson import BSON, json_util
 from fastapi import Query, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pymongo import timeout as mongo_timeout
@@ -124,6 +125,7 @@ def create_app(data_dir=None):
             app.state.pool.shutdown(wait=True)
 
     app = FastAPI(title="MongoDB Manager", lifespan=lifespan, docs_url=None, redoc_url=None)
+    app.add_middleware(GZipMiddleware, minimum_size=500)
 
     @app.exception_handler(RequestValidationError)
     async def invalid_input(request, exc):

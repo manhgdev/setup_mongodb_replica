@@ -153,15 +153,21 @@ async def run_terminal_session(websocket, machine: dict, cols: int = 100, rows: 
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         try:
             while not stop.is_set():
-                if channel.recv_ready():
-                    data = channel.recv(4096)
+                chunks = []
+                total = 0
+                while total < 32768 and channel.recv_ready():
+                    data = channel.recv(8192)
                     if not data:
                         break
-                    text = decoder.decode(data, final=False)
+                    chunks.append(data)
+                    total += len(data)
+                if chunks:
+                    text = decoder.decode(b"".join(chunks), final=False)
                     if text:
                         loop.call_soon_threadsafe(queue.put_nowait, ("data", text))
-                elif channel.recv_stderr_ready():
-                    data = channel.recv_stderr(4096)
+                    continue
+                if channel.recv_stderr_ready():
+                    data = channel.recv_stderr(8192)
                     if data:
                         text = decoder.decode(data, final=False)
                         if text:
@@ -169,7 +175,7 @@ async def run_terminal_session(websocket, machine: dict, cols: int = 100, rows: 
                 elif channel.exit_status_ready():
                     break
                 else:
-                    stop.wait(0.03)
+                    stop.wait(0.015)
         except Exception:
             pass
         finally:
@@ -186,7 +192,19 @@ async def run_terminal_session(websocket, machine: dict, cols: int = 100, rows: 
         while True:
             kind, val = await queue.get()
             if kind == "data":
-                await websocket.send_json({"type": "data", "data": val})
+                parts = [val]
+                exit_code = None
+                while not queue.empty() and len(parts) < 16:
+                    nk, nv = queue.get_nowait()
+                    if nk == "data":
+                        parts.append(nv)
+                    elif nk == "exit":
+                        exit_code = nv
+                        break
+                await websocket.send_json({"type": "data", "data": "".join(parts)})
+                if exit_code is not None:
+                    await websocket.send_json({"type": "exit", "code": exit_code})
+                    break
             elif kind == "exit":
                 await websocket.send_json({"type": "exit", "code": val})
                 break

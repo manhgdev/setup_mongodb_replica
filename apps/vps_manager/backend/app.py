@@ -304,13 +304,13 @@ def register(app):
         if not auth.allowed_request(websocket):
             await websocket.close(code=4403)
             return
-        session = auth.session(websocket) if auth.enabled else None
+        session = await asyncio.to_thread(auth.session, websocket) if auth.enabled else None
         if auth.enabled and session is None:
             await websocket.close(code=4401)
             return
         ws_id = session.get("workspace_id", "default") if session else "default"
         if session and workspace_user and workspace_user != session["user_id"]:
-            target = auth.get_user(workspace_user)
+            target = await asyncio.to_thread(auth.get_user, workspace_user)
             if not target or not auth.can_access_workspace(session, target):
                 await websocket.close(code=4403)
                 return
@@ -318,7 +318,7 @@ def register(app):
         ws_store = app.state.workspaces.get_store(ws_id) if hasattr(app.state, "workspaces") else app.state.store
         with use_store(ws_store, ws_id):
             try:
-                machine = ws_store.get("machines", ident)
+                machine = await asyncio.to_thread(ws_store.get, "machines", ident)
             except KeyError:
                 await websocket.close(code=4404)
                 return

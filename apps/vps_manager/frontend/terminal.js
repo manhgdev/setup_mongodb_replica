@@ -195,8 +195,18 @@ function connectPane(pane){
       pane.term.writeln('\r\n\x1b[33m[Phiên SSH đã đóng (code '+msg.code+')]\x1b[0m');
     }
   };
-  ws.onerror=()=>{pane.status='error';syncPaneChrome(pane);updateTermHeader();};
-  ws.onclose=()=>{if(pane.status==='connected'||pane.status==='connecting'){pane.status='closed';syncPaneChrome(pane);updateTermHeader();}};
+  ws.onerror=()=>{
+    if(pane.status==='connecting')pane.term.writeln('\r\n\x1b[31m✗ '+vt('Không thể mở WebSocket SSH (kiểm tra proxy Nginx/Cloudflare cho WebSocket Upgrade).','Unable to open SSH WebSocket (check Nginx/Cloudflare WebSocket Upgrade proxy).')+'\x1b[0m');
+    pane.status='error';syncPaneChrome(pane);updateTermHeader();
+  };
+  ws.onclose=ev=>{
+    if(pane.status==='connecting'){
+      pane.status='error';syncPaneChrome(pane);updateTermHeader();
+      pane.term.writeln('\r\n\x1b[31m✗ '+vt('WebSocket bị đóng trước khi kết nối (mã '+ev.code+(ev.reason?': '+ev.reason:'')+').','WebSocket closed before connecting (code '+ev.code+(ev.reason?': '+ev.reason:'')+').')+'\x1b[0m');
+    }else if(pane.status==='connected'){
+      pane.status='closed';syncPaneChrome(pane);updateTermHeader();
+    }
+  };
 }
 
 function updateTermHeader(){
@@ -693,7 +703,7 @@ async function terminalPage(view,path,rev){
   $('#term-reconnect').onclick=()=>{
     const ws=getActiveWorkspace();
     if(!ws)return;
-    if(ws.broadcast){for(const id of ws.paneIds)connectPane(termPanes.get(id));}
+    if(ws.broadcast){ws.paneIds.forEach((id,idx)=>setTimeout(()=>connectPane(termPanes.get(id)),idx*70));}
     else{const p=getActivePane();if(p)connectPane(p);}
   };
   $('#term-fullscreen').onclick=()=>{
