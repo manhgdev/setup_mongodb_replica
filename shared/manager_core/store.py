@@ -277,6 +277,9 @@ class _MongoBackend:
             return None
         current.update(changes)
         updated_doc = self._prepare_doc(kind, current, record_id)
+        for k in SECRET_FIELDS:
+            if k not in changes and not current.get(k) and isinstance(doc.get(k), str) and doc[k].startswith(ENC_PREFIX):
+                updated_doc[k] = doc[k]
         col.replace_one({"_id": record_id}, updated_doc, upsert=True)
         self._invalidate(kind)
         return current
@@ -353,12 +356,13 @@ def migrate_store(source, target) -> dict:
     """Copy all records from source backend into target backend (idempotent upsert)."""
     total = 0
     kinds = source.list_kinds()
+    existing_machines_list = target.all("machines") if "machines" in kinds else []
     existing_machines = {
-        (m.get("mode"), m.get("host"), int(m.get("port") or 22), m.get("user")): m.get("id")
-        for m in (target.all("machines") if "machines" in kinds else [])
+        (m.get("mode"), m.get("host"), int(m.get("port") or 22), m.get("user")): m
+        for m in existing_machines_list
     }
     existing_users = {
-        u.get("username"): u.get("id")
+        u.get("username"): u
         for u in (target.all("users") if "users" in kinds else [])
         if u.get("username")
     }
@@ -368,14 +372,23 @@ def migrate_store(source, target) -> dict:
             rid = item.get("id")
             if kind == "machines":
                 key = (item.get("mode"), item.get("host"), int(item.get("port") or 22), item.get("user"))
-                if key in existing_machines and existing_machines[key] != rid:
-                    rid = existing_machines[key]
-                    item = dict(item, id=rid)
+                prev = existing_machines.get(key)
+                if prev:
+                    rid = prev["id"]
+                    merged = dict(item, id=rid)
+                    for sf in SECRET_FIELDS:
+                        if not merged.get(sf) and prev.get(sf):
+                            merged[sf] = prev[sf]
+                    item = merged
             elif kind == "users":
                 uname = item.get("username")
-                if uname and uname in existing_users and existing_users[uname] != rid:
-                    rid = existing_users[uname]
-                    item = dict(item, id=rid)
+                prev = existing_users.get(uname) if uname else None
+                if prev:
+                    rid = prev["id"]
+                    merged = dict(item, id=rid)
+                    if not merged.get("password_hash") and prev.get("password_hash"):
+                        merged["password_hash"] = prev["password_hash"]
+                    item = merged
             batch.append((kind, item, rid))
             total += 1
     if batch:
