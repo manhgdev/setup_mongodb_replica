@@ -8,7 +8,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 
 SECRET_FIELDS = frozenset({
     "ssh_password",
@@ -52,7 +52,10 @@ def _decrypt_secrets(obj, cipher: Fernet):
         out = {}
         for k, v in obj.items():
             if k in SECRET_FIELDS and isinstance(v, str) and v.startswith(ENC_PREFIX):
-                out[k] = cipher.decrypt(v[len(ENC_PREFIX):].encode("utf-8")).decode("utf-8")
+                try:
+                    out[k] = cipher.decrypt(v[len(ENC_PREFIX):].encode("utf-8")).decode("utf-8")
+                except InvalidToken:
+                    out[k] = ""
             else:
                 out[k] = _decrypt_secrets(v, cipher)
         return out
