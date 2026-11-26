@@ -118,6 +118,11 @@ class Auth:
                 'created_by': 'system',
                 'legacy_digest': digest,
             }, uid)
+        elif default_admin is not None and not default_admin.get('password_hash') and legacy.get('password_hash'):
+            default_admin['password_hash'] = legacy['password_hash']
+            if not default_admin.get('recovery_hash') and legacy.get('recovery_hash'):
+                default_admin['recovery_hash'] = legacy['recovery_hash']
+            self.store.save('users', default_admin, default_admin['id'])
         elif default_admin is not None and default_admin.get('legacy_digest') != digest:
             self.store.update_fields('users', default_admin['id'], {
                 'username': legacy['username'],

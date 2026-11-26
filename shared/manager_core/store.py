@@ -17,7 +17,6 @@ SECRET_FIELDS = frozenset({
     "token",
     "recovery_code",
     "secret",
-    "password_hash",
 })
 ENC_PREFIX = "enc:"
 
