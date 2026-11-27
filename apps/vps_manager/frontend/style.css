@@ -287,7 +287,21 @@ td .site-warning{display:block;margin-top:4px}
   .topbar .account-profile #admin-username{display:none}
 }
 
-.panel-head .actions .button{height:34px;box-sizing:border-box;display:inline-flex;align-items:center;gap:6px}
+.panel-head .actions .button:not(.small){height:34px;box-sizing:border-box;display:inline-flex;align-items:center;gap:6px}
+@media(max-width:1280px){
+  .actions,.panel-head .actions{gap:6px}
+  .button:not(.small),.panel-head .actions .button:not(.small){height:30px;min-height:30px;padding:5px 10px;font-size:11px;gap:5px}
+  .button:not(.small) svg,.panel-head .actions .button:not(.small) svg{width:13px;height:13px}
+}
+@media(max-width:960px){
+  .button:not(.small),.panel-head .actions .button:not(.small){height:28px;min-height:28px;padding:4px 9px;font-size:10.5px;gap:4px}
+  .button.small,.panel-head .actions .button.small{height:25px;min-height:25px;padding:3px 8px;font-size:10px;gap:4px}
+  .button svg,.panel-head .actions .button svg{width:12px;height:12px}
+}
+@media(max-width:680px){
+  .button:not(.small),.panel-head .actions .button:not(.small){height:26px;min-height:26px;padding:3px 8px;font-size:10px}
+  .button.small,.panel-head .actions .button.small{height:24px;min-height:24px;padding:2px 7px;font-size:9.5px}
+}
 
 #site-list .domain-head{font-size:9px;letter-spacing:.7px;font-weight:550;color:#8a968d;border-bottom:1px solid var(--line);padding:4px 0 8px;margin-bottom:2px}
 

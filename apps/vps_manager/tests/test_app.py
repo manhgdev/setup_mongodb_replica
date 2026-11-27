@@ -133,3 +133,23 @@ def test_server_list_edit_delete(tmp_path):
         assert client.put(f"/api/vps/servers/{ident}", json=edited).json()["name"] == "b"
         assert client.delete(f"/api/vps/servers/{ident}").status_code == 200
         assert client.get("/api/vps/servers").json() == []
+
+
+def test_cloudflare_token_saved_and_loaded_per_workspace(tmp_path):
+    with TestClient(create_app(tmp_path), base_url="http://127.0.0.1", headers={"X-MongoDB-Manager": "1"}) as client:
+        auth = client.post("/api/auth/setup", json={"username": "operator", "password": "fixture-pass"}).json()
+        client.headers["X-CSRF-Token"] = auth["csrf"]
+        assert client.get("/api/vps/cloudflare-token").json() == {"token": "", "name": "default"}
+
+        ident = client.post("/api/vps/machines", json={
+            "name": "vps-cf", "mode": "ssh", "host": "203.0.113.5", "ssh_auth": "password", "ssh_password": "pw",
+        }).json()["id"]
+        res = client.post("/api/vps/batches/cloudflare-token", json={
+            "machines": [ident],
+            "operation": {"token": "cfut_saved_token_1234567890", "name": "zm", "update_renewal": True},
+        })
+        assert res.status_code == 202
+        assert client.get("/api/vps/cloudflare-token").json() == {
+            "token": "cfut_saved_token_1234567890",
+            "name": "zm",
+        }

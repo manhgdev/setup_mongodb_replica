@@ -330,6 +330,20 @@ td .password-control input[readonly] { min-width:9rem; padding-block:7px; border
   .topbar .breadcrumb>span{display:none}
   .topbar .account-profile #admin-username{display:none}
 }
+@media(max-width:1280px){
+  .actions{gap:6px}
+  .button:not(.small){min-height:30px;padding:5px 10px;font-size:11px;gap:5px}
+  .button:not(.small) svg{width:13px;height:13px}
+}
+@media(max-width:960px){
+  .button:not(.small){min-height:28px;padding:4px 9px;font-size:10.5px;gap:4px}
+  .button.small{min-height:25px;padding:3px 8px;font-size:10px;gap:4px}
+  .button svg{width:12px;height:12px}
+}
+@media(max-width:680px){
+  .button:not(.small){min-height:26px;padding:3px 8px;font-size:10px}
+  .button.small{min-height:24px;padding:2px 7px;font-size:9.5px}
+}
 
 
 

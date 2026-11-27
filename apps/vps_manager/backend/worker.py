@@ -1,6 +1,7 @@
 """Allowlisted operations executed on the selected Linux host."""
 
 import fcntl
+import glob
 import json
 import os
 import platform
@@ -13,6 +14,122 @@ import time
 import urllib.request
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+
+LETSENCRYPT_DIR = Path("/etc/letsencrypt")
+
+
+def _certbot_bin():
+    """Return the Certbot executable name/path if installed, else None."""
+    if shutil.which("certbot"):
+        return "certbot"
+    for candidate in ("/opt/certbot/bin/certbot", "/snap/bin/certbot"):
+        if Path(candidate).is_file():
+            return candidate
+    return None
+
+
+def save_cloudflare_token(params):
+    """Save a Cloudflare API token for Certbot DNS-01 and optionally update existing credentials."""
+    token = (params.get("token") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{16,256}", token):
+        raise ValueError("Cloudflare API token không hợp lệ.")
+    raw_name = (params.get("name") or "default").strip().lower()
+    if not re.fullmatch(r"[a-z0-9_.-]{1,64}", raw_name):
+        raise ValueError("Tên tệp credential không hợp lệ (chỉ dùng a-z, 0-9, ., _, -).")
+    directory = LETSENCRYPT_DIR / "zm-credentials"
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(directory, 0o700)
+    target = directory / f"{raw_name}.ini"
+    content = "dns_cloudflare_api_token = " + token + "\n"
+    atomic_write(target, content)
+    os.chmod(target, 0o600)
+    updated = [str(target)]
+    if params.get("update_renewal", True):
+        for existing in sorted(directory.glob("*.ini")):
+            if existing != target:
+                atomic_write(existing, content)
+                os.chmod(existing, 0o600)
+                updated.append(str(existing))
+        renewal_dir = LETSENCRYPT_DIR / "renewal"
+        if renewal_dir.is_dir():
+            for conf in sorted(renewal_dir.glob("*.conf")):
+                text = conf.read_text(errors="replace")
+                match = re.search(r"(?m)^\s*dns_cloudflare_credentials\s*=\s*(\S+)", text)
+                if match:
+                    cred_path = Path(match.group(1).strip("'\""))
+                    if cred_path != target and cred_path.parent.exists():
+                        atomic_write(cred_path, content)
+                        os.chmod(cred_path, 0o600)
+                        if str(cred_path) not in updated:
+                            updated.append(str(cred_path))
+                    new_text = re.sub(r"(?m)^(\s*dns_cloudflare_propagation_seconds\s*=\s*)\d+", r"\g<1>15", text)
+                    if new_text != text:
+                        atomic_write(conf, new_text)
+    event("Cloudflare · Đã lưu token (" + str(len(updated)) + " tệp)")
+    return {"credential": str(target), "updated": updated}
+
+
+def _build_renewal_map(renewal_dir):
+    """Map certificate/fullchain paths (and resolved targets) in renewal/*.conf to Certbot profile names."""
+    mapping = {}
+    if not renewal_dir.is_dir():
+        return mapping
+    for conf in sorted(renewal_dir.glob("*.conf")):
+        try:
+            text = conf.read_text(errors="replace")
+        except OSError:
+            continue
+        for match in re.finditer(r"(?m)^\s*(?:cert|fullchain)\s*=\s*(\S+)", text):
+            raw = match.group(1).strip("'\"")
+            mapping[raw] = conf.stem
+            try:
+                mapping[str(Path(raw).resolve())] = conf.stem
+            except OSError:
+                pass
+    return mapping
+
+
+def _collect_ssl_certificates(children, root, seen=None):
+    """Collect ssl_certificate values from a server block and any included config files."""
+    if seen is None:
+        seen = set()
+    certs = []
+    for words, _ in children:
+        if words[0] == "ssl_certificate" and len(words) >= 2:
+            certs.append(" ".join(words[1:]))
+        elif words[0] == "include" and len(words) == 2:
+            pattern = Path(words[1]) if Path(words[1]).is_absolute() else root / words[1]
+            for inc_name in sorted(glob.glob(str(pattern))):
+                inc_path = Path(inc_name)
+                try:
+                    real_inc = inc_path.resolve()
+                except OSError:
+                    continue
+                if real_inc in seen or not real_inc.is_file() or real_inc.stat().st_size > 2_000_000:
+                    continue
+                seen.add(real_inc)
+                certs.extend(_collect_ssl_certificates(nginx_blocks(real_inc.read_text(errors="replace")), root, seen))
+    return certs
+
+
+def _match_renewal_name(certificate, renewal_dir, renewal_map):
+    """Resolve a Certbot renewal profile name from an ssl_certificate path."""
+    if certificate in renewal_map:
+        return renewal_map[certificate]
+    try:
+        resolved = str(Path(certificate).resolve())
+    except OSError:
+        resolved = certificate
+    if resolved in renewal_map:
+        return renewal_map[resolved]
+    for candidate in (certificate, resolved):
+        match = re.fullmatch(
+            r".*/letsencrypt/(?:live|archive)/([a-zA-Z0-9_.-]+)/(?:cert|fullchain)\d*\.pem",
+            candidate,
+        )
+        if match and (renewal_dir / f"{match[1]}.conf").is_file():
+            return match[1]
+    return None
 
 
 def command(args, check=True, timeout=60):
@@ -122,6 +239,8 @@ def discover_sites(root):
     broken = []
     sites = []
     diagnostics = []
+    renewal_dir = LETSENCRYPT_DIR / "renewal"
+    renewal_map = _build_renewal_map(renewal_dir)
     if dump.returncode:
         diagnostics.extend(line[:600] for line in dump.stderr.splitlines()[-3:])
     while queue:
@@ -163,12 +282,12 @@ def discover_sites(root):
             if kind=="static" and any(w[0]=="try_files" and w[-1]=="/index.html" for w,_ in walk_directives(children)):
                 kind="SPA"
             managed = source.startswith(MARKER) and real.name.startswith("zm-") and real.parent in (root/"conf.d", root/"zm-disabled") and bool(domains) and real.name == "zm-"+domains[0]+".conf"
-            certificates = values("ssl_certificate")
+            certificates = _collect_ssl_certificates(children, root)
             renewal_names = []
             for certificate in certificates:
-                match = re.fullmatch(r"/etc/letsencrypt/live/([a-zA-Z0-9_.-]+)/(?:cert|fullchain)\.pem",certificate)
-                if match and Path("/etc/letsencrypt/renewal",match[1]+".conf").is_file():
-                    renewal_names.append(match[1])
+                matched = _match_renewal_name(certificate, renewal_dir, renewal_map)
+                if matched:
+                    renewal_names.append(matched)
             expires = None
             if certificates:
                 try:
@@ -177,7 +296,7 @@ def discover_sites(root):
                 except (ValueError, OSError, ssl.SSLError):
                     diagnostics.append("Không đọc được chứng chỉ · " + str(real))
             sites.append(dict(domain=" ".join(domains) or real.name, primary=domains[0] if domains else "",
-                              renewal_names=sorted(set(renewal_names)),listeners=listeners, kind=kind, target=target, source=str(real),
+                              renewal_names=sorted(set(renewal_names)),ssl_certificates=certificates,listeners=listeners, kind=kind, target=target, source=str(real),
                               file_id=hashlib.sha256(str(real).encode()).hexdigest(), managed=managed, enabled=included, https=bool(certificates), expires=expires,
                               port=int(target.rsplit(":",1)[1]) if re.fullmatch(r"http://127\.0\.0\.1:\d+",target) else None,
                               revision=hashlib.sha256(source.encode()).hexdigest()))
@@ -215,29 +334,39 @@ def website_file(action, params, root):
         revision = hashlib.sha256(old.encode()).hexdigest()
         if action == "renew-ssl":
             matches = [r for r in rows if r["domain"]==params["domain"] and r["enabled"] and r["https"]]
-            names = {name for r in matches for name in r["renewal_names"]}
-            if revision != params["revision"] or len(matches)!=1 or len(names)!=1:
-                raise ValueError("Cấu hình đã thay đổi hoặc không xác định được một chứng chỉ Certbot cho site.")
-            name = names.pop()
-            event("Certbot · "+name)
-            command(["certbot","renew","--non-interactive","--cert-name",name],timeout=600)
-            command(["nginx","-t"])
-            command(["systemctl","reload","nginx"])
+            names = sorted({name for r in matches for name in r["renewal_names"]})
+            if revision != params["revision"] or not matches or not names:
+                raise ValueError("Cấu hình đã thay đổi hoặc không xác định được hồ sơ Certbot cho site.")
+            certbot_bin = _certbot_bin()
+            if not certbot_bin:
+                raise ValueError("Cần cài Certbot trong Software Center trước.")
+            for name in names:
+                event("Certbot · " + name)
+                command([certbot_bin, "renew", "--non-interactive", "--cert-name", name], timeout=600)
+            command(["nginx", "-t"])
+            command(["systemctl", "reload", "nginx"])
             import ssl
-            cert = ssl._ssl._test_decode_cert("/etc/letsencrypt/live/"+name+"/cert.pem")
-            if ssl.cert_time_to_seconds(cert["notAfter"]) <= time.time():
-                raise ValueError("Chứng chỉ vẫn hết hạn sau khi chạy Certbot.")
-            return {"certificate":name,"expires":cert["notAfter"]}
+            last_expires = None
+            for name in names:
+                cert_path = LETSENCRYPT_DIR / "live" / name / "cert.pem"
+                if not cert_path.is_file():
+                    cert_path = LETSENCRYPT_DIR / "live" / name / "fullchain.pem"
+                cert = ssl._ssl._test_decode_cert(str(cert_path))
+                if ssl.cert_time_to_seconds(cert["notAfter"]) <= time.time():
+                    raise ValueError(f"Chứng chỉ {name} vẫn hết hạn sau khi chạy Certbot.")
+                last_expires = cert["notAfter"]
+            return {"certificate": ", ".join(names), "expires": last_expires}
         if action == "renew-test":
             matches = [r for r in rows if r["domain"]==params.get("domain") and r["enabled"] and r["https"]]
             names = {name for r in matches for name in r["renewal_names"]}
             if not matches or not names:
                 raise ValueError("Cần site HTTPS đang bật và hồ sơ Certbot hợp lệ để thử gia hạn.")
-            if not shutil.which("certbot"):
+            certbot_bin = _certbot_bin()
+            if not certbot_bin:
                 raise ValueError("Cần cài Certbot trong Software Center trước.")
             for name in sorted(names):
                 event("Certbot · Kiểm tra gia hạn · " + name)
-                command(["certbot","renew","--dry-run","--cert-name",name],timeout=600)
+                command([certbot_bin, "renew", "--dry-run", "--cert-name", name], timeout=600)
             return {"domain":params.get("domain"),"renewal_test":"ok"}
         editable = (path.parent in [root / "conf.d", root / "sites-available"] and
                     all(w == ["server"] or w[0] == "upstream" for w, _ in nginx_blocks(old))
@@ -391,8 +520,8 @@ def website_file(action, params, root):
                 raise ValueError("Bản sao không hợp lệ.")
             candidate = (history / snapshot).read_text()
         if action == "external-certificate":
-            if not editable or len(rows)!=1 or not rows[0]["primary"] or rows[0]["https"]:
-                raise ValueError("Cấp SSL tại đây cần một website HTTP duy nhất trong file.")
+            if not editable or len(rows)!=1 or not rows[0]["primary"] or (rows[0]["https"] and rows[0]["renewal_names"]):
+                raise ValueError("Cấp SSL tại đây cần một website HTTP duy nhất hoặc site HTTPS chưa có hồ sơ Certbot.")
             domain = rows[0]["primary"]
             validate_domain(domain)
             if params["domain"]!=domain:
@@ -400,12 +529,30 @@ def website_file(action, params, root):
             opening = re.search(r"(?m)^[ \t]*server[ \t]*\{",old)
             if not opening:
                 raise ValueError("Cần chọn vị trí listener bằng editor.")
-            cert = issue_certificate(domain,params)
-            tls = (f"\n    listen 443 ssl;\n    ssl_certificate {cert}/fullchain.pem;"
-                   f"\n    ssl_certificate_key {cert}/privkey.pem;")
-            if params.get("force_https"):
-                tls += '\n    if ($scheme = http) { return 301 https://$host$request_uri; }'
-            candidate = old[:opening.end()]+tls+old[opening.end():]
+            cert_name = "zm-" + domain
+            live_dir = LETSENCRYPT_DIR / "live" / cert_name
+            renewal_file = LETSENCRYPT_DIR / "renewal" / (cert_name + ".conf")
+            backup_live = None
+            if live_dir.exists() and not renewal_file.is_file():
+                backup_live = LETSENCRYPT_DIR / "live" / f".{cert_name}.bak-{time.time_ns()}"
+                live_dir.rename(backup_live)
+            try:
+                cert = issue_certificate(domain,params)
+            except Exception:
+                if backup_live and backup_live.exists() and not live_dir.exists():
+                    backup_live.rename(live_dir)
+                raise
+            if backup_live and backup_live.exists():
+                shutil.rmtree(backup_live, ignore_errors=True)
+            if not rows[0]["https"]:
+                tls = (f"\n    listen 443 ssl;\n    ssl_certificate {cert}/fullchain.pem;"
+                       f"\n    ssl_certificate_key {cert}/privkey.pem;")
+                if params.get("force_https"):
+                    tls += '\n    if ($scheme = http) { return 301 https://$host$request_uri; }'
+                candidate = old[:opening.end()]+tls+old[opening.end():]
+            else:
+                candidate = re.sub(r"(?m)^([ \t]*ssl_certificate\s+)[^;]+;", rf"\g<1>{cert}/fullchain.pem;", old)
+                candidate = re.sub(r"(?m)^([ \t]*ssl_certificate_key\s+)[^;]+;", rf"\g<1>{cert}/privkey.pem;", candidate)
         if not candidate.strip():
             raise ValueError("Cấu hình trống.")
         if action == "check":
@@ -547,14 +694,14 @@ def atomic_write(path, content):
     os.replace(tmp.name, path)
 
 
-def issue_certificate(domain, params):
+def issue_certificate(domain, params, cert_name=None):
     mode = params["method"]
     email = params["email"]
     if mode not in {"http", "cloudflare"} or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
         raise ValueError("Kiểm tra email và phương thức xác thực.")
     if not shutil.which("certbot"):
         raise ValueError("Cài Certbot và plugin trong Software Center trước.")
-    name = "zm-" + domain
+    name = cert_name or ("zm-" + domain)
     args = ["certbot", "certonly", "--non-interactive", "--agree-tos", "--email", email,
             "--cert-name", name, "-d", domain, "--keep-until-expiring",
             "--deploy-hook", "nginx -t && systemctl reload nginx"]
@@ -567,17 +714,28 @@ def issue_certificate(domain, params):
             args += ["-d", alias]
     credential = None
     previous = None
+    wrote_credential = False
     if mode == "cloudflare":
-        token = params["token"]
-        if not re.fullmatch(r"[A-Za-z0-9_-]{16,256}", token):
-            raise ValueError("Cloudflare API token không hợp lệ.")
-        directory = Path("/etc/letsencrypt/zm-credentials")
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        credential = directory / (domain + ".ini")
-        previous = credential.read_text() if credential.exists() else None
-        atomic_write(credential, "dns_cloudflare_api_token = " + token + "\n")
+        token = (params.get("token") or "").strip()
+        directory = Path("/etc/letsencrypt/zm-credentials") if str(LETSENCRYPT_DIR) == "/etc/letsencrypt" else LETSENCRYPT_DIR / "zm-credentials"
+        if token:
+            if not re.fullmatch(r"[A-Za-z0-9_-]{16,256}", token):
+                raise ValueError("Cloudflare API token không hợp lệ.")
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            credential = directory / (domain + ".ini")
+            previous = credential.read_text() if credential.exists() else None
+            atomic_write(credential, "dns_cloudflare_api_token = " + token + "\n")
+            os.chmod(credential, 0o600)
+            wrote_credential = True
+        else:
+            for candidate in (directory / (domain + ".ini"), directory / "default.ini"):
+                if candidate.is_file():
+                    credential = candidate
+                    break
+            if not credential:
+                raise ValueError("Cloudflare API token không hợp lệ.")
         args += ["--dns-cloudflare", "--dns-cloudflare-credentials", str(credential),
-                 "--dns-cloudflare-propagation-seconds", "60"]
+                 "--dns-cloudflare-propagation-seconds", "15"]
     else:
         args += ["--nginx"]
     try:
@@ -593,7 +751,7 @@ def issue_certificate(domain, params):
             else:
                 raise first_exc
     except Exception as exc:
-        if credential:
+        if wrote_credential and credential:
             if previous is None:
                 credential.unlink(missing_ok=True)
             else:
@@ -1539,6 +1697,8 @@ def execute(action, p):
     if action == "ssl-renew-enable":
         event("Bật tự động gia hạn SSL…")
         return {"renewal": True, **enable_certbot_renewal()}
+    if action == "cloudflare-token":
+        return save_cloudflare_token(p)
     if action == "ssl-renew-test":
         if not shutil.which("certbot"):
             raise ValueError("Cần cài Certbot trong Software Center trước.")
@@ -1612,6 +1772,45 @@ def execute(action, p):
             for cp in reversed(created_paths):
                 cp.unlink(missing_ok=True)
             raise
+        if p.get("update_renewal") and p.get("token") and p.get("email") and _certbot_bin():
+            save_cloudflare_token({"token": p["token"], "name": "default", "update_renewal": True})
+            issued_any = False
+            for item in p.get("sites") or []:
+                certs = sorted(set(re.findall(r"/etc/letsencrypt/live/([^/\s;]+)/", item.get("content", ""))))
+                domains = [
+                    d for w, children in walk_directives(nginx_blocks(item.get("content", "")))
+                    if w == ["server"]
+                    for cw, _ in children if cw[0] == "server_name"
+                    for d in cw[1:] if "." in d and not d.startswith("*")
+                ]
+                domains = list(dict.fromkeys(domains))
+                if not certs or not domains:
+                    continue
+                for cname in certs:
+                    if (LETSENCRYPT_DIR / "renewal" / f"{cname}.conf").is_file():
+                        continue
+                    live_dir = LETSENCRYPT_DIR / "live" / cname
+                    backup_live = None
+                    if live_dir.exists():
+                        backup_live = LETSENCRYPT_DIR / "live" / f".{cname}.bak-{time.time_ns()}"
+                        live_dir.rename(backup_live)
+                    try:
+                        issue_certificate(domains[0], {"method": "cloudflare", "email": p["email"], "token": p["token"], "names": domains[1:]}, cert_name=cname)
+                        issued_any = True
+                        if backup_live and backup_live.exists():
+                            shutil.rmtree(backup_live, ignore_errors=True)
+                    except Exception as exc:
+                        if backup_live and backup_live.exists() and not live_dir.exists():
+                            backup_live.rename(live_dir)
+                        event(f"Cảnh báo cấp lại SSL ({cname}): {exc}")
+            if issued_any:
+                try:
+                    renewal = enable_certbot_renewal()
+                    event("Certbot · Tự gia hạn · " + renewal["detail"])
+                except ValueError:
+                    pass
+                command(["nginx", "-t"])
+                command(["systemctl", "reload", "nginx"])
         return {"imported": imported}
     raise ValueError("Thao tác không hợp lệ.")
 

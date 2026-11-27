@@ -74,10 +74,18 @@ async function submit(action,data){
     }
   }
 }
-function machineChoices(){
-  const choices=Array.from($('#hosts').options,o=>'<label><input type="checkbox" name="machines" value="'+escapeHTML(o.value)+'" '+(o.selected?'checked':'')+'> '+escapeHTML(o.textContent)+'</label>');
-  return '<fieldset class="batch-machines"><legend>Máy chủ đích</legend>'+choices.join('')+'</fieldset>';
+function machineChoices(allChecked=false){
+  const opts=Array.from($('#hosts').options);
+  const allSelected=allChecked||(opts.length>0&&opts.every(o=>o.selected));
+  const choices=opts.map(o=>'<label><input type="checkbox" name="machines" value="'+escapeHTML(o.value)+'" '+((allChecked||o.selected)?'checked':'')+'> '+escapeHTML(o.textContent)+'</label>');
+  return '<fieldset class="batch-machines"><legend>'+vt('Máy chủ đích','Target servers')+' · <label style="font-weight:500;cursor:pointer"><input type="checkbox" class="batch-select-all"'+(allSelected?' checked':'')+'> '+vt('Chọn tất cả','Select all')+'</label></legend>'+choices.join('')+'</fieldset>';
 }
+document.addEventListener('change',e=>{
+  const fs=e.target.closest?.('.batch-machines');if(!fs)return;
+  const all=fs.querySelector('.batch-select-all'),items=[...fs.querySelectorAll('input[name="machines"]')];
+  if(e.target===all)items.forEach(c=>{c.checked=all.checked;});
+  else if(e.target.name==='machines'&&all){all.checked=items.length>0&&items.every(c=>c.checked);all.indeterminate=!all.checked&&items.some(c=>c.checked);}
+});
 async function submitTargets(form,action,data){
   const machines=form.getAll('machines');
   if(!machines.length)throw new Error('Chọn ít nhất một máy chủ.');
@@ -88,7 +96,15 @@ async function submitTargets(form,action,data){
   sessionStorage.setItem('vps-batch',JSON.stringify(results.map(row=>({...row,name:names.get(row.machine)}))));
   if($('dialog')?.open)$('dialog').close();
   for(const row of results){
-    if(!row.job)continue;
+    if(!row.job){
+      if(row.error){
+        const errBanner=document.createElement('div');errBanner.className='fw-job-banner';errBanner.dataset.state='error';
+        errBanner.innerHTML='<span>✗ '+escapeHTML((names.get(row.machine)||row.machine)+' · '+row.error)+'</span><button type="button" class="banner-close" aria-label="Đóng">×</button>';
+        errBanner.querySelector('.banner-close').onclick=()=>errBanner.remove();
+        vpsToastStack().append(errBanner);
+      }
+      continue;
+    }
     (async()=>{
       const banner=document.createElement('div');banner.className='fw-job-banner';banner.innerHTML='<span class="spinner"></span><span></span><button type="button" class="banner-close" aria-label="Đóng">×</button>';
       banner.querySelector('.banner-close').onclick=()=>banner.remove();
@@ -194,7 +210,7 @@ async function render(){
       const actionButton=(key)=>'<button type="button" class="button small" data-tone="'+tones[key]+'" data-action="'+key+'">'+labels[key]+'</button>';
       const sslRenewal=inventory.ssl_renewal||{};
       const hasHttps=sites.some(s=>s.https);
-      view.innerHTML='<article class="panel"><div class="panel-head"><input class="domain-search" type="search" id="find-site" aria-label="Domain" placeholder="'+vt('Tìm tên miền…','Find domain…')+'"><div class="actions"><button id="refresh-nginx" class="button" data-tone="info"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg> '+vt('Làm mới','Refresh')+'</button><button id="reload-nginx" class="button" data-tone="configure"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg> Reload Nginx</button><button id="copy-sites" class="button" data-tone="info"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> '+vt('Copy giữa các VPS','Copy across servers')+'</button><button id="delete-selected-sites" class="button" data-tone="remove" hidden>'+vt('Xóa đã chọn','Delete selected')+'</button><button id="create-site" class="button" data-tone="create"><span aria-hidden="true">+</span> Thêm tên miền</button></div></div>'+(hasHttps||!sslRenewal.enabled?'<div class="ssl-renew-bar"><span class="ssl-renew-info"><span class="site-tag" data-state="'+(sslRenewal.enabled?'on':'off')+'">'+(sslRenewal.enabled?vt('Tự gia hạn SSL · Đang bật','SSL auto-renew · Active'):vt('Tự gia hạn SSL · Chưa bật','SSL auto-renew · Off'))+'</span>'+(sslRenewal.detail?'<code>'+escapeHTML(sslRenewal.detail)+'</code>':'')+'</span><div class="actions">'+(sslRenewal.enabled?(hasHttps?'<button type="button" id="test-ssl-renew" class="button small" data-tone="info">'+vt('Thử gia hạn SSL','Test SSL renewal')+'</button>':''):'<button type="button" id="enable-ssl-renew" class="button small" data-tone="create">'+vt('Bật tự gia hạn SSL','Enable SSL auto-renew')+'</button>')+'</div></div>':'')+'<div class="panel-body" id="site-list"></div></article>';
+      view.innerHTML='<article class="panel"><div class="panel-head"><input class="domain-search" type="search" id="find-site" aria-label="Domain" placeholder="'+vt('Tìm tên miền…','Find domain…')+'"><div class="actions"><button id="refresh-nginx" class="button" data-tone="info"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg> '+vt('Làm mới','Refresh')+'</button><button id="reload-nginx" class="button" data-tone="configure"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg> Reload Nginx</button><button id="copy-sites" class="button" data-tone="info"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> '+vt('Copy giữa các VPS','Copy across servers')+'</button><button id="delete-selected-sites" class="button" data-tone="remove" hidden>'+vt('Xóa đã chọn','Delete selected')+'</button><button id="create-site" class="button" data-tone="create"><span aria-hidden="true">+</span> Thêm tên miền</button></div></div><div class="ssl-renew-bar"><span class="ssl-renew-info"><span class="site-tag" data-state="'+(sslRenewal.enabled?'on':'off')+'">'+(sslRenewal.enabled?vt('Tự gia hạn SSL · Đang bật','SSL auto-renew · Active'):vt('Tự gia hạn SSL · Chưa bật','SSL auto-renew · Off'))+'</span>'+(sslRenewal.detail?'<code>'+escapeHTML(sslRenewal.detail)+'</code>':'')+'</span><div class="actions"><button type="button" id="cf-token-btn" class="button small" data-tone="configure">'+vt('Token Cloudflare','Cloudflare Token')+'</button>'+(sslRenewal.enabled?(hasHttps?'<button type="button" id="test-ssl-renew" class="button small" data-tone="info">'+vt('Thử gia hạn SSL','Test SSL renewal')+'</button>':''):'<button type="button" id="enable-ssl-renew" class="button small" data-tone="create">'+vt('Bật tự gia hạn SSL','Enable SSL auto-renew')+'</button>')+'</div></div><div class="panel-body" id="site-list"></div></article>';
       const list=$('#site-list');
       for(const message of inventory.diagnostics){
         const note=document.createElement('p');note.textContent=message;list.append(note);
@@ -220,8 +236,8 @@ async function render(){
           const domains=[...new Set(routes.flatMap(r=>r.domain.split(/\s+/)))].join(' · ');
           const expiry=routes.map(r=>r.expires).filter(Number.isFinite);
           const soonest=Math.min(...expiry);
-          const canTestRenew=site.enabled&&site.https&&(site.managed||(site.renewal_names||[]).length>0);
-          const actions=site.managed?[...(site.port?['edit']:[]),site.enabled?'disable':'enable',...(site.enabled?['certificate']:[]),...(canTestRenew?['renew-test']:[]),...(site.enabled&&site.https&&!sslRenewal.enabled?['renew-enable']:[]),'delete']:(site.source.startsWith('/etc/nginx/sites-available/')?[site.enabled?'disable':'enable',...(site.enabled&&!site.https&&site.primary.includes('.')&&routes.length===1?['certificate']:[]),...(canTestRenew?['renew-test']:[]),...(site.enabled&&site.https&&!sslRenewal.enabled?['renew-enable']:[]),'delete']:[...(canTestRenew?['renew-test']:[])]);
+          const needsCert=!site.https||!(site.renewal_names||[]).length;
+          const actions=site.managed?[...(site.port?['edit']:[]),site.enabled?'disable':'enable',...(site.enabled?['certificate']:[]),...(site.enabled&&site.https&&!sslRenewal.enabled?['renew-enable']:[]),'delete']:(site.source.startsWith('/etc/nginx/sites-available/')?[site.enabled?'disable':'enable',...(site.enabled&&needsCert&&site.primary.includes('.')&&routes.length===1?['certificate']:[]),...(site.enabled&&site.https&&!sslRenewal.enabled?['renew-enable']:[]),'delete']:[]);
           if(site.enabled&&site.https)actions.splice(Math.max(0,actions.indexOf('delete')),0,'renew-ssl');
           if(!actions.includes('edit')&&site.enabled&&/^\/etc\/nginx\/(conf\.d|sites-available)\//.test(site.source))actions.unshift('edit');
           const sslBadge=site.https?'<span class="site-tag" data-protocol="tls">'+(Number.isFinite(soonest)?vt('Còn '+soonest+' ngày',soonest+'d left'):vt('Đang bật','Active'))+'</span>':'<span class="site-tag" data-state="off">'+vt('Chưa có SSL','No SSL')+'</span>';
@@ -232,11 +248,13 @@ async function render(){
       function openSite(operation,site={}){
         if(operation==='renew-ssl'){
           const names=site.renewal_names||[];
-          if(names.length!==1){
-            modal('Gia hạn SSL','<p>Không xác định được một hồ sơ gia hạn Certbot từ cấu hình SSL của website này. Kiểm tra đường dẫn ssl_certificate và hồ sơ trong /etc/letsencrypt/renewal trên VPS.</p>',async()=>{});
+          if(!names.length){
+            const certs=(site.ssl_certificates||[]).join(', ');
+            const canReissue=site.enabled&&site.primary&&site.primary.includes('.')&&(site.managed||site.source.startsWith('/etc/nginx/sites-available/'));
+            modal('Gia hạn SSL','<p>Không tìm thấy hồ sơ gia hạn Certbot trong <code>/etc/letsencrypt/renewal</code> trên VPS (thường do chứng chỉ được chép từ VPS khác hoặc chưa cấp qua Certbot trên máy này).</p>'+(certs?'<p><code>ssl_certificate</code> hiện tại: <code>'+escapeHTML(certs)+'</code></p>':'')+(canReissue?'<p>Bấm <strong>Xác nhận</strong> để mở <strong>Cấp SSL</strong> và tạo hồ sơ Certbot mới trên VPS này.</p>':''),async()=>{if(canReissue)setTimeout(()=>openSite('certificate',site),0);});
             return;
           }
-          modal('Gia hạn SSL','<p>'+escapeHTML($('#hosts').selectedOptions[0].textContent)+' · '+escapeHTML(site.domain)+'</p><p>Certbot · '+escapeHTML(names[0])+'</p><p>Gia hạn nếu đến hạn, kiểm tra cấu hình rồi reload Nginx.</p>',
+          modal('Gia hạn SSL','<p>'+escapeHTML($('#hosts').selectedOptions[0].textContent)+' · '+escapeHTML(site.domain)+'</p><p>Certbot · '+escapeHTML(names.join(', '))+'</p><p>Gia hạn nếu đến hạn, kiểm tra cấu hình rồi reload Nginx.</p>',
             ()=>submit('renew-ssl',{file_id:site.file_id,domain:site.domain,revision:site.revision}));
           return;
         }
@@ -404,6 +422,7 @@ async function render(){
           $('#show-cf-token').onclick=()=>{const show=token.type==='password';token.type=show?'text':'password';$('#show-cf-token').setAttribute('aria-pressed',String(show));};
           method.onchange=()=>{const dns=method.value==='cloudflare';$('#credential').hidden=!dns;token.disabled=!dns;token.required=dns;};
           method.onchange();
+          if(!token.value)api('vps/cloudflare-token').then(saved=>{if(token.isConnected&&!token.value&&saved?.token){token.value=saved.token;localStorage.setItem('vps-ssl-token',saved.token);}}).catch(()=>{});
         }
         if(operation==='edit')attachProcesses(form.elements.port,api(path+'/pm2'));
         function attachProcesses(port,request){
@@ -469,6 +488,25 @@ async function render(){
         });
       };
       $('#refresh-nginx').onclick=()=>{vpsGetCache.clear();render();};
+      if($('#cf-token-btn'))$('#cf-token-btn').onclick=()=>{
+        modal(vt('Token Cloudflare cho các VPS','Cloudflare API Token for servers'),
+          machineChoices(true)
+          +'<label class="field">'+vt('Cloudflare API Token (Zone:DNS:Edit)','Cloudflare API Token (Zone:DNS:Edit)')+'<span class="input-eye-wrap"><input name="token" type="password" required autocomplete="off" placeholder="cfut_…" value="'+escapeHTML(localStorage.getItem('vps-ssl-token')||'')+'"><button type="button" id="show-cf-batch-token" class="input-eye" aria-label="Hiện token"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button></span></label>'
+          +'<label class="field">'+vt('Tên tệp credential (/etc/letsencrypt/zm-credentials/<tên>.ini)','Credential name (/etc/letsencrypt/zm-credentials/<name>.ini)')+'<input name="name" value="default" placeholder="default"></label>'
+          +'<label><input type="checkbox" name="update_renewal" checked> '+vt('Cập nhật cho các hồ sơ Certbot Cloudflare hiện có (/etc/letsencrypt/renewal/*.conf)','Update existing Cloudflare Certbot renewal credentials')+'</label>',
+          form=>{
+            const token=(form.get('token')||'').trim();
+            localStorage.setItem('vps-ssl-token',token);
+            return submitTargets(form,'cloudflare-token',{token,name:(form.get('name')||'default').trim(),update_renewal:!!form.get('update_renewal')});
+          });
+        const cfForm=$('#popup'),cfInput=cfForm.elements.token,cfEye=$('#show-cf-batch-token');
+        cfEye.onclick=()=>{const show=cfInput.type==='password';cfInput.type=show?'text':'password';cfEye.setAttribute('aria-pressed',String(show));};
+        api('vps/cloudflare-token').then(saved=>{
+          if(!cfInput.isConnected||!saved)return;
+          if(saved.token){cfInput.value=saved.token;localStorage.setItem('vps-ssl-token',saved.token);}
+          if(saved.name&&cfForm.elements.name)cfForm.elements.name.value=saved.name;
+        }).catch(()=>{});
+      };
       if($('#enable-ssl-renew'))$('#enable-ssl-renew').onclick=()=>modal(vt('Bật tự gia hạn SSL','Enable SSL auto-renew'),'<p>'+escapeHTML($('#hosts').selectedOptions[0].textContent)+'</p><p>'+vt('Kích hoạt systemd timer (certbot.timer / certbot-renew.timer / snap.certbot.renew.timer) hoặc cron định kỳ để tự động gia hạn chứng chỉ SSL trước khi hết hạn và reload Nginx.','Enable the systemd timer or periodic cron job to automatically renew SSL certificates before expiry and reload Nginx.')+'</p>',()=>submit('ssl-renew-enable',{}));
       if($('#test-ssl-renew'))$('#test-ssl-renew').onclick=()=>modal(vt('Thử gia hạn SSL','Test SSL renewal'),'<p>'+escapeHTML($('#hosts').selectedOptions[0].textContent)+'</p><p>'+vt('Chạy certbot renew --dry-run cho toàn bộ chứng chỉ trên VPS (không làm gián đoạn dịch vụ).','Run certbot renew --dry-run for all certificates on this server.')+'</p>',()=>submit('ssl-renew-test',{}));
       $('#reload-nginx').onclick=async()=>{
@@ -631,8 +669,10 @@ function openNginxCopy(){
     +'<label class="field">'+vt('Chọn VPS nguồn','Select source')+'<select name="source_machine" id="copy-src">'+srcOpts+'</select></label>'
     +'<div id="copy-src-sites" class="copy-list">'+vt('Đang đọc danh sách site…','Loading sites…')+'</div>'
     +'<label><input type="checkbox" name="include_ssl" checked> '+vt('Copy kèm chứng chỉ SSL (/etc/letsencrypt)','Include SSL certificates (/etc/letsencrypt)')+'</label>'
+    +'<label><input type="checkbox" name="reissue_ssl" checked> '+vt('Tự tạo hồ sơ tự gia hạn Certbot (Cloudflare DNS-01)','Auto-create Certbot renewal profile (Cloudflare DNS-01)')+'</label>'
+    +'<label class="field" id="copy-ssl-email-wrap">'+vt('Email Certbot','Certbot Email')+'<input name="email" type="email" value="'+escapeHTML(localStorage.getItem('vps-ssl-email')||'admin@zm.io.vn')+'" placeholder="admin@zm.io.vn"></label>'
     +'</section>'
-    +'<section class="copy-pane"><h3>'+vt('2. VPS đích','2. Target servers')+'</h3>'
+    +'<section class="copy-pane"><h3>'+vt('2. VPS đích','2. Target servers')+' · <label style="font-weight:500;font-size:12px;cursor:pointer"><input type="checkbox" id="copy-targets-all"> '+vt('Chọn tất cả','Select all')+'</label></h3>'
     +'<div id="copy-targets" class="copy-list"></div>'
     +'<label><input type="checkbox" name="overwrite"> '+vt('Ghi đè nếu file .conf đã tồn tại','Overwrite existing .conf files')+'</label>'
     +'</section></div><pre id="copy-conf-preview" class="nginx-highlight" hidden style="margin-top:12px;max-height:240px;overflow:auto;font-size:12px"></pre>',
@@ -640,7 +680,9 @@ function openNginxCopy(){
       const file_ids=form.getAll('file_ids'),target_machines=form.getAll('target_machines');
       if(!file_ids.length)throw new Error(vt('Chọn ít nhất một site để copy.','Select at least one site.'));
       if(!target_machines.length)throw new Error(vt('Chọn ít nhất một VPS đích.','Select at least one target server.'));
-      const results=await api('vps/nginx/copy',{source_machine:form.get('source_machine'),target_machines,file_ids,include_ssl:!!form.get('include_ssl'),overwrite:!!form.get('overwrite')});
+      const email=(form.get('email')||'').trim();
+      if(form.get('reissue_ssl')&&email)localStorage.setItem('vps-ssl-email',email);
+      const results=await api('vps/nginx/copy',{source_machine:form.get('source_machine'),target_machines,file_ids,include_ssl:!!form.get('include_ssl'),overwrite:!!form.get('overwrite'),reissue_ssl:!!form.get('reissue_ssl'),email});
       const names=new Map(opts.map(o=>[o.value,o.textContent]));
       sessionStorage.setItem('vps-batch',JSON.stringify(results.map(r=>({...r,name:names.get(r.machine)}))));
       const jobIds=results.map(r=>r.job).filter(Boolean);
@@ -653,10 +695,14 @@ function openNginxCopy(){
       }
       vpsGetCache.clear();await render();
     });
-  const srcSel=$('#copy-src'),srcList=$('#copy-src-sites'),tgtList=$('#copy-targets');
+  const srcSel=$('#copy-src'),srcList=$('#copy-src-sites'),tgtList=$('#copy-targets'),tgtAll=$('#copy-targets-all');
+  const reissueBox=$('#popup').elements.reissue_ssl,emailWrap=$('#copy-ssl-email-wrap');
+  if(reissueBox&&emailWrap){reissueBox.onchange=()=>{emailWrap.hidden=!reissueBox.checked;};reissueBox.onchange();}
+  if(tgtAll)tgtAll.onchange=()=>{tgtList.querySelectorAll('input[name="target_machines"]').forEach(c=>{c.checked=tgtAll.checked;});};
   function renderTargets(){
     const sId=srcSel.value;
     tgtList.innerHTML=opts.filter(o=>o.value!==sId).map(o=>'<label><input type="checkbox" name="target_machines" value="'+escapeHTML(o.value)+'"> '+escapeHTML(o.textContent)+'</label>').join('')||'<small>'+vt('Không có VPS đích khác.','No other servers.')+'</small>';
+    if(tgtAll)tgtAll.checked=false;
   }
   async function loadSrc(){
     renderTargets();

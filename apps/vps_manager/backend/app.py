@@ -86,6 +86,7 @@ class Operation(WebsiteConfig):
     websites: list[WebsiteConfig] = Field(default_factory=list, max_length=50)
     sites: list[dict] = Field(default_factory=list, max_length=100)
     overwrite: bool = False
+    update_renewal: bool = True
 
 
 class BatchOperation(BaseModel):
@@ -122,7 +123,7 @@ def worker(machine, action, params, emit):
         machine,
         ROOT / "backend/worker.py",
         {"action": action, "params": dict(params, catalog=list(CATALOG))},
-        action in {"native-install", "install", "uninstall", "maintain", "service-control", "site", "sites", "inventory", "detail", "logs", "apply", "diff", "check", "repair-link", "lifecycle", "ssl-status","external-certificate","renew-ssl","renew-test","ssl-renew-enable","ssl-renew-test"},
+        action in {"native-install", "install", "uninstall", "maintain", "service-control", "site", "sites", "inventory", "detail", "logs", "apply", "diff", "check", "repair-link", "lifecycle", "ssl-status","external-certificate","renew-ssl","renew-test","ssl-renew-enable","ssl-renew-test","cloudflare-token"},
         emit,
     )
 
@@ -759,14 +760,37 @@ def register(app):
             if j.get("machine_id") == ident and str(j.get("action", "")).startswith("vps_")
         ][:50]
 
+    def _saved_cloudflare_token():
+        try:
+            return app.state.store.get("secrets", "cloudflare_token")
+        except KeyError:
+            return {}
+
+    @app.get("/api/vps/cloudflare-token")
+    def get_cloudflare_token():
+        saved = _saved_cloudflare_token()
+        return {"token": saved.get("token", ""), "name": saved.get("name", "default")}
+
     @app.post("/api/vps/machines/{ident}/{action}", status_code=202)
     def submit(ident: str, action: str, body: Operation):
-        if action not in {"site", "nginx-import", "nginx-reload", "install","uninstall","native-install","maintain","service-control","apply","lifecycle","repair-link","external-certificate","renew-ssl","renew-test","ssl-renew-enable","ssl-renew-test"}:
+        if action not in {"site", "nginx-import", "nginx-reload", "install","uninstall","native-install","maintain","service-control","apply","lifecycle","repair-link","external-certificate","renew-ssl","renew-test","ssl-renew-enable","ssl-renew-test","cloudflare-token"}:
             raise HTTPException(404)
         if action in {"install","uninstall"} and (
             not body.packages or set(body.packages) - CATALOG.keys()
         ):
             raise HTTPException(422, "Chọn gói trong danh mục.")
+        if action == "cloudflare-token" or (action in {"external-certificate", "site"} and body.method == "cloudflare"):
+            token_val = body.token.strip()
+            if token_val:
+                app.state.store.save("secrets", {
+                    "token": token_val,
+                    "name": (body.name or "default").strip() or "default",
+                    "updated_at": now(),
+                }, "cloudflare_token")
+            else:
+                saved = _saved_cloudflare_token()
+                if saved.get("token"):
+                    body = body.model_copy(update={"token": saved["token"]})
         machine = record("machines", ident)
         return queue_job(ident,action,body,machine)
 
@@ -782,7 +806,7 @@ def register(app):
             ) from None
         labels={"hostname":"Đổi hostname","docker-deploy":"Docker Compose",
                 "stack-export":"Đóng gói Portable Stack","stack-deploy":"Triển khai Portable Stack",
-                "maintain":"Bảo trì gói hệ thống","install":"Cài phần mềm","uninstall":"Gỡ phần mềm","native-install":"Cài phần mềm","service-control":"Quản lý dịch vụ","password":"Đặt mật khẩu Linux","firewall":"Firewall"}
+                "maintain":"Bảo trì gói hệ thống","install":"Cài phần mềm","uninstall":"Gỡ phần mềm","native-install":"Cài phần mềm","service-control":"Quản lý dịch vụ","password":"Đặt mật khẩu Linux","firewall":"Firewall","cloudflare-token":"Token Cloudflare"}
         labels.update({"git-"+k:v for k,v in GIT_ACTIONS.items()})
         if action=="docker-container":
             labels[action]="Docker · "+body.operation
@@ -917,6 +941,9 @@ def register(app):
         file_ids: list[str] = Field(min_length=1, max_length=100)
         include_ssl: bool = True
         overwrite: bool = False
+        reissue_ssl: bool = False
+        email: str = Field(default="", max_length=254)
+        token: str = Field(default="", max_length=256, repr=False)
 
     @app.post("/api/vps/nginx/copy", status_code=202)
     def nginx_copy(body: NginxCopy):
@@ -927,13 +954,27 @@ def register(app):
             raise HTTPException(422, str(exc)) from None
         if not exported.get("sites"):
             raise HTTPException(422, "Không tìm thấy site nào để copy.")
+        cf_token = body.token.strip() or _saved_cloudflare_token().get("token", "")
+        if body.reissue_ssl and body.token.strip():
+            app.state.store.save("secrets", {"token": cf_token, "name": "default", "updated_at": now()}, "cloudflare_token")
         results = []
         for ident in dict.fromkeys(body.target_machines):
             if ident == body.source_machine:
                 continue
             try:
                 m = record("machines", ident)
-                job = queue_job(ident, "nginx-import", Operation(sites=exported["sites"], overwrite=body.overwrite), m)
+                job = queue_job(
+                    ident,
+                    "nginx-import",
+                    Operation(
+                        sites=exported["sites"],
+                        overwrite=body.overwrite,
+                        update_renewal=body.reissue_ssl,
+                        email=body.email.strip(),
+                        token=cf_token,
+                    ),
+                    m,
+                )
                 results.append({"machine": ident, "job": job["id"]})
             except HTTPException as exc:
                 results.append({"machine": ident, "error": exc.detail})
@@ -941,7 +982,7 @@ def register(app):
 
     @app.post("/api/vps/batches/{action}", status_code=202)
     def batch(action: str, body: BatchOperation):
-        if action not in {"install","uninstall"} and not (action == "site" and body.operation.operation == "create"):
+        if action not in {"install","uninstall","cloudflare-token"} and not (action == "site" and body.operation.operation == "create"):
             raise HTTPException(422, "Chọn cài phần mềm hoặc tạo website.")
         results = []
         for ident in dict.fromkeys(body.machines):
