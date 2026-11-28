@@ -857,6 +857,17 @@ async function sftpPage(view,path,rev){
       };
       tabsEl.append(btn);
     }
+    const addTabBtn=document.createElement('button');
+    addTabBtn.type='button';
+    addTabBtn.className='sftp-tab-add';
+    addTabBtn.title=vt('Mở tab SFTP mới','Open new SFTP tab');
+    addTabBtn.textContent='+';
+    addTabBtn.onclick=()=>{
+      createSftpTab(servers,'');
+      renderTabs();
+      renderStage();
+    };
+    tabsEl.append(addTabBtn);
   }
 
   function renderStage(){

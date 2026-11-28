@@ -126,10 +126,11 @@
 #pkg-review section{margin-top:10px;padding:10px 12px;background:#f6f9f7;border-radius:8px;overflow-wrap:anywhere}
 #pkg-review section p{margin:5px 0;font-size:13px}
 .shell main{max-width:82rem;margin-inline:auto}
-.shell .page-heading{margin-bottom:16px}
-.shell .page-heading .actions{flex-shrink:0;gap:8px}
+.shell .page-heading{margin-bottom:16px;flex-wrap:wrap}
+.shell .page-heading>div:first-child{flex:1 1 260px;min-width:min(260px,100%)}
+.shell .page-heading .actions{flex:0 1 auto;flex-wrap:wrap;justify-content:flex-start;margin-left:auto;gap:8px;min-width:0;max-width:100%}
 .shell .page-heading .actions .button{padding:7px 12px;min-height:32px;font-size:11px}
-@media(min-width:681px){.shell .page-heading .actions{flex-wrap:nowrap}}
+.shell .page-heading .actions select{max-width:100%;min-width:0}
 .vps-box,.vps-shortcuts a,.vps-job-list{min-width:0;border:1px solid var(--line);border-radius:10px;background:white}
 .vps-box h2{margin:0;font-size:18px}
 .vps-machine,.vps-search,.vps-pager,.vps-sections{display:flex;align-items:center;gap:8px}
@@ -315,6 +316,9 @@ td .site-warning{display:block;margin-top:4px}
 #fields .form-grid .field{margin-top:0}
 
 .cluster-picker select{cursor:pointer}
+.page-heading{flex-wrap:wrap}
+.page-heading>div:first-child{flex:1 1 260px;min-width:0}
+#heading-actions{max-width:100%}
 
 .site-inputs{align-items:start}.site-inputs .field{align-content:start}
 
@@ -361,19 +365,38 @@ dialog#modal:has(.domain-form,.copy-split,.upstream-builder) .modal-body{max-hei
 .term-shell{background:#0d1117;border:1px solid #222a36;border-radius:12px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 12px 32px rgba(0,0,0,.18)}
 .term-shell.is-fullscreen{position:fixed;inset:12px;z-index:90;border-radius:12px}
 .term-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;background:#161b22;border-bottom:1px solid #262e3a;flex-wrap:wrap}
-.term-tabs{display:flex;align-items:center;gap:6px;overflow-x:auto;flex:1;min-width:0;scrollbar-width:none}
+.term-tabs{display:flex;align-items:center;gap:6px;overflow-x:auto;flex:1 1 240px;min-width:min(240px,100%);scrollbar-width:none}
 .term-tabs::-webkit-scrollbar{display:none}
 .term-tab{display:inline-flex;align-items:center;gap:8px;padding:6px 10px;border-radius:8px;background:#1f2630;color:#9da7b3;cursor:pointer;border:1px solid transparent;white-space:nowrap;font-size:12px}
 .term-tab.active{background:#0d1117;color:#f0f6fc;border-color:#30363d}
+.term-tab.is-dragging{opacity:.55}
+.term-tab.is-drop-target{border-color:#3fb950;background:#172a20;box-shadow:0 0 0 2px rgba(63,185,80,.35)}
 .term-tab-title{display:flex;flex-direction:column;line-height:1.2}
 .term-tab-title small{font-size:10px;color:#7d8590;font-family:ui-monospace,monospace}
 .term-tab-close{border:0;background:transparent;color:#7d8590;font-size:15px;line-height:1;padding:0 2px;cursor:pointer}
+.term-tab-tpl-dot{position:relative;width:14px;height:14px;border:0;border-radius:50%;background:rgba(255,255,255,.12);padding:0;cursor:pointer;display:inline-grid;place-items:center;flex-shrink:0}
+.term-tab-tpl-dot::before{content:"";width:6px;height:6px;border-radius:50%;background:#6e7681;transition:background .15s,transform .15s}
+.term-tab-tpl-dot.is-linked::before{background:#9da7b3}
+.term-tab-tpl-dot:hover::before{background:#f0f6fc;transform:scale(1.15)}
+.term-tab-tpl-dot.is-saved::before{background:#3fb950}
+.term-floating-tip{position:fixed;transform:translate(-50%,0);background:#eef1f4;color:#1f2328;font-size:11px;font-weight:550;padding:5px 9px;border-radius:7px;box-shadow:0 6px 18px rgba(0,0,0,.24);white-space:nowrap;pointer-events:none;z-index:999}
+.term-floating-tip::before{content:"";position:absolute;top:-4px;left:50%;transform:translateX(-50%) rotate(45deg);width:8px;height:8px;background:#eef1f4}
+.term-drop-overlay{position:absolute;z-index:30;pointer-events:none;border:2px dashed #3fb950;background:rgba(63,185,80,.18);border-radius:8px;transition:all .1s ease;display:grid;place-items:center;color:#dff7e6;font-size:13px;font-weight:650;text-shadow:0 1px 3px rgba(0,0,0,.6)}
+.term-drop-overlay[data-side=left]{left:8px;top:8px;width:calc(50% - 10px);height:calc(100% - 16px)}
+.term-drop-overlay[data-side=right]{right:8px;top:8px;width:calc(50% - 10px);height:calc(100% - 16px)}
+.term-drop-overlay[data-side=top]{left:8px;top:8px;width:calc(100% - 16px);height:calc(50% - 10px)}
+.term-drop-overlay[data-side=bottom]{left:8px;bottom:8px;width:calc(100% - 16px);height:calc(50% - 10px)}
+.term-pick-section{display:grid;gap:6px;margin-bottom:10px}
+.term-pick-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:#6f8377;padding:2px 2px 0}
+.term-tpl-ico{font-size:14px;color:#186b4b}
+.term-tab-add{width:28px;height:28px;border-radius:7px;border:1px dashed #30363d;background:transparent;color:#9da7b3;font-size:16px;line-height:1;display:inline-grid;place-items:center;flex-shrink:0;cursor:pointer}
+.term-tab-add:hover{background:#1f2630;color:#f0f6fc;border-color:#484f58}
 .term-tab-close:hover{color:#f85149}
 .term-dot{width:8px;height:8px;border-radius:50%;background:#d29922;flex-shrink:0}
 .term-dot[data-state=connected]{background:#3fb950}
 .term-dot[data-state=error]{background:#f85149}
 .term-dot[data-state=closed]{background:#6e7681}
-.term-controls{display:flex;align-items:center;gap:4px;flex-wrap:wrap;flex-shrink:0}
+.term-controls{display:flex;align-items:center;gap:4px;flex-wrap:wrap;flex-shrink:0;margin-left:auto}
 .term-controls .button{background:#21262d;border-color:#30363d;color:#c9d1d9;min-height:28px;height:28px;padding:0 8px;font-size:11.5px}
 .term-controls .term-icon-btn{padding:0 7px;min-width:28px;font-size:12.5px}
 .term-tpl-select{height:28px;border:1px solid #30363d;border-radius:6px;padding:0 6px;background:#21262d;color:#c9d1d9;font-size:11.5px;max-width:130px}
@@ -433,7 +456,7 @@ dialog#modal:has(.domain-form,.copy-split,.upstream-builder) .modal-body{max-hei
 .term-pick-item strong{font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .term-pick-item small{font-size:11px;color:#576e60;font-family:ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .term-empty{color:#8b949e;padding:32px;text-align:center;font-size:13px}
-.term-host-select{height:34px;border:1px solid var(--line);border-radius:7px;padding:0 10px;background:#fff;font-size:12px;max-width:240px}
+.term-host-select{height:32px;line-height:30px;border:1px solid var(--line);border-radius:7px;padding:0 10px;background:#fff;font-size:11.5px;font-weight:600;color:#214231;max-width:240px}
 
 .sys-badges{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
 .sys-disk-row{background:#f7faf8}
@@ -468,13 +491,15 @@ dialog#modal:has(.domain-form,.copy-split,.upstream-builder) .modal-body{max-hei
 .sftp-shell{display:flex;flex-direction:column;gap:12px}
 .sftp-shell.is-fullscreen{position:fixed;inset:12px;z-index:90;background:#f6f8f7;padding:12px;border-radius:12px;border:1px solid var(--line);box-shadow:0 20px 60px rgba(15,23,42,.22)}
 .sftp-topbar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px 12px;flex-shrink:0}
-.sftp-tabs{display:flex;flex-wrap:nowrap;gap:6px;align-items:center;flex:1 1 220px;min-width:0;overflow-x:auto;scrollbar-width:none}
+.sftp-tabs{display:flex;flex-wrap:nowrap;gap:6px;align-items:center;flex:1 1 240px;min-width:min(240px,100%);overflow-x:auto;scrollbar-width:none}
 .sftp-tabs::-webkit-scrollbar{display:none}
 .sftp-tab{display:inline-flex;align-items:center;gap:8px;padding:6px 10px;border:1px solid var(--line);border-radius:7px;background:#f7faf8;color:#355242;font-size:12px;cursor:pointer;max-width:240px;flex-shrink:0}
 .sftp-tab span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .sftp-tab.active{background:#e7f3ec;border-color:#98c4aa;color:#145638;font-weight:600}
 .sftp-tab-close{border:0;background:transparent;color:#6c7e73;cursor:pointer;font-size:14px;line-height:1;padding:0 2px;flex-shrink:0}
 .sftp-tab-close:hover{color:#9d3f35}
+.sftp-tab-add{width:28px;height:28px;border-radius:7px;border:1px dashed #c7d5cc;background:transparent;color:#4b6355;font-size:16px;line-height:1;display:inline-grid;place-items:center;flex-shrink:0;cursor:pointer}
+.sftp-tab-add:hover{background:#eef5f0;color:#145638;border-color:#98c4aa}
 .sftp-top-actions{display:flex;gap:6px;flex-wrap:wrap;flex-shrink:0;margin-left:auto}
 .sftp-stage{position:relative;height:max(480px,calc(100vh - 340px));min-height:460px}
 .sftp-shell.is-fullscreen .sftp-stage{flex:1;height:auto;min-height:0}

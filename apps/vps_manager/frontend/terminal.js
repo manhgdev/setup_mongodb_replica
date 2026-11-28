@@ -264,7 +264,7 @@ async function terminalPage(view,path,rev){
   }
 
   const picker=document.createElement('select');picker.className='term-host-select';picker.ariaLabel='Chọn VPS';
-  servers.forEach(s=>picker.append(new Option(s.name+(s.host?' ('+s.host+')':''),s.id)));
+  servers.forEach(s=>picker.append(new Option(s.name,s.id)));
   if(reqId&&servers.some(s=>s.id===reqId))picker.value=reqId;
 
   const newBtn=document.createElement('button');newBtn.type='button';newBtn.className='button';newBtn.dataset.tone='create';newBtn.textContent='+ '+vt('Mở tab SSH','New SSH tab');
@@ -354,6 +354,20 @@ async function terminalPage(view,path,rev){
     +'</section>';
 
   const stage=$('#term-stage'),tabsBar=$('#term-tabs'),shell=$('#term-shell');
+  let floatingTip=$('#term-floating-tip');
+  if(!floatingTip){floatingTip=document.createElement('div');floatingTip.id='term-floating-tip';floatingTip.className='term-floating-tip';floatingTip.hidden=true;document.body.append(floatingTip);}
+  tabsBar.addEventListener('mouseover',e=>{
+    const dot=e.target.closest('.term-tab-tpl-dot');
+    if(!dot)return;
+    const r=dot.getBoundingClientRect();
+    floatingTip.textContent=dot.dataset.tip||'';
+    floatingTip.style.left=(r.left+r.width/2)+'px';
+    floatingTip.style.top=(r.bottom+8)+'px';
+    floatingTip.hidden=false;
+  });
+  tabsBar.addEventListener('mouseout',e=>{
+    if(e.target.closest('.term-tab-tpl-dot'))floatingTip.hidden=true;
+  });
 
   function startPointerOp(e,pane,mode){
     if(e.button!==0||e.target.closest('button'))return;
@@ -574,15 +588,132 @@ async function terminalPage(view,path,rev){
     });
   }
 
+  function openTemplateWorkspace(tid){
+    const tpl=loadTermTemplates().find(t=>t.id===tid);
+    if(!tpl)return;
+    const id='ws-'+(++wsSeq);
+    const paneIds=[];
+    for(const item of (tpl.panes||[])){
+      const m=servers.find(s=>s.id===item.machineId);
+      if(!m)continue;
+      const p=createPane(id,m,item.rect);
+      p.broadcastIncluded=item.broadcastIncluded!==false;
+      paneIds.push(p.id);
+    }
+    if(!paneIds.length)return;
+    termWorkspaces.push({id,title:tpl.name,broadcast:Boolean(tpl.broadcast),maximizedPaneId:'',templateId:tpl.id,activePaneId:paneIds[0],paneIds});
+    activeWsId=id;
+    renderAll();
+    syncTemplatesUI();
+  }
+
+  function quickUpdateWorkspaceTemplate(ws){
+    if(!ws?.templateId)return false;
+    const list=loadTermTemplates();
+    const idx=list.findIndex(t=>t.id===ws.templateId);
+    if(idx<0)return false;
+    const panes=ws.paneIds.map(pid=>termPanes.get(pid)).filter(Boolean).map(p=>({machineId:p.machineId,broadcastIncluded:p.broadcastIncluded,rect:{...p.rect}}));
+    if(!panes.length)return false;
+    list[idx]={...list[idx],broadcast:ws.broadcast,panes};
+    saveTermTemplates(list);
+    syncTemplatesUI();
+    return true;
+  }
+
+  function mergeWorkspaces(srcId,dstId,side){
+    if(!srcId||!dstId||srcId===dstId)return;
+    const srcIdx=termWorkspaces.findIndex(w=>w.id===srcId);
+    const dstWs=termWorkspaces.find(w=>w.id===dstId);
+    if(srcIdx<0||!dstWs)return;
+    const [srcWs]=termWorkspaces.splice(srcIdx,1);
+    const oldPanes=dstWs.paneIds.map(id=>termPanes.get(id)).filter(Boolean);
+    const newPanes=srcWs.paneIds.map(id=>termPanes.get(id)).filter(Boolean);
+    for(const p of newPanes){
+      p.workspaceId=dstWs.id;
+      if(!dstWs.paneIds.includes(p.id))dstWs.paneIds.push(p.id);
+    }
+    dstWs.maximizedPaneId='';
+    dstWs.activePaneId=srcWs.paneIds[0]||dstWs.activePaneId;
+    if(!dstWs.templateId)dstWs.title=dstWs.paneIds.length+' VPS';
+    if(side&&oldPanes.length&&newPanes.length){
+      const scaleRect=(r,box)=>({
+        x:box.x+(r.x/100)*box.w,
+        y:box.y+(r.y/100)*box.h,
+        w:(r.w/100)*box.w,
+        h:(r.h/100)*box.h
+      });
+      const boxes={
+        left:{old:{x:50,y:0,w:50,h:100},neu:{x:0,y:0,w:50,h:100}},
+        right:{old:{x:0,y:0,w:50,h:100},neu:{x:50,y:0,w:50,h:100}},
+        top:{old:{x:0,y:50,w:100,h:50},neu:{x:0,y:0,w:100,h:50}},
+        bottom:{old:{x:0,y:0,w:100,h:50},neu:{x:0,y:50,w:100,h:50}}
+      }[side];
+      if(boxes){
+        oldPanes.forEach(p=>{p.rect=scaleRect(p.rect,boxes.old);});
+        const nRects=buildAutoRects(newPanes.length);
+        newPanes.forEach((p,i)=>{p.rect=scaleRect(nRects[i],boxes.neu);});
+      }
+    }else{
+      const rects=buildAutoRects(dstWs.paneIds.length);
+      dstWs.paneIds.forEach((pid,i)=>{const p=termPanes.get(pid);if(p)p.rect={...rects[i]};});
+    }
+    activeWsId=dstWs.id;
+    renderAll();
+    syncTemplatesUI();
+  }
+
+  let draggingWsId='';
   function renderAll(){
     tabsBar.replaceChildren();
+    const savedTplIds=new Set(loadTermTemplates().map(t=>t.id));
     for(const ws of termWorkspaces){
       const sub=ws.paneIds.length===1?(termPanes.get(ws.paneIds[0])?.subtitle||''):(ws.paneIds.length+' panes');
+      const hasTpl=Boolean(ws.templateId&&savedTplIds.has(ws.templateId));
+      const tipText=hasTpl?vt('Cập nhật template  ⌘ S','Update template  ⌘ S'):vt('Lưu template  ⌘ S','Save template  ⌘ S');
       const btn=document.createElement('div');
       btn.className='term-tab'+(ws.id===activeWsId?' active':'');
       btn.dataset.id=ws.id;
-      btn.innerHTML='<span class="term-dot"></span><span class="term-tab-title"><strong>'+escapeHTML(ws.title)+'</strong><small>'+escapeHTML(sub)+'</small></span><span class="term-tab-bcast" hidden>B</span><button type="button" class="term-tab-close" aria-label="Đóng">×</button>';
+      btn.draggable=true;
+      btn.title=vt('Kéo tab này thả vào tab khác hoặc xuống khung dưới để chia đôi','Drag onto another tab or down onto the stage to split');
+      btn.innerHTML='<span class="term-dot"></span><span class="term-tab-title"><strong>'+escapeHTML(ws.title)+'</strong><small>'+escapeHTML(sub)+'</small></span><span class="term-tab-bcast" hidden>B</span>'
+        +'<button type="button" class="term-tab-tpl-dot'+(hasTpl?' is-linked':'')+'" data-tip="'+escapeHTML(tipText)+'" aria-label="'+escapeHTML(tipText)+'"></button>'
+        +'<button type="button" class="term-tab-close" aria-label="Đóng">×</button>';
+      btn.ondragstart=e=>{
+        draggingWsId=ws.id;
+        if(e.dataTransfer){e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',ws.id);}
+        btn.classList.add('is-dragging');
+      };
+      btn.ondragend=()=>{
+        draggingWsId='';
+        btn.classList.remove('is-dragging');
+        for(const t of tabsBar.querySelectorAll('.term-tab'))t.classList.remove('is-drop-target');
+        stage.querySelector('.term-drop-overlay')?.remove();
+      };
+      btn.ondragover=e=>{
+        if(!draggingWsId||draggingWsId===ws.id)return;
+        e.preventDefault();
+        btn.classList.add('is-drop-target');
+      };
+      btn.ondragleave=()=>btn.classList.remove('is-drop-target');
+      btn.ondrop=e=>{
+        e.preventDefault();
+        btn.classList.remove('is-drop-target');
+        const srcId=draggingWsId||e.dataTransfer?.getData('text/plain');
+        if(srcId&&srcId!==ws.id)mergeWorkspaces(srcId,ws.id);
+      };
       btn.onclick=e=>{
+        const dot=e.target.closest('.term-tab-tpl-dot');
+        if(dot){
+          e.stopPropagation();
+          activeWsId=ws.id;
+          if(hasTpl&&quickUpdateWorkspaceTemplate(ws)){
+            dot.classList.add('is-saved');
+            setTimeout(()=>dot.classList.remove('is-saved'),900);
+          }else{
+            tplSave.click();
+          }
+          return;
+        }
         if(e.target.closest('.term-tab-close')){closeWorkspace(ws.id);renderAll();syncTemplatesUI();return;}
         activeWsId=ws.id;
         renderStage();
@@ -590,6 +721,43 @@ async function terminalPage(view,path,rev){
       };
       tabsBar.append(btn);
     }
+    const addTabBtn=document.createElement('button');
+    addTabBtn.type='button';
+    addTabBtn.className='term-tab-add';
+    addTabBtn.title=vt('Mở tab SSH hoặc Template','Open SSH tab or Template');
+    addTabBtn.textContent='+';
+    addTabBtn.onclick=()=>{
+      const tpls=loadTermTemplates();
+      const tplHtml=tpls.length
+        ?('<div class="term-pick-section"><div class="term-pick-label">'+vt('Templates đã lưu','Saved templates')+'</div>'
+          +tpls.map(t=>`<button type="button" class="button sftp-host-pick-btn term-tpl-pick" data-tid="${escapeHTML(t.id)}"><span class="term-tpl-ico">⊞</span><strong>${escapeHTML(t.name)}</strong><span class="badge" style="margin-left:auto">${(t.panes||[]).length} panes${t.broadcast?' · Broadcast':''}</span></button>`).join('')
+          +'</div>')
+        :'';
+      const rows=servers.map(s=>{
+        const addr=s.mode==='ssh'?((s.user||'root')+'@'+(s.host||'')+':'+(s.port||22)):'local';
+        return `<button type="button" class="button sftp-host-pick-btn term-quick-pick" data-id="${escapeHTML(s.id)}"><strong>${escapeHTML(s.name)}</strong><code class="mono" style="margin-left:auto">${escapeHTML(addr)}</code></button>`;
+      }).join('');
+      modal(vt('Mở tab SSH mới','Open new SSH tab'),
+        '<div class="sftp-host-picker-list">'+tplHtml+'<div class="term-pick-section"><div class="term-pick-label">'+vt('Máy chủ','Servers')+'</div>'+rows+'</div></div>',
+        async()=>{});
+      for(const b of document.querySelectorAll('.term-tpl-pick')){
+        b.onclick=()=>{
+          $('dialog').close();
+          openTemplateWorkspace(b.dataset.tid);
+        };
+      }
+      for(const b of document.querySelectorAll('.term-quick-pick')){
+        b.onclick=()=>{
+          const m=servers.find(x=>x.id===b.dataset.id);
+          if(!m)return;
+          $('dialog').close();
+          createWorkspace([m]);
+          renderAll();
+          syncTemplatesUI();
+        };
+      }
+    };
+    tabsBar.append(addTabBtn);
     renderStage();
   }
 
@@ -612,22 +780,7 @@ async function terminalPage(view,path,rev){
     const tid=tplSelect.value;
     tplDel.hidden=!tid;
     if(!tid)return;
-    const tpl=loadTermTemplates().find(t=>t.id===tid);
-    if(!tpl)return;
-    const id='ws-'+(++wsSeq);
-    const paneIds=[];
-    for(const item of (tpl.panes||[])){
-      const m=serversById.get(item.machineId);
-      if(!m)continue;
-      const p=createPane(id,m,item.rect);
-      p.broadcastIncluded=item.broadcastIncluded!==false;
-      paneIds.push(p.id);
-    }
-    if(!paneIds.length)return;
-    termWorkspaces.push({id,title:tpl.name,broadcast:Boolean(tpl.broadcast),maximizedPaneId:'',templateId:tpl.id,activePaneId:paneIds[0],paneIds});
-    activeWsId=id;
-    renderAll();
-    syncTemplatesUI();
+    openTemplateWorkspace(tid);
   };
   tplSave.onclick=()=>{
     const ws=getActiveWorkspace();
@@ -725,9 +878,68 @@ async function terminalPage(view,path,rev){
     shell.classList.toggle('is-fullscreen');
     setTimeout(()=>fitWorkspacePanes(getActiveWorkspace()),50);
   };
+  const getStageDropSide=(ev)=>{
+    const r=stage.getBoundingClientRect();
+    const rx=(ev.clientX-r.left)/Math.max(r.width,1);
+    const ry=(ev.clientY-r.top)/Math.max(r.height,1);
+    if(rx<0.28)return 'left';
+    if(rx>0.72)return 'right';
+    if(ry<0.35)return 'top';
+    if(ry>0.65)return 'bottom';
+    return 'right';
+  };
+  const showStageOverlay=(ev)=>{
+    const side=getStageDropSide(ev);
+    let ov=stage.querySelector('.term-drop-overlay');
+    if(!ov){ov=document.createElement('div');ov.className='term-drop-overlay';stage.append(ov);}
+    ov.dataset.side=side;
+    const labels={left:vt('Thả để chia bên trái','Drop to split left'),right:vt('Thả để chia bên phải','Drop to split right'),top:vt('Thả để chia bên trên','Drop to split top'),bottom:vt('Thả để chia bên dưới','Drop to split bottom')};
+    ov.textContent=labels[side]||'';
+  };
+  stage.addEventListener('dragenter',e=>{
+    if(!draggingWsId||draggingWsId===activeWsId)return;
+    e.preventDefault();
+    if(e.dataTransfer)e.dataTransfer.dropEffect='move';
+    showStageOverlay(e);
+  },true);
+  stage.addEventListener('dragover',e=>{
+    if(!draggingWsId||draggingWsId===activeWsId)return;
+    e.preventDefault();
+    if(e.dataTransfer)e.dataTransfer.dropEffect='move';
+    showStageOverlay(e);
+  },true);
+  stage.addEventListener('dragleave',e=>{
+    if(!e.relatedTarget||!stage.contains(e.relatedTarget))stage.querySelector('.term-drop-overlay')?.remove();
+  },true);
+  stage.addEventListener('drop',e=>{
+    stage.querySelector('.term-drop-overlay')?.remove();
+    if(!draggingWsId||draggingWsId===activeWsId)return;
+    e.preventDefault();
+    e.stopPropagation();
+    const side=getStageDropSide(e);
+    const srcId=draggingWsId;
+    draggingWsId='';
+    mergeWorkspaces(srcId,activeWsId,side);
+  },true);
+
   const onResize=()=>fitWorkspacePanes(getActiveWorkspace());
   if(window.ResizeObserver)new ResizeObserver(onResize).observe(stage);
   window.addEventListener('resize',onResize);
+  const onKeySave=e=>{
+    if(!shell.isConnected)return;
+    if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='s'){
+      e.preventDefault();
+      const ws=getActiveWorkspace();
+      if(!ws)return;
+      if(quickUpdateWorkspaceTemplate(ws)){
+        const dot=tabsBar.querySelector('.term-tab.active .term-tab-tpl-dot');
+        if(dot){dot.classList.add('is-saved');setTimeout(()=>dot.classList.remove('is-saved'),900);}
+      }else{
+        tplSave.click();
+      }
+    }
+  };
+  window.addEventListener('keydown',onKeySave);
   renderAll();
   syncTemplatesUI();
 }
