@@ -47,6 +47,44 @@ function sftpIcon(entry){
   return '<span class="sftp-ico">📃</span>';
 }
 
+function sftpOsMeta(s){
+  const hay=[s.os,s.name,s.host,s.user].filter(Boolean).join(' ').toLowerCase();
+  if(/win|windows|administrator/.test(hay)){
+    return {
+      key:'windows',label:'Windows',color:'#0284c7',bg:'#e0f2fe',
+      svg:'<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M3 5.5 10.5 4.4v7.1H3V5.5zm8.5-1.2L21 3v8.5h-9.5V4.3zM3 12.5h7.5v7.1L3 18.5v-6zm8.5 0H21V21l-9.5-1.3v-7.2z"/></svg>'
+    };
+  }
+  if(/redhat|rhel|centos|rocky|alma|fedora|oracle|opc|ec2-user/.test(hay)){
+    return {
+      key:'redhat',label:/oracle|opc/.test(hay)?'Oracle/RHEL':'Red Hat',color:'#dc2626',bg:'#fee2e2',
+      svg:'<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 14c1.5-4.5 4-7 7-7s5.5 2.5 7 7"/><path d="M3 15c2.5 2 5.5 3 9 3s6.5-1 9-3"/><path d="M9 11.5c1.8-.6 4.2-.6 6 0"/></svg>'
+    };
+  }
+  if(/ubuntu/.test(hay)){
+    return {
+      key:'ubuntu',label:'Ubuntu',color:'#ea580c',bg:'#ffedd5',
+      svg:'<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="5"/><circle cx="12" cy="4" r="1.5" fill="currentColor"/><circle cx="5.2" cy="16" r="1.5" fill="currentColor"/><circle cx="18.8" cy="16" r="1.5" fill="currentColor"/></svg>'
+    };
+  }
+  if(/debian/.test(hay)){
+    return {
+      key:'debian',label:'Debian',color:'#be123c',bg:'#ffe4e6',
+      svg:'<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 12a2 2 0 1 0-2-2c0 2.2 1.8 4 4 4a5 5 0 0 0 5-5c0-3.5-3-6-7-6-4.5 0-8 3.5-8 8 0 5 3.8 9 9 9"/></svg>'
+    };
+  }
+  if(s.mode==='local'||/mac|darwin/.test(hay)){
+    return {
+      key:'local',label:'Local',color:'#475569',bg:'#f1f5f9',
+      svg:'<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M2 20h20"/></svg>'
+    };
+  }
+  return {
+    key:'linux',label:'Linux',color:'#15803d',bg:'#dcfce7',
+    svg:'<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m7 10 3 2.5L7 15"/><path d="M13 15h4"/></svg>'
+  };
+}
+
 function createSftpPaneState(machineId){
   return {
     machineId:machineId||'',
@@ -66,14 +104,13 @@ function createSftpPaneState(machineId){
 function createSftpTab(servers,primaryId){
   const id='sftp-tab-'+(++sftpTabSeq);
   const first=primaryId||servers[0]?.id||'';
-  const second=servers.find(s=>s.id!==first)?.id||first;
   const tab={
     id,
     title:'',
     dualPane:true,
     activeSide:'left',
     left:createSftpPaneState(first),
-    right:createSftpPaneState(second)
+    right:createSftpPaneState('')
   };
   sftpTabs.push(tab);
   activeSftpTabId=id;
@@ -88,13 +125,12 @@ async function sftpPage(view,path,rev){
     servers=Array.from($('#hosts').options,o=>({id:o.value,name:o.textContent}));
   }
   if(rev!==revision)return;
-  if(!servers.length){
-    view.innerHTML='<section class="vps-box vps-empty"><h2>'+vt('Chưa có máy chủ','No servers yet')+'</h2><button class="button primary" id="sftp-add-vps">+ '+vt('Thêm VPS','Add server')+'</button></section>';
-    $('#sftp-add-vps').onclick=()=>addVps();
-    return;
+  const byHost=(a,b)=>String(a.name||a.host||'').localeCompare(String(b.name||b.host||''),undefined,{numeric:true,sensitivity:'base'});
+  servers.sort((a,b)=>(Number(Boolean(a.profile_id))-Number(Boolean(b.profile_id)))||byHost(a,b));
+  if(!servers.some(s=>s.id==='__local__'||s.mode==='local')){
+    servers.unshift({id:'__local__',name:vt('Local (máy hiện tại)','Local (this machine)'),mode:'local',host:'localhost'});
   }
-
-  const currentHost=$('#hosts')?.value||servers[0].id;
+  const currentHost=$('#hosts')?.value||servers.find(s=>s.id!=='__local__')?.id||servers[0]?.id||'';
   if(sftpPendingMachineId){
     const targetId=sftpPendingMachineId;
     sftpPendingMachineId='';
@@ -180,10 +216,12 @@ async function sftpPage(view,path,rev){
       if(pane.showHidden)q.set('show_hidden','true');
       const res=await api('vps/machines/'+encodeURIComponent(pane.machineId)+'/sftp/list?'+q.toString());
       if(rev!==revision)return;
+      const prevCwd=pane.cwd;
       pane.cwd=res.cwd;
       pane.home=res.home||res.cwd;
       pane.entries=res.entries||[];
       pane.selected.clear();
+      if(prevCwd&&res.cwd!==prevCwd)pane.filter='';
     }catch(err){
       pane.error=err.message||vt('Không đọc được thư mục.','Failed to list directory.');
     }finally{
@@ -344,41 +382,44 @@ async function sftpPage(view,path,rev){
     const tab=getTab();
     const el=document.createElement('article');
     el.className='sftp-pane'+(tab.activeSide===side?' is-active':'');
+    const connected=Boolean(pane.machineId);
+    const otherConnected=Boolean(otherPane?.machineId);
     const selectedArr=[...pane.selected];
     const firstSelected=selectedArr.length===1?pane.entries.find(e=>e.path===selectedArr[0]):null;
     const arrowDir=side==='left'?'→':'←';
     el.innerHTML=`
       <div class="sftp-pane-head">
         <select class="sftp-host-select" aria-label="${vt('Chọn VPS','Select VPS')}">
+          <option value="" ${!connected?'selected':''}>${vt('Chọn máy chủ…','Select host…')}</option>
           ${servers.map(s=>`<option value="${escapeHTML(s.id)}" ${s.id===pane.machineId?'selected':''}>${escapeHTML(s.name)}</option>`).join('')}
         </select>
         <div class="sftp-nav-btns">
-          <button type="button" class="button small sftp-home" title="${vt('Thư mục Home','Home directory')}">~</button>
-          <button type="button" class="button small sftp-up" title="${vt('Lên 1 cấp','Parent directory')}">..</button>
-          <button type="button" class="button small sftp-refresh" title="${vt('Làm mới','Refresh')}">↻</button>
+          <button type="button" class="button small sftp-home" ${connected?'':'disabled'} title="${vt('Thư mục Home','Home directory')}">~</button>
+          <button type="button" class="button small sftp-up" ${connected?'':'disabled'} title="${vt('Lên 1 cấp','Parent directory')}">..</button>
+          <button type="button" class="button small sftp-refresh" ${connected?'':'disabled'} title="${vt('Làm mới','Refresh')}">↻</button>
         </div>
         <form class="sftp-path-form">
-          <input type="text" class="sftp-path-input mono" value="${escapeHTML(pane.cwd||'~')}" aria-label="${vt('Đường dẫn','Path')}">
+          <input type="text" class="sftp-path-input mono" ${connected?'':'disabled'} value="${escapeHTML(connected?(pane.cwd||'~'):'')}" placeholder="${connected?'':vt('Chưa kết nối','Not connected')}" aria-label="${vt('Đường dẫn','Path')}">
         </form>
       </div>
       <div class="sftp-pane-tools">
-        <button type="button" class="button small sftp-mkdir" data-tone="create">+ ${vt('Thư mục','Folder')}</button>
-        <button type="button" class="button small sftp-touch">+ ${vt('File','File')}</button>
-        <button type="button" class="button small sftp-upload" data-tone="info">↑ ${vt('Tải lên','Upload')}</button>
+        <button type="button" class="button small sftp-mkdir" data-tone="create" ${connected?'':'disabled'}>+ ${vt('Thư mục','Folder')}</button>
+        <button type="button" class="button small sftp-touch" ${connected?'':'disabled'}>+ ${vt('File','File')}</button>
+        <button type="button" class="button small sftp-upload" data-tone="info" ${connected?'':'disabled'}>↑ ${vt('Tải lên','Upload')}</button>
         <input type="file" class="sftp-file-input" multiple hidden>
         <button type="button" class="button small sftp-download" ${selectedArr.length?'':'disabled'}>↓ ${vt('Tải xuống','Download')}</button>
-        ${tab.dualPane?`<button type="button" class="button small sftp-copy-other" data-tone="configure" ${selectedArr.length?'':'disabled'}>${vt('Chép','Copy')} ${arrowDir}</button>`:''}
-        ${tab.dualPane?`<button type="button" class="button small sftp-move-other" ${selectedArr.length?'':'disabled'}>${vt('Di chuyển','Move')} ${arrowDir}</button>`:''}
+        ${tab.dualPane?`<button type="button" class="button small sftp-copy-other" data-tone="configure" ${selectedArr.length&&otherConnected?'':'disabled'}>${vt('Chép','Copy')} ${arrowDir}</button>`:''}
+        ${tab.dualPane?`<button type="button" class="button small sftp-move-other" ${selectedArr.length&&otherConnected?'':'disabled'}>${vt('Di chuyển','Move')} ${arrowDir}</button>`:''}
         <button type="button" class="button small sftp-edit" ${firstSelected&&firstSelected.type!=='dir'?'':'disabled'}>${vt('Sửa','Edit')}</button>
         <button type="button" class="button small sftp-rename" ${firstSelected?'':'disabled'}>${vt('Đổi tên','Rename')}</button>
         <button type="button" class="button small sftp-chmod" ${firstSelected?'':'disabled'}>Chmod</button>
         <button type="button" class="button small sftp-delete" data-tone="remove" ${selectedArr.length?'':'disabled'}>${vt('Xóa','Delete')}</button>
-        <label class="sftp-hidden-toggle"><input type="checkbox" ${pane.showHidden?'checked':''}> ${vt('File ẩn','Hidden')}</label>
-        <input type="search" class="sftp-filter" value="${escapeHTML(pane.filter)}" placeholder="${vt('Lọc…','Filter…')}">
+        <label class="sftp-hidden-toggle"><input type="checkbox" ${pane.showHidden?'checked':''} ${connected?'':'disabled'}> ${vt('File ẩn','Hidden')}</label>
+        <input type="search" class="sftp-filter" ${connected?'':'disabled'} value="${escapeHTML(pane.filter)}" placeholder="${vt('Lọc…','Filter…')}">
       </div>
       <div class="sftp-pane-body"></div>
       <div class="sftp-pane-foot">
-        <span>${pane.entries.length} ${vt('mục','items')}</span>
+        <span>${connected?(pane.entries.length+' '+vt('mục','items')):vt('Chưa kết nối','Not connected')}</span>
         <span>${selectedArr.length?selectedArr.length+' '+vt('đã chọn','selected'):escapeHTML(pane.cwd||'')}</span>
       </div>
     `;
@@ -386,7 +427,16 @@ async function sftpPage(view,path,rev){
     el.onpointerdown=()=>{
       if(tab.activeSide!==side){tab.activeSide=side;for(const p of stageEl.querySelectorAll('.sftp-pane'))p.classList.toggle('is-active',p===el);}
     };
-    el.querySelector('.sftp-host-select').onchange=e=>{pane.machineId=e.target.value;pane.cwd='';loadPane(pane,'');};
+    el.querySelector('.sftp-host-select').onchange=e=>{
+      pane.machineId=e.target.value;
+      pane.cwd='';
+      pane.filter='';
+      pane.entries=[];
+      pane.selected.clear();
+      pane.error='';
+      if(pane.machineId)loadPane(pane,'');
+      else{renderTabs();renderStage();}
+    };
     el.querySelector('.sftp-home').onclick=()=>loadPane(pane,'~');
     el.querySelector('.sftp-up').onclick=()=>loadPane(pane,sftpParentPath(pane.cwd));
     el.querySelector('.sftp-refresh').onclick=()=>loadPane(pane,pane.cwd);
@@ -482,6 +532,48 @@ async function sftpPage(view,path,rev){
     });
 
     function renderBody(){
+      if(!pane.machineId){
+        body.innerHTML=`
+          <div class="sftp-connect-empty">
+            <div class="sftp-connect-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M3 6a2 2 0 0 1 2-2h4.6l2 2H19a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6z"/></svg>
+            </div>
+            <h3>${vt('Kết nối máy chủ','Connect to host')}</h3>
+            <p>${vt('Chọn một máy chủ đã lưu để bắt đầu quản lý file qua SFTP.','Start by connecting to a saved host to manage your files with SFTP.')}</p>
+            <button type="button" class="button small sftp-pick-host">${vt('Chọn máy chủ','Select host')}</button>
+          </div>
+        `;
+        body.querySelector('.sftp-pick-host').onclick=()=>{
+          modal(vt('Chọn máy chủ SFTP','Select SFTP host'),
+            '<div class="sftp-host-picker-list">'+servers.map(s=>{
+              const os=sftpOsMeta(s);
+              const addr=s.mode==='ssh'?((s.user||'root')+'@'+(s.host||'')+':'+(s.port||22)):'local';
+              const authLabel=s.mode==='local'?'Local':(s.ssh_auth==='password'?vt('Mật khẩu','Password'):'SSH Key');
+              return `<button type="button" class="button sftp-host-pick-btn" data-id="${escapeHTML(s.id)}">
+                <span class="sftp-os-badge" style="color:${os.color};background:${os.bg}" title="${escapeHTML(os.label)}">${os.svg}</span>
+                <span class="sftp-host-pick-main">
+                  <strong>${escapeHTML(s.name)}</strong>
+                  <small>${escapeHTML(os.label)}${s.profile_id?' · MongoDB':''}</small>
+                </span>
+                <span class="sftp-host-pick-right">
+                  <code class="mono">${escapeHTML(addr)}</code>
+                  <span class="badge">${escapeHTML(authLabel)}</span>
+                </span>
+              </button>`;
+            }).join('')+'</div>',
+            async()=>{});
+          for(const btn of document.querySelectorAll('.sftp-host-pick-btn')){
+            btn.onclick=()=>{
+              pane.machineId=btn.dataset.id;
+              pane.cwd='';
+              pane.filter='';
+              $('dialog').close();
+              loadPane(pane,'');
+            };
+          }
+        };
+        return;
+      }
       if(pane.loading){
         body.innerHTML='<div class="sftp-state"><span class="spinner"></span> '+vt('Đang tải thư mục…','Loading directory…')+'</div>';
         return;
@@ -584,7 +676,9 @@ async function sftpPage(view,path,rev){
   function renderTabs(){
     tabsEl.replaceChildren();
     for(const t of sftpTabs){
-      const label=t.dualPane?(serverName(t.left.machineId)+' ↔ '+serverName(t.right.machineId)):serverName(t.left.machineId);
+      const leftLabel=t.left.machineId?serverName(t.left.machineId):vt('Chưa kết nối','Select host');
+      const rightLabel=t.right.machineId?serverName(t.right.machineId):vt('Chọn máy chủ','Select host');
+      const label=t.dualPane?(leftLabel+' ↔ '+rightLabel):leftLabel;
       const btn=document.createElement('div');
       btn.className='sftp-tab'+(t.id===activeSftpTabId?' active':'');
       btn.innerHTML='<span>'+escapeHTML(label)+'</span><button type="button" class="sftp-tab-close" aria-label="Đóng">×</button>';

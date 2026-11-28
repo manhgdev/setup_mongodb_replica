@@ -62,7 +62,8 @@ async function previewVps(path,data){
       case machine+'/nginx/web/logs':
       case machine+'/pm2':return [];
       case machine+'/jobs':return [{id:'sample',target:'web-demo',label:'Nginx',status:'succeeded',events:[{message:'nginx -t · OK'}]}];
-      case machine+'/sftp/list':{
+      case machine+'/sftp/list':
+      case 'vps/machines/__local__/sftp/list':{
         const params=new URL(path,location.origin).searchParams;
         const p=params.get('path')||'/root';
         const showHidden=params.get('show_hidden')==='true';
@@ -86,7 +87,8 @@ async function previewVps(path,data){
         const entries=(trees[p]||trees['/root']).filter(e=>showHidden||!e.name.startsWith('.'));
         return {cwd:trees[p]?p:'/root',home:'/root',entries};
       }
-      case machine+'/sftp/file':{
+      case machine+'/sftp/file':
+      case 'vps/machines/__local__/sftp/file':{
         const p=new URL(path,location.origin).searchParams.get('path')||'/root/docker-compose.yml';
         return {path:p,size:240,octal:'0644',content:'services:\n  api:\n    image: node:22-alpine\n    restart: unless-stopped\n    ports:\n      - "127.0.0.1:3000:3000"\n'};
       }

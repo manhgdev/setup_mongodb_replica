@@ -689,6 +689,7 @@ def enable_certbot_renewal():
 
 
 def atomic_write(path, content):
+    path.parent.mkdir(parents=True, exist_ok=True)
     with NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as tmp:
         tmp.write(content)
     os.replace(tmp.name, path)
@@ -1731,6 +1732,8 @@ def execute(action, p):
             exported.append(item)
         return {"sites": exported}
     if action == "nginx-import":
+        if not shutil.which("nginx") and not Path("/etc/nginx").exists():
+            raise ValueError("Nginx chưa được cài trên VPS đích. Cài Nginx trong Software Center trước.")
         root = Path("/etc/nginx")
         overwrite = bool(p.get("overwrite"))
         imported = []
@@ -1740,6 +1743,7 @@ def execute(action, p):
             if not name or "/" in name or ".." in name:
                 continue
             dest = (root / "conf.d" / name) if item.get("in_conf_d") else (root / "sites-available" / name)
+            dest.parent.mkdir(parents=True, exist_ok=True)
             existed = dest.exists()
             if existed and not overwrite:
                 imported.append(name + " (bỏ qua: đã tồn tại)")
@@ -1760,6 +1764,7 @@ def execute(action, p):
                 created_paths.append(dest)
             if not item.get("in_conf_d") and item.get("enabled", True):
                 link = root / "sites-enabled" / name
+                link.parent.mkdir(parents=True, exist_ok=True)
                 if not link.exists():
                     link.symlink_to(dest)
                     created_paths.append(link)

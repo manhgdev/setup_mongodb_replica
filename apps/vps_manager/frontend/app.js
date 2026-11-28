@@ -521,16 +521,24 @@ async function render(){
       if($('#enable-ssl-renew'))$('#enable-ssl-renew').onclick=()=>modal(vt('Bật tự gia hạn SSL','Enable SSL auto-renew'),'<p>'+escapeHTML($('#hosts').selectedOptions[0].textContent)+'</p><p>'+vt('Kích hoạt systemd timer (certbot.timer / certbot-renew.timer / snap.certbot.renew.timer) hoặc cron định kỳ để tự động gia hạn chứng chỉ SSL trước khi hết hạn và reload Nginx.','Enable the systemd timer or periodic cron job to automatically renew SSL certificates before expiry and reload Nginx.')+'</p>',()=>submit('ssl-renew-enable',{}));
       if($('#test-ssl-renew'))$('#test-ssl-renew').onclick=()=>modal(vt('Thử gia hạn SSL','Test SSL renewal'),'<p>'+escapeHTML($('#hosts').selectedOptions[0].textContent)+'</p><p>'+vt('Chạy certbot renew --dry-run cho toàn bộ chứng chỉ trên VPS (không làm gián đoạn dịch vụ).','Run certbot renew --dry-run for all certificates on this server.')+'</p>',()=>submit('ssl-renew-test',{}));
       $('#reload-nginx').onclick=async()=>{
-        modal('nginx -t & Reload Nginx','<p>'+escapeHTML($('#hosts').selectedOptions[0].textContent)+'</p><div id="nginx-t-box"><span class="spinner"></span> '+vt('Đang chạy nginx -t…','Running nginx -t…')+'</div>',()=>submit('nginx-reload',{}));
-        const confirmBtn=$('#popup button[type=submit]'),box=$('#nginx-t-box');
-        confirmBtn.disabled=true;
+        modal('nginx -t & Reload Nginx',machineChoices()+'<div id="nginx-t-box" style="margin-top:10px"><span class="spinner"></span> '+vt('Đang chạy nginx -t…','Running nginx -t…')+'</div>',form=>submitTargets(form,'nginx-reload',{}));
+        const form=$('#popup'),confirmBtn=form.querySelector('[type=submit]'),box=$('#nginx-t-box');
+        let currentOk=false;
+        const syncConfirm=()=>{
+          const checked=[...form.querySelectorAll('input[name="machines"]:checked')].map(c=>c.value);
+          const onlyCurrent=checked.length===1&&checked[0]===$('#hosts').value;
+          confirmBtn.disabled=!checked.length||(onlyCurrent&&!currentOk);
+        };
+        form.addEventListener('change',syncConfirm);
+        syncConfirm();
         try{
           const res=await api(path+'/nginx/test?t='+Date.now());
           if(!box.isConnected)return;
+          currentOk=!!res.ok;
           box.innerHTML=res.ok
             ?'<div class="callout" style="margin:0">✓ '+escapeHTML(res.output||'nginx -t · OK')+'</div>'
             :'<div class="callout error" style="margin:0;white-space:pre-wrap">✗ '+escapeHTML(res.output||'nginx -t thất bại')+'</div>';
-          confirmBtn.disabled=!res.ok;
+          syncConfirm();
         }catch(err){if(box.isConnected)box.innerHTML='<div class="callout error" style="margin:0">✗ '+escapeHTML(err.message)+'</div>';}
       };
       $('#copy-sites').onclick=()=>openNginxCopy();

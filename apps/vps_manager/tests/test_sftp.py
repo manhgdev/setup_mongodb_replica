@@ -26,6 +26,11 @@ def test_sftp_crud_editor_chmod_upload_download_and_transfer(tmp_path):
 
     client, m1, m2 = _setup_client(tmp_path)
     try:
+        # 0. Built-in __local__ target works without a saved machine record
+        local_list = client.get("/api/vps/machines/__local__/sftp/list", params={"path": str(root_a)})
+        assert local_list.status_code == 200
+        assert local_list.json()["cwd"] == str(root_a)
+
         # 1. List without & with hidden
         res = client.get(f"/api/vps/machines/{m1}/sftp/list", params={"path": str(root_a)}).json()
         assert res["cwd"] == str(root_a)

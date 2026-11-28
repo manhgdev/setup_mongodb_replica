@@ -409,3 +409,5 @@ Nhóm kit **SSL & Certbot** trong Software Center giữ gọn `certbot`, `python
 Đã bổ sung tab **SFTP** (`#sftp`) theo mô hình Termius 2 khung song song nhiều tab: duyệt thư mục, ẩn/hiện file ẩn, tìm kiếm/sắp xếp, kéo-thả upload với tiến trình, tải xuống file lẻ hoặc `.tar.gz`, truyền file giữa 2 VPS, `chmod` trực quan, sửa file text trong popup và nút mở nhanh **SFTP** từ từng khung **SSH Terminal**. [Ảnh SFTP 2 khung](previews/vps-manager/sftp-dual-pane.png).
 
 Khi mở port trong **Firewall**, ngoài UFW và Oracle Cloud, Manager tự động xử lý rule `REJECT --reject-with icmp-host-prohibited` mặc định trên `iptables` (hoặc chèn rule `ACCEPT` trước `REJECT` nếu UFW đang tắt và lưu `netfilter-persistent`) để port thông ngay từ bên ngoài.
+
+Khi **Copy Nginx & SSL giữa các VPS**, `nginx-import` tự kiểm tra Nginx trên VPS đích và tự tạo thư mục `sites-available`, `sites-enabled` hoặc `conf.d` nếu chưa có trước khi ghi file. Nút **Reload Nginx** cũng hỗ trợ chọn một hoặc nhiều VPS (hoặc **Chọn tất cả**) để chạy `nginx -t && systemctl reload nginx` hàng loạt.
