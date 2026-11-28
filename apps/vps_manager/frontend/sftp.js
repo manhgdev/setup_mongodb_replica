@@ -1,6 +1,6 @@
-// Termius-style dual-pane multi-tab SFTP file manager with inline editor, chmod matrix, drag-drop, and transfer queue.
+// Termius-style multi-pane, multi-tab SFTP file manager with inline editor, chmod matrix, drag-drop, and transfer queue.
 const sftpTabs=[];
-let activeSftpTabId='',sftpTabSeq=0,sftpXferSeq=0;
+let activeSftpTabId='',sftpTabSeq=0,sftpPaneSeq=0,sftpXferSeq=0;
 const sftpTransfers=[];
 let sftpDrawerOpen=true,sftpPendingMachineId='';
 
@@ -85,8 +85,24 @@ function sftpOsMeta(s){
   };
 }
 
-function createSftpPaneState(machineId){
+function buildSftpAutoRects(count){
+  if(count<=0)return [];
+  if(count===1)return [{x:0,y:0,w:100,h:100}];
+  const cols=count<=4?2:3;
+  const rows=Math.ceil(count/cols);
+  const rects=[];
+  for(let i=0;i<count;i++){
+    const r=Math.floor(i/cols),c=i%cols;
+    const rowCount=(r===rows-1&&count%cols!==0)?(count%cols):cols;
+    const w=100/rowCount,h=100/rows;
+    rects.push({x:c*w,y:r*h,w,h});
+  }
+  return rects;
+}
+
+function createSftpPaneState(machineId,rect){
   return {
+    id:'sftp-pane-'+(++sftpPaneSeq),
     machineId:machineId||'',
     cwd:'',
     home:'',
@@ -97,20 +113,32 @@ function createSftpPaneState(machineId){
     sortBy:'name',
     sortDir:'asc',
     loading:false,
-    error:''
+    error:'',
+    el:null,
+    rect:rect?{...rect}:{x:0,y:0,w:50,h:100}
   };
 }
 
-function createSftpTab(servers,primaryId){
+function createSftpTab(servers,primaryOrList){
   const id='sftp-tab-'+(++sftpTabSeq);
-  const first=primaryId||servers[0]?.id||'';
+  let panes;
+  if(Array.isArray(primaryOrList)&&primaryOrList.length){
+    const rects=buildSftpAutoRects(primaryOrList.length);
+    panes=primaryOrList.map((mid,i)=>createSftpPaneState(mid,rects[i]));
+  }else{
+    const first=primaryOrList||'';
+    panes=[
+      createSftpPaneState(first,{x:0,y:0,w:50,h:100}),
+      createSftpPaneState('',{x:50,y:0,w:50,h:100})
+    ];
+  }
   const tab={
     id,
     title:'',
     dualPane:true,
-    activeSide:'left',
-    left:createSftpPaneState(first),
-    right:createSftpPaneState('')
+    activePaneId:panes[0]?.id||'',
+    maximizedPaneId:'',
+    panes
   };
   sftpTabs.push(tab);
   activeSftpTabId=id;
@@ -136,7 +164,7 @@ async function sftpPage(view,path,rev){
     sftpPendingMachineId='';
     createSftpTab(servers,targetId);
   }else if(!sftpTabs.length){
-    createSftpTab(servers,currentHost);
+    createSftpTab(servers,'');
   }
   if(!sftpTabs.some(t=>t.id===activeSftpTabId)){
     activeSftpTabId=sftpTabs[0].id;
@@ -151,6 +179,8 @@ async function sftpPage(view,path,rev){
         <button type="button" class="button small" id="sftp-new-tab" data-tone="create">+ ${vt('Tab SFTP','New SFTP tab')}</button>
         <button type="button" class="button small" id="sftp-toggle-dual" data-tone="info"></button>
         <button type="button" class="button small" id="sftp-swap" title="${vt('Đổi vị trí 2 khung','Swap panes')}">⇄ ${vt('Đảo khung','Swap')}</button>
+        <button type="button" class="button small" id="sftp-tile" title="${vt('Xếp đều các khung thành lưới','Auto-tile panes into grid')}">⊞</button>
+        <button type="button" class="button small" id="sftp-fullscreen" title="${vt('Toàn màn hình','Fullscreen')}">⛶ ${vt('Toàn màn hình','Fullscreen')}</button>
       </div>
     </div>
     <div class="sftp-stage" id="sftp-stage"></div>
@@ -282,7 +312,26 @@ async function sftpPage(view,path,rev){
     }
   }
 
-  async function transferBetweenPanes(srcPane,dstPane,paths,op){
+  async function pollTransferJob(xfer,jobId,onSucceeded){
+    xfer.serverTransferId=jobId;
+    for(let i=0;i<1800;i++){
+      const st=await api('vps/sftp/transfers/'+encodeURIComponent(jobId));
+      xfer.loaded=st.bytes_transferred||0;
+      xfer.total=st.total_bytes||1;
+      xfer.detail=(st.current_file?st.current_file+' · ':'')+sftpFmtBytes(xfer.loaded)+' / '+sftpFmtBytes(st.total_bytes||0);
+      if(st.status==='succeeded'||st.status==='failed'||st.status==='cancelled'){
+        xfer.status=st.status;
+        if(st.error)xfer.detail=st.error;
+        renderDrawer();
+        if(st.status==='succeeded'&&onSucceeded)onSucceeded();
+        return;
+      }
+      renderDrawer();
+      await new Promise(r=>setTimeout(r,500));
+    }
+  }
+
+  async function transferBetweenPanes(srcPane,dstPane,paths,op,{awaitDone=true}={}){
     if(!paths.length)return;
     if(previewMode){
       modal(vt('Chế độ xem thử','Preview mode'),'<p>'+vt('Đang xem dữ liệu minh họa. Chuyển sang dữ liệu thật để truyền file giữa 2 VPS.','Preview mode uses sample data. Switch to live data to transfer files.')+'</p>',async()=>{});
@@ -300,25 +349,11 @@ async function sftpPage(view,path,rev){
         target_dir:dstPane.cwd||'~',
         op
       });
-      xfer.serverTransferId=job.id;
-      for(let i=0;i<1800;i++){
-        const st=await api('vps/sftp/transfers/'+encodeURIComponent(job.id));
-        xfer.loaded=st.bytes_transferred||0;
-        xfer.total=st.total_bytes||1;
-        xfer.detail=(st.current_file?st.current_file+' · ':'')+sftpFmtBytes(xfer.loaded)+' / '+sftpFmtBytes(st.total_bytes||0);
-        if(st.status==='succeeded'||st.status==='failed'||st.status==='cancelled'){
-          xfer.status=st.status;
-          if(st.error)xfer.detail=st.error;
-          renderDrawer();
-          if(st.status==='succeeded'){
-            loadPane(dstPane,dstPane.cwd);
-            if(op==='move')loadPane(srcPane,srcPane.cwd);
-          }
-          return;
-        }
-        renderDrawer();
-        await new Promise(r=>setTimeout(r,500));
-      }
+      const poll=pollTransferJob(xfer,job.id,()=>{
+        loadPane(dstPane,dstPane.cwd);
+        if(op==='move')loadPane(srcPane,srcPane.cwd);
+      });
+      if(awaitDone)await poll;
     }catch(err){
       xfer.status='failed';
       xfer.detail=err.message;
@@ -378,17 +413,112 @@ async function sftpPage(view,path,rev){
     }
   }
 
-  function renderPane(side,pane,otherPane){
-    const tab=getTab();
+  function applySftpRect(pane,maximized,single){
+    if(!pane?.el)return;
+    if(maximized||single){
+      pane.el.style.left='0%';pane.el.style.top='0%';pane.el.style.width='100%';pane.el.style.height='100%';
+    }else{
+      const r=pane.rect||{x:0,y:0,w:50,h:100};
+      pane.el.style.left=r.x+'%';pane.el.style.top=r.y+'%';pane.el.style.width=r.w+'%';pane.el.style.height=r.h+'%';
+    }
+  }
+
+  function startSftpPointerOp(e,pane,tab,mode){
+    if(e.button!==0||e.target.closest('button,select,input'))return;
+    if(!tab||tab.panes.length<=1||tab.maximizedPaneId===pane.id)return;
+    e.preventDefault();
+    const canvas=stageEl.querySelector('.sftp-canvas');
+    if(!canvas)return;
+    const stageRect=canvas.getBoundingClientRect();
+    const startX=e.clientX,startY=e.clientY;
+    const orig={...pane.rect};
+    const origRight=orig.x+orig.w,origBottom=orig.y+orig.h;
+    const others=tab.panes.filter(p=>p.id!==pane.id);
+    const linkedE=mode.includes('e')?others.filter(p=>Math.abs(p.rect.x-origRight)<2&&p.rect.y<origBottom-1&&(p.rect.y+p.rect.h)>orig.y+1).map(p=>({p,orig:{...p.rect}})):[];
+    const linkedW=mode.includes('w')?others.filter(p=>Math.abs((p.rect.x+p.rect.w)-orig.x)<2&&p.rect.y<origBottom-1&&(p.rect.y+p.rect.h)>orig.y+1).map(p=>({p,orig:{...p.rect}})):[];
+    const linkedS=mode.includes('s')?others.filter(p=>Math.abs(p.rect.y-origBottom)<2&&p.rect.x<origRight-1&&(p.rect.x+p.rect.w)>orig.x+1).map(p=>({p,orig:{...p.rect}})):[];
+    const linkedN=mode.includes('n')?others.filter(p=>Math.abs((p.rect.y+p.rect.h)-orig.y)<2&&p.rect.x<origRight-1&&(p.rect.x+p.rect.w)>orig.x+1).map(p=>({p,orig:{...p.rect}})):[];
+    const minW=18,minH=22;
+    const maxDxE=linkedE.length?Math.min(100-origRight,...linkedE.map(item=>item.orig.w-minW)):(100-origRight),minDxE=minW-orig.w;
+    const minDxW=linkedW.length?Math.max(-orig.x,...linkedW.map(item=>minW-item.orig.w)):(-orig.x),maxDxW=orig.w-minW;
+    const maxDyS=linkedS.length?Math.min(100-origBottom,...linkedS.map(item=>item.orig.h-minH)):(100-origBottom),minDyS=minH-orig.h;
+    const minDyN=linkedN.length?Math.max(-orig.y,...linkedN.map(item=>minH-item.orig.h)):(-orig.y),maxDyN=orig.h-minH;
+    pane.el.classList.add('is-moving');
+    const onMove=ev=>{
+      const rawDx=((ev.clientX-startX)/Math.max(stageRect.width,1))*100;
+      const rawDy=((ev.clientY-startY)/Math.max(stageRect.height,1))*100;
+      if(mode==='move'){
+        pane.rect.x=Math.max(0,Math.min(100-orig.w,orig.x+rawDx));
+        pane.rect.y=Math.max(0,Math.min(100-orig.h,orig.y+rawDy));
+      }else{
+        if(mode.includes('e')){
+          const dx=Math.max(minDxE,Math.min(maxDxE,rawDx));
+          pane.rect.w=orig.w+dx;
+          for(const item of linkedE){item.p.rect.x=item.orig.x+dx;item.p.rect.w=item.orig.w-dx;applySftpRect(item.p,false,false);}
+        }
+        if(mode.includes('w')){
+          const dx=Math.max(minDxW,Math.min(maxDxW,rawDx));
+          pane.rect.x=orig.x+dx;pane.rect.w=orig.w-dx;
+          for(const item of linkedW){item.p.rect.w=item.orig.w+dx;applySftpRect(item.p,false,false);}
+        }
+        if(mode.includes('s')){
+          const dy=Math.max(minDyS,Math.min(maxDyS,rawDy));
+          pane.rect.h=orig.h+dy;
+          for(const item of linkedS){item.p.rect.y=item.orig.y+dy;item.p.rect.h=item.orig.h-dy;applySftpRect(item.p,false,false);}
+        }
+        if(mode.includes('n')){
+          const dy=Math.max(minDyN,Math.min(maxDyN,rawDy));
+          pane.rect.y=orig.y+dy;pane.rect.h=orig.h-dy;
+          for(const item of linkedN){item.p.rect.h=item.orig.h+dy;applySftpRect(item.p,false,false);}
+        }
+      }
+      applySftpRect(pane,false,false);
+    };
+    const onUp=()=>{
+      pane.el?.classList.remove('is-moving');
+      window.removeEventListener('pointermove',onMove);
+      window.removeEventListener('pointerup',onUp);
+    };
+    window.addEventListener('pointermove',onMove);
+    window.addEventListener('pointerup',onUp);
+  }
+
+  function pickTargetPaneAndTransfer(srcPane,connectedOthers,paths,op){
+    if(connectedOthers.length===1){
+      const dst=connectedOthers[0];
+      if(op==='move'){
+        modal(vt('Di chuyển sang khung khác','Move to another pane'),
+          '<p>'+vt('Di chuyển ','Move ')+'<strong>'+paths.length+'</strong>'+vt(' mục sang ',' item(s) to ')+'<code>'+escapeHTML(serverName(dst.machineId)+':'+(dst.cwd||'~'))+'</code>?</p>',
+          async()=>{await transferBetweenPanes(srcPane,dst,paths,'move',{awaitDone:false});});
+      }else{
+        transferBetweenPanes(srcPane,dst,paths,'copy',{awaitDone:false});
+      }
+      return;
+    }
+    const opts=connectedOthers.map(p=>`<option value="${escapeHTML(p.id)}">${escapeHTML(serverName(p.machineId)+' · '+(p.cwd||'~'))}</option>`).join('');
+    modal(op==='move'?vt('Chọn khung đích để di chuyển','Select target pane to move'):vt('Chọn khung đích để chép','Select target pane to copy'),
+      `<label class="field">${vt('Khung đang mở','Open pane')}<select name="pane_id">${opts}</select></label>`,
+      async form=>{
+        const dst=connectedOthers.find(p=>p.id===form.get('pane_id'));
+        if(dst)await transferBetweenPanes(srcPane,dst,paths,op,{awaitDone:false});
+      });
+  }
+
+  function renderPane(pane,tab){
+    const isMax=tab.maximizedPaneId===pane.id;
+    const single=!tab.dualPane||tab.panes.length<=1;
     const el=document.createElement('article');
-    el.className='sftp-pane'+(tab.activeSide===side?' is-active':'');
+    el.className='sftp-pane'+(tab.activePaneId===pane.id?' is-active':'')+(isMax?' is-maximized':'');
+    pane.el=el;
+    applySftpRect(pane,isMax,single);
     const connected=Boolean(pane.machineId);
-    const otherConnected=Boolean(otherPane?.machineId);
+    const connectedOthers=tab.dualPane?tab.panes.filter(p=>p.id!==pane.id&&p.machineId):[];
+    const firstOther=connectedOthers[0]||tab.panes.find(p=>p.id!==pane.id)||null;
     const selectedArr=[...pane.selected];
     const firstSelected=selectedArr.length===1?pane.entries.find(e=>e.path===selectedArr[0]):null;
-    const arrowDir=side==='left'?'→':'←';
     el.innerHTML=`
-      <div class="sftp-pane-head">
+      <div class="sftp-pane-head" title="${vt('Kéo tiêu đề để di chuyển khung tự do','Drag header to move pane freely')}">
+        <span class="sftp-drag-grip" aria-hidden="true">⋮⋮</span>
         <select class="sftp-host-select" aria-label="${vt('Chọn VPS','Select VPS')}">
           <option value="" ${!connected?'selected':''}>${vt('Chọn máy chủ…','Select host…')}</option>
           ${servers.map(s=>`<option value="${escapeHTML(s.id)}" ${s.id===pane.machineId?'selected':''}>${escapeHTML(s.name)}</option>`).join('')}
@@ -401,6 +531,8 @@ async function sftpPage(view,path,rev){
         <form class="sftp-path-form">
           <input type="text" class="sftp-path-input mono" ${connected?'':'disabled'} value="${escapeHTML(connected?(pane.cwd||'~'):'')}" placeholder="${connected?'':vt('Chưa kết nối','Not connected')}" aria-label="${vt('Đường dẫn','Path')}">
         </form>
+        <button type="button" class="button small sftp-pane-max" title="${isMax?vt('Thu về vị trí cũ','Restore size'):vt('Phóng to khung này','Maximize pane')}">${isMax?'🗗':'⛶'}</button>
+        <button type="button" class="button small sftp-pane-close" ${single?'hidden':''} title="${vt('Đóng khung này','Close pane')}">×</button>
       </div>
       <div class="sftp-pane-tools">
         <button type="button" class="button small sftp-mkdir" data-tone="create" ${connected?'':'disabled'}>+ ${vt('Thư mục','Folder')}</button>
@@ -408,8 +540,8 @@ async function sftpPage(view,path,rev){
         <button type="button" class="button small sftp-upload" data-tone="info" ${connected?'':'disabled'}>↑ ${vt('Tải lên','Upload')}</button>
         <input type="file" class="sftp-file-input" multiple hidden>
         <button type="button" class="button small sftp-download" ${selectedArr.length?'':'disabled'}>↓ ${vt('Tải xuống','Download')}</button>
-        ${tab.dualPane?`<button type="button" class="button small sftp-copy-other" data-tone="configure" ${selectedArr.length&&otherConnected?'':'disabled'}>${vt('Chép','Copy')} ${arrowDir}</button>`:''}
-        ${tab.dualPane?`<button type="button" class="button small sftp-move-other" ${selectedArr.length&&otherConnected?'':'disabled'}>${vt('Di chuyển','Move')} ${arrowDir}</button>`:''}
+        <button type="button" class="button small sftp-copy-other" data-tone="configure" ${selectedArr.length&&connectedOthers.length?'':'disabled'}>${vt('Chép sang…','Copy to…')}</button>
+        <button type="button" class="button small sftp-move-other" ${selectedArr.length&&connectedOthers.length?'':'disabled'}>${vt('Di chuyển…','Move to…')}</button>
         <button type="button" class="button small sftp-edit" ${firstSelected&&firstSelected.type!=='dir'?'':'disabled'}>${vt('Sửa','Edit')}</button>
         <button type="button" class="button small sftp-rename" ${firstSelected?'':'disabled'}>${vt('Đổi tên','Rename')}</button>
         <button type="button" class="button small sftp-chmod" ${firstSelected?'':'disabled'}>Chmod</button>
@@ -422,10 +554,37 @@ async function sftpPage(view,path,rev){
         <span>${connected?(pane.entries.length+' '+vt('mục','items')):vt('Chưa kết nối','Not connected')}</span>
         <span>${selectedArr.length?selectedArr.length+' '+vt('đã chọn','selected'):escapeHTML(pane.cwd||'')}</span>
       </div>
+      <div class="sftp-resize-n"></div>
+      <div class="sftp-resize-w"></div>
+      <div class="sftp-resize-e"></div>
+      <div class="sftp-resize-s"></div>
+      <div class="sftp-resize-se" title="${vt('Kéo góc để đổi kích thước','Drag corner to resize')}">◢</div>
     `;
 
     el.onpointerdown=()=>{
-      if(tab.activeSide!==side){tab.activeSide=side;for(const p of stageEl.querySelectorAll('.sftp-pane'))p.classList.toggle('is-active',p===el);}
+      if(tab.activePaneId!==pane.id){tab.activePaneId=pane.id;for(const p of stageEl.querySelectorAll('.sftp-pane'))p.classList.toggle('is-active',p===el);}
+    };
+    el.querySelector('.sftp-pane-head').addEventListener('pointerdown',e=>startSftpPointerOp(e,pane,tab,'move'));
+    el.querySelector('.sftp-resize-n').addEventListener('pointerdown',e=>startSftpPointerOp(e,pane,tab,'n'));
+    el.querySelector('.sftp-resize-w').addEventListener('pointerdown',e=>startSftpPointerOp(e,pane,tab,'w'));
+    el.querySelector('.sftp-resize-e').addEventListener('pointerdown',e=>startSftpPointerOp(e,pane,tab,'e'));
+    el.querySelector('.sftp-resize-s').addEventListener('pointerdown',e=>startSftpPointerOp(e,pane,tab,'s'));
+    el.querySelector('.sftp-resize-se').addEventListener('pointerdown',e=>startSftpPointerOp(e,pane,tab,'se'));
+    el.querySelector('.sftp-pane-max').onclick=e=>{
+      e.stopPropagation();
+      tab.maximizedPaneId=tab.maximizedPaneId===pane.id?'':pane.id;
+      tab.activePaneId=pane.id;
+      renderStage();
+    };
+    el.querySelector('.sftp-pane-close').onclick=e=>{
+      e.stopPropagation();
+      if(tab.panes.length<=1)return;
+      tab.panes=tab.panes.filter(p=>p.id!==pane.id);
+      if(tab.maximizedPaneId===pane.id)tab.maximizedPaneId='';
+      if(tab.activePaneId===pane.id)tab.activePaneId=tab.panes[0]?.id||'';
+      const rects=buildSftpAutoRects(tab.panes.length);
+      tab.panes.forEach((p,i)=>{p.rect={...rects[i]};});
+      renderTabs();renderStage();
     };
     el.querySelector('.sftp-host-select').onchange=e=>{
       pane.machineId=e.target.value;
@@ -477,14 +636,8 @@ async function sftpPage(view,path,rev){
       const wsTarget=window.zmWorkspaceHelper?window.zmWorkspaceHelper.getTarget():'';
       window.open('/api/vps/machines/'+encodeURIComponent(pane.machineId)+'/sftp/download?'+q+(wsTarget?'&workspace_user='+encodeURIComponent(wsTarget):''),'_blank');
     };
-    const copyBtn=el.querySelector('.sftp-copy-other');
-    if(copyBtn)copyBtn.onclick=()=>transferBetweenPanes(pane,otherPane,selectedArr,'copy');
-    const moveBtn=el.querySelector('.sftp-move-other');
-    if(moveBtn)moveBtn.onclick=()=>{
-      modal(vt('Di chuyển sang khung bên','Move to other pane'),
-        '<p>'+vt('Di chuyển ','Move ')+'<strong>'+selectedArr.length+'</strong>'+vt(' mục sang ',' item(s) to ')+'<code>'+escapeHTML(serverName(otherPane.machineId)+':'+(otherPane.cwd||'~'))+'</code>?</p>',
-        async()=>{await transferBetweenPanes(pane,otherPane,selectedArr,'move');});
-    };
+    el.querySelector('.sftp-copy-other').onclick=()=>pickTargetPaneAndTransfer(pane,connectedOthers,selectedArr,'copy');
+    el.querySelector('.sftp-move-other').onclick=()=>pickTargetPaneAndTransfer(pane,connectedOthers,selectedArr,'move');
     el.querySelector('.sftp-edit').onclick=()=>{if(firstSelected)openEditorModal(pane,firstSelected);};
     el.querySelector('.sftp-rename').onclick=()=>{
       if(!firstSelected)return;
@@ -524,8 +677,9 @@ async function sftpPage(view,path,rev){
       if(raw){
         try{
           const payload=JSON.parse(raw);
-          if(payload.side!==side&&Array.isArray(payload.paths)&&payload.paths.length){
-            transferBetweenPanes(otherPane,pane,payload.paths,'copy');
+          const srcPane=tab.panes.find(p=>p.id===payload.paneId);
+          if(srcPane&&srcPane.id!==pane.id&&Array.isArray(payload.paths)&&payload.paths.length){
+            transferBetweenPanes(srcPane,pane,payload.paths,'copy');
           }
         }catch{}
       }
@@ -663,7 +817,7 @@ async function sftpPage(view,path,rev){
         };
         tr.ondragstart=e=>{
           const paths=pane.selected.has(entry.path)?[...pane.selected]:[entry.path];
-          e.dataTransfer?.setData('application/x-zm-sftp',JSON.stringify({side,paths}));
+          e.dataTransfer?.setData('application/x-zm-sftp',JSON.stringify({paneId:pane.id,paths}));
         };
         tbody.append(tr);
       }
@@ -676,9 +830,16 @@ async function sftpPage(view,path,rev){
   function renderTabs(){
     tabsEl.replaceChildren();
     for(const t of sftpTabs){
-      const leftLabel=t.left.machineId?serverName(t.left.machineId):vt('Chưa kết nối','Select host');
-      const rightLabel=t.right.machineId?serverName(t.right.machineId):vt('Chọn máy chủ','Select host');
-      const label=t.dualPane?(leftLabel+' ↔ '+rightLabel):leftLabel;
+      let label='';
+      if(t.panes.length===1){
+        label=t.panes[0].machineId?serverName(t.panes[0].machineId):vt('Chưa kết nối','Select host');
+      }else if(t.panes.length===2){
+        const l=t.panes[0].machineId?serverName(t.panes[0].machineId):vt('Chọn máy chủ','Select host');
+        const r=t.panes[1].machineId?serverName(t.panes[1].machineId):vt('Chọn máy chủ','Select host');
+        label=l+' ↔ '+r;
+      }else{
+        label=t.panes.length+' '+vt('khung SFTP','SFTP panes');
+      }
       const btn=document.createElement('div');
       btn.className='sftp-tab'+(t.id===activeSftpTabId?' active':'');
       btn.innerHTML='<span>'+escapeHTML(label)+'</span><button type="button" class="sftp-tab-close" aria-label="Đóng">×</button>';
@@ -700,31 +861,52 @@ async function sftpPage(view,path,rev){
 
   function renderStage(){
     const tab=getTab();
-    $('#sftp-toggle-dual').textContent=tab.dualPane?vt('Chế độ 1 khung','Single-pane'):vt('Chế độ 2 khung','Dual-pane');
-    $('#sftp-swap').hidden=!tab.dualPane;
-    stageEl.className='sftp-stage '+(tab.dualPane?'is-dual':'is-single');
+    const isDual=tab.dualPane!==false;
+    $('#sftp-toggle-dual').textContent=isDual?vt('Chế độ 1 khung','Single-pane'):vt('Chế độ 2 khung','Dual-pane');
+    $('#sftp-swap').hidden=!isDual||tab.panes.length<2;
+    $('#sftp-tile').hidden=!isDual||tab.panes.length<=1;
     stageEl.replaceChildren();
-    stageEl.append(renderPane('left',tab.left,tab.right));
-    if(tab.dualPane)stageEl.append(renderPane('right',tab.right,tab.left));
+    const canvas=document.createElement('div');
+    canvas.className='sftp-canvas';
+    const baseList=isDual?tab.panes:[tab.panes[0]];
+    const visible=tab.maximizedPaneId?baseList.filter(p=>p.id===tab.maximizedPaneId):baseList;
+    for(const p of (visible.length?visible:baseList)){
+      canvas.append(renderPane(p,tab));
+    }
+    stageEl.append(canvas);
   }
 
   $('#sftp-new-tab').onclick=()=>{
-    const tab=createSftpTab(servers,$('#hosts')?.value||servers[0].id);
+    const tab=createSftpTab(servers,'');
     renderTabs();
-    loadPane(tab.left,'');
-    if(tab.dualPane)loadPane(tab.right,'');
+    renderStage();
   };
   $('#sftp-toggle-dual').onclick=()=>{
     const tab=getTab();
-    tab.dualPane=!tab.dualPane;
+    tab.dualPane=!(tab.dualPane!==false);
+    tab.maximizedPaneId='';
     renderTabs();
     renderStage();
-    if(tab.dualPane&&!tab.right.cwd)loadPane(tab.right,'');
+    if(tab.dualPane&&tab.panes[1]?.machineId&&!tab.panes[1].cwd)loadPane(tab.panes[1],'');
   };
   $('#sftp-swap').onclick=()=>{
     const tab=getTab();
-    const tmp=tab.left;tab.left=tab.right;tab.right=tmp;
+    if(tab.panes.length<2)return;
+    const tmp=tab.panes[0];tab.panes[0]=tab.panes[1];tab.panes[1]=tmp;
+    const tmpRect={...tab.panes[0].rect};tab.panes[0].rect={...tab.panes[1].rect};tab.panes[1].rect=tmpRect;
     renderTabs();renderStage();
+  };
+  $('#sftp-tile').onclick=()=>{
+    const tab=getTab();
+    tab.maximizedPaneId='';
+    const rects=buildSftpAutoRects(tab.panes.length);
+    tab.panes.forEach((p,i)=>{p.rect={...rects[i]};});
+    renderStage();
+  };
+  $('#sftp-fullscreen').onclick=()=>{
+    shell.classList.toggle('is-fullscreen');
+    const isFs=shell.classList.contains('is-fullscreen');
+    $('#sftp-fullscreen').textContent=isFs?('🗗 '+vt('Thoát toàn màn hình','Exit fullscreen')):('⛶ '+vt('Toàn màn hình','Fullscreen'));
   };
   $('#sftp-xfer-clear').onclick=()=>{
     for(let i=sftpTransfers.length-1;i>=0;i--){
@@ -741,7 +923,6 @@ async function sftpPage(view,path,rev){
   renderTabs();
   renderDrawer();
   const activeTab=getTab();
-  if(!activeTab.left.cwd&&!activeTab.left.loading)loadPane(activeTab.left,'');
-  if(activeTab.dualPane&&!activeTab.right.cwd&&!activeTab.right.loading)loadPane(activeTab.right,'');
+  for(const p of activeTab.panes)if(p.machineId&&!p.cwd&&!p.loading)loadPane(p,'');
   renderStage();
 }

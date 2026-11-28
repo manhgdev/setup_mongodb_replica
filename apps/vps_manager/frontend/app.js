@@ -12,7 +12,7 @@ async function api(path,data,method){
   if(previewMode && path!=='vps/catalog' && path.startsWith('vps/'))return previewVps(path,data);
   const verb=method||(data?'POST':'GET');
   const base=path.split('?')[0],refresh=path.includes('refresh=true');
-  const cacheable=verb==='GET'&&path.startsWith('vps/')&&!refresh&&!path.startsWith('vps/jobs/')&&!path.endsWith('/metrics')&&path!=='vps/machines'&&path!=='vps/servers';
+  const cacheable=verb==='GET'&&path.startsWith('vps/')&&!refresh&&!path.startsWith('vps/jobs/')&&!path.startsWith('vps/sftp/')&&!path.includes('/sftp/')&&!path.endsWith('/metrics')&&path!=='vps/machines'&&path!=='vps/servers';
   if(cacheable&&vpsGetCache.has(path))return vpsGetCache.get(path);
   const wsHeaders=window.zmWorkspaceHelper?window.zmWorkspaceHelper.headers():{};
   const res=await fetch('/api/'+path,{method:verb,headers:{'Content-Type':'application/json','X-MongoDB-Manager':'1','X-CSRF-Token':csrf,...wsHeaders},body:data?JSON.stringify(data):undefined});
@@ -501,7 +501,7 @@ async function render(){
       $('#refresh-nginx').onclick=()=>{vpsGetCache.clear();render();};
       if($('#cf-token-btn'))$('#cf-token-btn').onclick=()=>{
         modal(vt('Token Cloudflare cho các VPS','Cloudflare API Token for servers'),
-          machineChoices(true)
+          machineChoices()
           +'<label class="field">'+vt('Cloudflare API Token (Zone:DNS:Edit)','Cloudflare API Token (Zone:DNS:Edit)')+'<span class="input-eye-wrap"><input name="token" type="password" required autocomplete="off" placeholder="cfut_…" value="'+escapeHTML(localStorage.getItem('vps-ssl-token')||'')+'"><button type="button" id="show-cf-batch-token" class="input-eye" aria-label="Hiện token"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button></span></label>'
           +'<label class="field">'+vt('Tên tệp credential (/etc/letsencrypt/zm-credentials/<tên>.ini)','Credential name (/etc/letsencrypt/zm-credentials/<name>.ini)')+'<input name="name" value="default" placeholder="default"></label>'
           +'<label><input type="checkbox" name="update_renewal" checked> '+vt('Cập nhật cho các hồ sơ Certbot Cloudflare hiện có (/etc/letsencrypt/renewal/*.conf)','Update existing Cloudflare Certbot renewal credentials')+'</label>',

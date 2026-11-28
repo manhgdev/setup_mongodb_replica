@@ -368,6 +368,7 @@
   },
   "python3-certbot-nginx": {
     "group": "SSL",
+    "hidden": true,
     "apt": [
       "python3-certbot-nginx"
     ],
@@ -386,6 +387,7 @@
   },
   "python3-certbot-apache": {
     "group": "SSL",
+    "hidden": true,
     "apt": [
       "python3-certbot-apache"
     ],
@@ -574,6 +576,7 @@
   },
   "certbot-venv": {
     "group": "SSL",
+    "hidden": true,
     "probe": "/opt/certbot/bin/certbot --version",
     "install": "python3 -m venv /opt/certbot; /opt/certbot/bin/pip install certbot certbot-nginx",
     "deps": [
@@ -584,6 +587,7 @@
   },
   "certbot-snap": {
     "group": "SSL",
+    "hidden": true,
     "probe": "snap list certbot | tail -n +2 | grep certbot",
     "install": "snap list core >/dev/null 2>&1 || snap install core; snap refresh core; snap install --classic certbot",
     "deps": [
@@ -638,6 +642,7 @@
   },
   "certbot-timer": {
     "group": "SSL",
+    "hidden": true,
     "probe": "for t in certbot.timer certbot-renew.timer snap.certbot.renew.timer; do if systemctl is-active --quiet \"$t\"; then echo \"$t\"; exit 0; fi; done; exit 1",
     "install": "for t in certbot.timer certbot-renew.timer snap.certbot.renew.timer; do if systemctl cat \"$t\" >/dev/null 2>&1; then systemctl enable --now \"$t\"; exit 0; fi; done; exit 1",
     "deps": [],

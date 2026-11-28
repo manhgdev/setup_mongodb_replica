@@ -382,6 +382,14 @@ def create_app(data_dir=None):
     def edit_machine(record_id: str, body: Machine):
         return save_machine(body, record_id)
 
+    @app.patch("/api/machines/{record_id}/cluster")
+    def set_machine_cluster(record_id: str, body: dict):
+        app.state.store.get("machines", record_id)
+        profile_id = str((body or {}).get("profile_id") or "").strip()
+        if profile_id:
+            app.state.store.get("profiles", profile_id)
+        return public_machine(app.state.store.update_fields("machines", record_id, {"profile_id": profile_id}))
+
     def password_machine(machine_id):
         machine = app.state.store.get("machines", machine_id)
         if machine["mode"] != "ssh" or machine.get("ssh_auth") != "password":

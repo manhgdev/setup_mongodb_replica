@@ -121,6 +121,31 @@ def test_sftp_crud_editor_chmod_upload_download_and_transfer(tmp_path):
         assert st["status"] == "succeeded"
         assert (root_b / "app/config.json").read_text() == '{"port": 8080}'
 
+        # 6b. Multi-target copy (1 -> many)
+        root_c = tmp_path / "vps_c"
+        root_c.mkdir()
+        multi = client.post(
+            "/api/vps/sftp/transfer-multi",
+            json={
+                "source_machine": m1,
+                "target_machines": [m2, "__local__"],
+                "paths": [str(root_a / "app")],
+                "target_dir": str(root_c),
+            },
+        )
+        assert multi.status_code == 202
+        rows = multi.json()
+        assert len(rows) == 2
+        for row in rows:
+            tid_m = row["job"]["id"]
+            for _ in range(40):
+                stm = client.get(f"/api/vps/sftp/transfers/{tid_m}").json()
+                if stm["status"] != "running":
+                    break
+                time.sleep(0.05)
+            assert stm["status"] == "succeeded"
+        assert (root_c / "app/config.json").read_text() == '{"port": 8080}'
+
         # 7. Delete recursive + root guard
         assert client.post(f"/api/vps/machines/{m1}/sftp/delete", json={"paths": ["/"]}).status_code == 422
         assert (

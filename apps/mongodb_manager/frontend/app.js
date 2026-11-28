@@ -23,6 +23,7 @@ const paths = {
   bolt:'M13 2L3 14h8l-1 8 11-13h-8z',
   book:'M12 5c-3-2-7-2-10-1v15c4-1 7-1 10 1 3-2 6-2 10-1V4c-3-1-7-1-10 1z M12 5v15',
   trash:'M3 6h18 M9 6V3h6v3 M5 6l1 15h12l1-15 M10 10v7 M14 10v7',
+  copy:'M9 9h11v11H9z M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1',
 };
 const icon = name => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${paths[name] || paths.grid}"/></svg>`;
 const nav = [
@@ -65,8 +66,8 @@ const memberTones = new Map([
 ]);
 const memberBadge = state => badge(state,memberTones.get(state)||'');
 const actionColors = {
-  'backup-preview':'info', 'member-edit':'info', 'machine-edit':'info', 'machine-hostname':'info', preflight:'info',
-  'prepared-node':'info', 'backup-repeat':'create', 'backup-new':'create', 'node-add':'create',
+  'backup-preview':'info', 'member-edit':'info', 'machine-edit':'info', 'machine-hostname':'info', 'machine-cluster':'configure', preflight:'info',
+  'prepared-node':'info', 'backup-repeat':'create', 'backup-new':'create', 'node-add':'create', 'machine-new':'create',
   'join-fresh':'create', 'add-member':'create', 'add-arbiter':'configure', 'write-concern':'configure',
   'step-down':'warning', restore:'warning', 'backup-delete':'remove',
   'member-remove':'remove', 'machine-delete':'remove', 'user-drop':'remove', 'database-drop':'remove',
@@ -276,8 +277,9 @@ function clustersPage(){
 }
 const hostnameBatches=new Set();
 function workspaceSSHHosts(){return machines().filter(m=>m.mode==='ssh'&&(m.profile_id||'')===(profile()?.id||''));}
+let mongoServerPage=1,mongoServerPageSize=Number(sessionStorage.getItem('mongo-srv-ps')||25),mongoServerQuery='';
 function machinePage(){
- let html=heading(uiText("Máy chủ"),uiText("Quản lý kết nối SSH, cài đặt và dịch vụ trên từng máy."),button(uiText("Copy IP VPS"),'machine-copy-ips','')+button(uiText("Thêm từ Seed list"),'machine-seed-bulk','plus')+button(uiText("Thêm máy chủ"),'machine-new','plus'));
+ let html=heading(uiText("Máy chủ"),uiText("Quản lý kết nối SSH, cài đặt và dịch vụ trên từng máy."),button(uiText("Copy IP VPS"),'machine-copy-ips','copy')+button('+ '+uiText("Thêm từ Seed list"),'machine-seed-bulk','')+button('+ '+uiText("Thêm máy chủ"),'machine-new',''));
  if(!profile())html+=onboardingCards();
  const linked=machines().filter(m=>!profile()||m.profile_id===profile().id||!m.profile_id);
  const members=profile()?(currentStatus?.members||profile().seeds.map(host=>({host}))):[];
@@ -286,9 +288,15 @@ function machinePage(){
  const memberRank=m=>{const st=findMember(m)?.state;return st==='PRIMARY'?0:st?1:m.profile_id?2:3;};
  const byHost=(a,b)=>String(a.name||a.host||a.mongo_endpoint||'').localeCompare(String(b.name||b.host||b.mongo_endpoint||''),undefined,{numeric:true,sensitivity:'base'});
  linked.sort((a,b)=>(memberRank(a)-memberRank(b))||byHost(a,b));
- const rows=linked.map((m,index)=>{
+ const q=mongoServerQuery.toLowerCase().trim();
+ const filteredLinked=q?linked.filter(m=>(m.name+' '+(m.host||'')+' '+(m.user||'')+' '+(m.mongo_endpoint||'')+' '+(profiles().find(p=>p.id===m.profile_id)?.name||'')).toLowerCase().includes(q)):linked;
+ const totalPages=Math.max(1,Math.ceil(filteredLinked.length/mongoServerPageSize));
+ if(mongoServerPage>totalPages)mongoServerPage=totalPages;
+ const start=(mongoServerPage-1)*mongoServerPageSize;
+ const pageItems=filteredLinked.slice(start,start+mongoServerPageSize);
+ const rows=pageItems.map((m,index)=>{
    const member=findMember(m);
-   return `<tr data-node="${esc(m.mongo_endpoint)}" tabindex="-1"><td class="row-number">${index+1}</td><td><div class="host-cell"><span class="server-icon">${icon('server')}</span><div><strong>${member?.id!=null?memberLabel(member,m.name):esc(m.name)}</strong>${m.mongo_endpoint?`<small class="mongo-address">${esc(m.mongo_endpoint)}</small>`:''}${member?.state?memberBadge(member.state):''}</div></div></td><td>${badge(m.mode==='ssh'?'SSH':'LOCAL','dark')} ${m.mode==='ssh'?`<span class="mono ssh-address">${esc(m.user)}@${esc(m.host.includes(':')?'['+m.host+']':m.host)}:${esc(m.port)}</span>`:''}</td><td class="mono">${esc(m.service)}<small>${esc(profiles().find(p=>p.id===m.profile_id)?.name||uiText("Chưa liên kết cụm"))}</small></td><td><div class="actions">${!member&&profile()&&currentStatus&&m.mode==='ssh'?button(uiText("Thêm làm Secondary"),'join-fresh','plus','small',`data-id="${esc(m.id)}"`):''}${button(uiText("Kiểm tra"),'preflight','pulse','small',`data-id="${esc(m.id)}"`)}${button(uiText("Dịch vụ"),'service','','small',`data-id="${esc(m.id)}"`)}${button(dataLabel('Nhật ký','Logs'),'logs','terminal','small',`data-id="${esc(m.id)}"`)}${button(uiText("Sửa"),'machine-edit','','small',`data-id="${esc(m.id)}"`)}${button(uiText("Xoá"),'machine-delete','trash','small danger',`data-id="${esc(m.id)}"`)}</div></td></tr>`;
+   return `<tr data-node="${esc(m.mongo_endpoint)}" tabindex="-1"><td class="row-number">${start+index+1}</td><td><div class="host-cell"><span class="server-icon">${icon('server')}</span><div><strong>${member?.id!=null?memberLabel(member,m.name):esc(m.name)}</strong>${m.mongo_endpoint?`<small class="mongo-address">${esc(m.mongo_endpoint)}</small>`:''}${member?.state?memberBadge(member.state):''}</div></div></td><td>${badge(m.mode==='ssh'?'SSH':'LOCAL','dark')} ${m.mode==='ssh'?`<span class="mono ssh-address">${esc(m.user)}@${esc(m.host.includes(':')?'['+m.host+']':m.host)}:${esc(m.port)}</span>`:''}</td><td class="mono">${esc(m.service)}<small>${esc(profiles().find(p=>p.id===m.profile_id)?.name||uiText("Chưa liên kết cụm"))}</small></td><td><div class="actions">${!member&&profile()&&currentStatus&&m.mode==='ssh'?button(uiText("Thêm làm Secondary"),'join-fresh','plus','small',`data-id="${esc(m.id)}"`):''}${button(uiText("Kiểm tra"),'preflight','pulse','small',`data-id="${esc(m.id)}"`)}${button(uiText("Dịch vụ"),'service','','small',`data-id="${esc(m.id)}"`)}${button(dataLabel('Nhật ký','Logs'),'logs','terminal','small',`data-id="${esc(m.id)}"`)}${button(uiText("Sửa"),'machine-edit','','small',`data-id="${esc(m.id)}"`)}${button(uiText("Xoá"),'machine-delete','trash','small danger',`data-id="${esc(m.id)}"`)}</div></td></tr>`;
  });
  const discovered=[];
  const sortedMembers=[...members].sort((a,b)=>((a.state==='PRIMARY'?0:1)-(b.state==='PRIMARY'?0:1))||String(profile()?.member_hostnames?.[a.host]||a.host||'').localeCompare(String(profile()?.member_hostnames?.[b.host]||b.host||''),undefined,{numeric:true,sensitivity:'base'}));
@@ -300,8 +308,11 @@ function machinePage(){
  const headers=[uiText("STT"),uiText("MÁY CHỦ"),uiText("KẾT NỐI"),'SERVICE',uiText("THAO TÁC")];
  const fetching=hostnameBatches.has(profile()?.id||'');
  const hostnameAction=workspaceSSHHosts().length?button(fetching?dataLabel('Đang lấy tên…','Reading hostnames…'):dataLabel('Lấy tên từ VPS','Get VPS hostnames'),'machine-hostname','refresh','small',fetching?'disabled':''):'';
+ const clusterAction=linked.length?button(dataLabel('Gán cụm','Assign cluster'),'machine-cluster','cluster','small'):'';
+ const searchAction=linked.length?`<input class="search-box" type="search" id="find-mongo-server" value="${esc(mongoServerQuery)}" placeholder="${esc(dataLabel('Tìm máy chủ, IP…','Find server, IP…'))}">`:'';
+ const pagerHtml=filteredLinked.length?`<div class="panel-foot" id="mongo-srv-pager"><div class="actions"><label style="font-size:11px;display:inline-flex;align-items:center;gap:6px">${esc(dataLabel('Hiển thị','Show'))} <select id="mongo-srv-ps" style="padding:3px 6px;border:1px solid var(--line);border-radius:6px">${[25,50,100].map(n=>`<option value="${n}"${mongoServerPageSize===n?' selected':''}>${n}</option>`).join('')}</select></label><span>${esc(dataLabel('Trang ','Page '))}${mongoServerPage}/${totalPages} (${filteredLinked.length} ${esc(dataLabel('máy','servers'))})</span></div><div class="actions"><button type="button" class="button small" data-act="mongo-srv-prev" ${mongoServerPage<=1?'disabled':''}>‹ ${esc(dataLabel('Trước','Prev'))}</button><button type="button" class="button small" data-act="mongo-srv-next" ${mongoServerPage>=totalPages?'disabled':''}>${esc(dataLabel('Sau','Next'))} ›</button></div></div>`:'';
 
- html+=panel(uiText("Máy chủ của bạn"),rows.length?table(headers,rows):empty(uiText("Thêm máy chủ đầu tiên"),uiText("Kết nối bằng mật khẩu SSH hoặc key/agent."),'machine-new',uiText("Thêm máy chủ"),'server'), '', `<div class="actions">${hostnameAction}</div>`);
+ html+=panel(uiText("Máy chủ của bạn"),rows.length?(table(headers,rows)+pagerHtml):(linked.length?`<div class="empty"><p>${esc(dataLabel('Không tìm thấy máy chủ phù hợp.','No matching servers.'))}</p></div>`:empty(uiText("Thêm máy chủ đầu tiên"),uiText("Kết nối bằng mật khẩu SSH hoặc key/agent."),'machine-new',uiText("Thêm máy chủ"),'server')), '', `<div class="actions">${searchAction}${clusterAction}${hostnameAction}</div>`);
  if(discovered.length)html+=panel(uiText("Thành viên chưa lưu hồ sơ máy"),table(headers,discovered));
 
  if(!profile())html+=`<div class="cards">${feature(uiText("Cài MongoDB Server"),uiText("Kiểm tra repository và cài package Community 8.0 hoặc 9.0 đúng phiên bản Ubuntu."),'server','install',uiText("Cài package"))}${feature(uiText("Tạo replica set"),uiText("Tạo instance mới với service riêng, keyfile và tài khoản quản trị."),'cluster','setup',uiText("Bắt đầu setup"))}${feature(uiText("Xem nhật ký dịch vụ"),uiText("Đọc 100 dòng journal gần nhất của service đã cấu hình."),'terminal','logs',uiText("Mở nhật ký"))}</div>`;
@@ -1533,6 +1544,67 @@ document.addEventListener('click',async event=>{
       showRecord('machines',existing||null,{mongo_endpoint:normalized,ssh_auth:'password'});
       return;
     }
+    if(act==='mongo-srv-prev'){if(mongoServerPage>1){mongoServerPage--;render();}return;}
+    if(act==='mongo-srv-next'){mongoServerPage++;render();return;}
+    if(act==='machine-cluster'){
+      if(demo){toast(uiText("Hồ sơ xem thử không được lưu. Chuyển sang dữ liệu thật để kết nối."));return;}
+      const all=machines();
+      if(!all.length){toast(dataLabel('Chưa có máy chủ nào.','No servers yet.'));return;}
+      const cur=profile()?.id||'';
+      const draft=new Map(all.map(m=>[m.id,m.profile_id||'']));
+      const checkedIds=new Set();
+      const clusterOpts=sel=>`<option value="" ${!sel?'selected':''}>${esc(dataLabel('Độc lập (không thuộc cụm)','Standalone (unlinked)'))}</option>`+profiles().map(p=>`<option value="${esc(p.id)}" ${p.id===sel?'selected':''}>${esc(p.name)}</option>`).join('');
+      const filterOpts=`<option value="__all__">${esc(dataLabel('Tất cả trạng thái','All servers'))}</option><option value="">${esc(dataLabel('Chỉ máy độc lập','Standalone only'))}</option>`+profiles().map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
+      modal(dataLabel('Gán / đổi / gỡ cụm cho máy chủ','Assign, change or unlink cluster'),`<form id="cluster-assign-form"><div class="modal-body"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input class="search-box" type="search" id="cluster-assign-find" style="flex:1;min-width:180px;max-width:none" placeholder="${esc(dataLabel('Tìm máy chủ, IP…','Find server, IP…'))}"><select id="cluster-assign-filter" style="padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:#fff">${filterOpts}</select></div><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px;padding:8px 10px;background:#f7faf8;border:1px solid var(--line);border-radius:8px"><button type="button" class="button small" id="ca-pick-all">${esc(dataLabel('Chọn tất cả','Select all'))}</button><button type="button" class="button small" id="ca-pick-none">${esc(dataLabel('Bỏ chọn','Clear'))}</button><select id="ca-batch-target" style="flex:1;min-width:160px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:#fff">${clusterOpts(cur)}</select><button type="button" class="button small" data-tone="configure" id="ca-batch-apply">${esc(dataLabel('Gán các máy đã tick','Apply to checked'))}</button></div><small id="cluster-assign-meta" style="display:block;margin-top:6px;color:var(--muted)"></small><div id="cluster-assign-list" style="margin-top:6px;max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:6px 10px"></div><div id="form-error"></div></div><div class="modal-footer">${button(uiText("Hủy"),'modal-close')}<button class="button primary" type="submit">${icon('check')}${uiText("Xác nhận")}</button></div></form>`);
+      const listBox=$('#cluster-assign-list'),metaBox=$('#cluster-assign-meta'),findBox=$('#cluster-assign-find'),filterBox=$('#cluster-assign-filter');
+      const getMatched=()=>{
+        const q=(findBox.value||'').toLowerCase().trim(),f=filterBox.value;
+        return all.filter(m=>{
+          const pid=draft.get(m.id)||'';
+          if(f!=='__all__'&&pid!==f)return false;
+          return !q||(m.name+' '+(m.host||'')+' '+(m.mongo_endpoint||'')).toLowerCase().includes(q);
+        });
+      };
+      const updateMeta=(shownLen,totalLen)=>{
+        const changed=all.filter(m=>(draft.get(m.id)||'')!==(m.profile_id||'')).length;
+        metaBox.textContent=dataLabel('Đã tick ','Checked ')+checkedIds.size+' · '+dataLabel('Sẽ đổi ','Changed ')+changed+' · '+dataLabel('Hiển thị ','Showing ')+shownLen+'/'+totalLen;
+      };
+      const drawModalList=()=>{
+        const matched=getMatched(),shown=matched.slice(0,100);
+        listBox.innerHTML=shown.map(m=>{
+          const curPid=draft.get(m.id)||'',dirty=curPid!==(m.profile_id||'');
+          return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 0;border-bottom:1px solid #eef2ee"><label style="display:flex;align-items:center;gap:8px;min-width:0;flex:1;cursor:pointer"><input type="checkbox" value="${esc(m.id)}" ${checkedIds.has(m.id)?'checked':''}><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><strong>${esc(m.name)}</strong>${m.host?` <small style="color:var(--muted)">${esc(m.host)}</small>`:''}</span></label><select data-mid="${esc(m.id)}" style="padding:4px 8px;border:1px solid ${dirty?'var(--green)':'var(--line)'};border-radius:6px;background:${dirty?'#edf7f1':'#fff'};max-width:190px">${clusterOpts(curPid)}</select></div>`;
+        }).join('')||`<small>${esc(dataLabel('Không có máy chủ phù hợp.','No matching servers.'))}</small>`;
+        updateMeta(shown.length,matched.length);
+      };
+      listBox.onchange=e=>{
+        if(e.target.type==='checkbox'){if(e.target.checked)checkedIds.add(e.target.value);else checkedIds.delete(e.target.value);drawModalList();}
+        else if(e.target.dataset.mid){draft.set(e.target.dataset.mid,e.target.value);drawModalList();}
+      };
+      $('#ca-pick-all').onclick=()=>{for(const m of getMatched())checkedIds.add(m.id);drawModalList();};
+      $('#ca-pick-none').onclick=()=>{checkedIds.clear();drawModalList();};
+      $('#ca-batch-apply').onclick=()=>{
+        if(!checkedIds.size){$('#form-error').textContent=dataLabel('Tick ít nhất một máy chủ để gán hàng loạt, hoặc đổi trực tiếp ở từng dòng.','Check at least one server for batch apply, or change each row directly.');return;}
+        $('#form-error').textContent='';
+        const target=$('#ca-batch-target').value;
+        for(const id of checkedIds)draft.set(id,target);
+        drawModalList();
+      };
+      findBox.oninput=filterBox.onchange=drawModalList;
+      drawModalList();
+      $('#cluster-assign-form').onsubmit=async e=>{
+        e.preventDefault();
+        const updates=all.filter(m=>(draft.get(m.id)||'')!==(m.profile_id||''));
+        if(!updates.length){$('#modal').close();return;}
+        const btn=e.submitter;btn.disabled=true;
+        try{
+          await Promise.all(updates.map(m=>api('/machines/'+encodeURIComponent(m.id)+'/cluster',{method:'PATCH',body:JSON.stringify({profile_id:draft.get(m.id)||''})})));
+          $('#modal').close();toast(uiText("Đã lưu hồ sơ."));await refreshState();await render();
+        }catch(err){$('#form-error').textContent=err.message;}
+        finally{btn.disabled=false;}
+      };
+      return;
+    }
     if(act==='machine-hostname'){
       if(demo){toast(dataLabel('Chọn một VPS thật để đọc hostname qua SSH.','Select a real VPS to read its SSH hostname.'));return;}
       const pid=profile()?.id||'',hosts=workspaceSSHHosts();
@@ -1848,3 +1920,12 @@ function setupSshKeyDropzone(root){
     inp.addEventListener('paste',e=>{const txt=e.clipboardData?.getData('text')||'';if(txt.includes('PRIVATE KEY')){e.preventDefault();importText('pasted_key',txt);}});
   }
 }
+document.addEventListener('input',e=>{
+  if(e.target?.id!=='find-mongo-server')return;
+  mongoServerQuery=e.target.value;mongoServerPage=1;
+  render().then(()=>{const inp=$('#find-mongo-server');if(inp){inp.focus();inp.setSelectionRange(inp.value.length,inp.value.length);}});
+});
+document.addEventListener('change',e=>{
+  if(e.target?.id!=='mongo-srv-ps')return;
+  mongoServerPageSize=Number(e.target.value);sessionStorage.setItem('mongo-srv-ps',String(mongoServerPageSize));mongoServerPage=1;render();
+});

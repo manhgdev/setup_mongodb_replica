@@ -364,6 +364,21 @@ def register(app):
     def servers():
         return [public_machine(m) for m in app.state.store.all("machines")]
 
+    @app.get("/api/vps/clusters")
+    def clusters():
+        return [{"id": p["id"], "name": p.get("name", p["id"])} for p in app.state.store.all("profiles")]
+
+    @app.patch("/api/vps/servers/{ident}/cluster")
+    def set_server_cluster(ident: str, body: dict):
+        record("machines", ident)
+        profile_id = str((body or {}).get("profile_id") or "").strip()
+        if profile_id:
+            try:
+                app.state.store.get("profiles", profile_id)
+            except KeyError:
+                raise HTTPException(422, "Không tìm thấy cụm MongoDB.") from None
+        return public_machine(app.state.store.update_fields("machines", ident, {"profile_id": profile_id}))
+
     @app.post("/api/vps/servers/{ident}/reveal-password")
     def reveal_server_password(ident: str):
         machine = record("machines", ident)
@@ -382,7 +397,13 @@ def register(app):
     def edit_server(ident: str, body: Machine):
         previous = record("machines", ident)
         values = body.model_dump()
-        values.update(profile_id=previous.get("profile_id", ""), service=previous.get("service", "mongod"))
+        next_profile = (body.profile_id or "").strip()
+        if next_profile:
+            try:
+                app.state.store.get("profiles", next_profile)
+            except KeyError:
+                raise HTTPException(422, "Không tìm thấy cụm MongoDB.") from None
+        values.update(profile_id=next_profile, service=previous.get("service", "mongod"))
         if body.mode == "ssh" and body.ssh_auth == "password":
             if body.ssh_password is None:
                 values["ssh_password"] = previous.get("ssh_password", "")
@@ -1026,6 +1047,12 @@ def register(app):
         target_dir: str = Field(min_length=1, max_length=4096)
         op: Literal["copy", "move"] = "copy"
 
+    class SftpMultiTransferBody(BaseModel):
+        source_machine: str = Field(min_length=1)
+        target_machines: list[str] = Field(min_length=1)
+        paths: list[str] = Field(min_length=1)
+        target_dir: str = Field(min_length=1, max_length=4096)
+
     @app.get("/api/vps/machines/{ident}/sftp/list")
     def sftp_list(ident: str, path: str = Query(default="", max_length=4096), show_hidden: bool = False):
         try:
@@ -1119,6 +1146,23 @@ def register(app):
             )
         except (OSError, ValueError, RuntimeError) as exc:
             raise HTTPException(422, str(exc)) from None
+
+    @app.post("/api/vps/sftp/transfer-multi", status_code=202)
+    def sftp_transfer_multi(body: SftpMultiTransferBody):
+        src = sftp_machine(body.source_machine)
+        ws_id = current_workspace_id()
+        results = []
+        for target_id in dict.fromkeys(body.target_machines):
+            try:
+                dst = sftp_machine(target_id)
+                job = sftp_transfers.start(
+                    ws_id, src, dst, body.paths, body.target_dir, op="copy", store=app.state.store
+                )
+                results.append({"machine": target_id, "job": job})
+            except (HTTPException, OSError, ValueError, RuntimeError) as exc:
+                detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+                results.append({"machine": target_id, "error": detail})
+        return results
 
     @app.get("/api/vps/sftp/transfers/{transfer_id}")
     def sftp_transfer_status(transfer_id: str):
