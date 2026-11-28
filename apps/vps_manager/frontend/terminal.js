@@ -63,7 +63,11 @@ function createWorkspace(machines,title){
 function disposePane(paneId){
   const pane=termPanes.get(paneId);
   if(!pane)return;
-  try{pane.ws?.close();}catch{}
+  if(pane.ws){
+    const old=pane.ws;pane.ws=null;
+    old.onmessage=old.onerror=old.onclose=null;
+    try{old.close();}catch{}
+  }
   try{pane.term?.dispose();}catch{}
   pane.el?.remove();
   termPanes.delete(paneId);
@@ -145,7 +149,11 @@ function syncPaneChrome(pane){
 
 function connectPane(pane){
   if(!pane?.term)return;
-  try{pane.ws?.close();}catch{}
+  if(pane.ws){
+    const old=pane.ws;pane.ws=null;
+    old.onmessage=old.onerror=old.onclose=null;
+    try{old.close();}catch{}
+  }
   pane.status='connecting';
   pane.term.reset();
   pane.fitAddon?.fit();
@@ -179,6 +187,7 @@ function connectPane(pane){
   pane.ws=ws;
   pane.term.writeln('\x1b[90mĐang kết nối SSH tới '+pane.subtitle+'…\x1b[0m');
   ws.onmessage=ev=>{
+    if(pane.ws!==ws)return;
     let msg;try{msg=JSON.parse(ev.data);}catch{return;}
     if(msg.type==='data')pane.term.write(msg.data);
     else if(msg.type==='status'&&msg.state==='connected'){
@@ -196,10 +205,13 @@ function connectPane(pane){
     }
   };
   ws.onerror=()=>{
+    if(pane.ws!==ws)return;
     if(pane.status==='connecting')pane.term.writeln('\r\n\x1b[31m✗ '+vt('Không thể mở WebSocket SSH (kiểm tra proxy Nginx/Cloudflare cho WebSocket Upgrade).','Unable to open SSH WebSocket (check Nginx/Cloudflare WebSocket Upgrade proxy).')+'\x1b[0m');
     pane.status='error';syncPaneChrome(pane);updateTermHeader();
   };
   ws.onclose=ev=>{
+    if(pane.ws!==ws)return;
+    if(ev.code===4401){managerLogin();return;}
     if(pane.status==='connecting'){
       pane.status='error';syncPaneChrome(pane);updateTermHeader();
       pane.term.writeln('\r\n\x1b[31m✗ '+vt('WebSocket bị đóng trước khi kết nối (mã '+ev.code+(ev.reason?': '+ev.reason:'')+').','WebSocket closed before connecting (code '+ev.code+(ev.reason?': '+ev.reason:'')+').')+'\x1b[0m');
@@ -312,6 +324,7 @@ async function terminalPage(view,path,rev){
     ['htop','htop','monitor'],
     ['df -h','df -h','disk'],
     ['free -h','free -h','disk'],
+    ['bench.sh','curl -Lso- bench.sh | bash','monitor'],
     ['nginx -t','sudo nginx -t','web'],
     ['docker ps','docker ps','web'],
     ['ufw','sudo ufw status','sec'],

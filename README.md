@@ -395,3 +395,7 @@ Trong **Thêm tên miền**, dùng **Domain bổ sung** cho các tên cùng ph�
 Tổng quan VPS và Software Center dùng chung bản thông tin gần nhất của từng máy, lưu trong kho dữ liệu mã hóa của Manager. Sau 5 phút, khi mở màn hình, Manager hiển thị bản đã lưu rồi đọc lại qua SSH. Nút **Làm mới** kiểm tra ngay. Trước khi xác nhận cài phần mềm, popup kiểm tra trực tiếp các máy đã chọn.
 
 Khi thêm hoặc kiểm tra kết nối máy chủ bằng file SSH key đã nhập (`db://ssh-keys/<id>`), bộ nạp khóa ưu tiên workspace đang hoạt động và bỏ qua các store không chứa khóa thay vì báo lỗi `Không tìm thấy hồ sơ hoặc tác vụ.`.
+
+Khi phiên đăng nhập hết hạn hoặc bị đăng xuất (`HTTP 401`, WebSocket `4401`, hoặc quay lại tab sau khi hết phiên), cả MongoDB Manager và VPS Manager đều tự chuyển về `/login` thay vì tiếp tục ở lại giao diện và báo lỗi ở các thao tác tiếp theo.
+
+Thanh lệnh nhanh trên **SSH Terminal** có thêm nút `bench.sh` chạy `curl -Lso- bench.sh | bash`. Khi kết nối lại hoặc đóng khung terminal, socket cũ được ngắt sạch để không báo lỗi `WebSocket bị đóng trước khi kết nối (mã 1005)` đè lên phiên mới.

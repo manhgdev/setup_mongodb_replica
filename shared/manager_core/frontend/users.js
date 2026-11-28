@@ -28,6 +28,7 @@ window.zmUsersPage = async function ({ container, csrfToken, auth, en = false })
       headers: { 'Content-Type': 'application/json', 'X-MongoDB-Manager': '1', 'X-CSRF-Token': csrfToken || '' },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
+    if (res.status === 401) { managerLogin(); throw new Error('HTTP 401'); }
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'HTTP ' + res.status);
     return data;

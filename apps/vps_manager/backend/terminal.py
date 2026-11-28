@@ -185,32 +185,33 @@ async def run_terminal_session(websocket, machine: dict, cols: int = 100, rows: 
             code = channel.recv_exit_status() if channel.exit_status_ready() else 0
             loop.call_soon_threadsafe(queue.put_nowait, ("exit", code))
 
-    threading.Thread(target=reader, daemon=True).start()
-    await websocket.send_json({"type": "status", "state": "connected"})
-
-    async def writer():
-        while True:
-            kind, val = await queue.get()
-            if kind == "data":
-                parts = [val]
-                exit_code = None
-                while not queue.empty() and len(parts) < 16:
-                    nk, nv = queue.get_nowait()
-                    if nk == "data":
-                        parts.append(nv)
-                    elif nk == "exit":
-                        exit_code = nv
-                        break
-                await websocket.send_json({"type": "data", "data": "".join(parts)})
-                if exit_code is not None:
-                    await websocket.send_json({"type": "exit", "code": exit_code})
-                    break
-            elif kind == "exit":
-                await websocket.send_json({"type": "exit", "code": val})
-                break
-
-    write_task = asyncio.create_task(writer())
+    write_task = None
     try:
+        threading.Thread(target=reader, daemon=True).start()
+        await websocket.send_json({"type": "status", "state": "connected"})
+
+        async def writer():
+            while True:
+                kind, val = await queue.get()
+                if kind == "data":
+                    parts = [val]
+                    exit_code = None
+                    while not queue.empty() and len(parts) < 16:
+                        nk, nv = queue.get_nowait()
+                        if nk == "data":
+                            parts.append(nv)
+                        elif nk == "exit":
+                            exit_code = nv
+                            break
+                    await websocket.send_json({"type": "data", "data": "".join(parts)})
+                    if exit_code is not None:
+                        await websocket.send_json({"type": "exit", "code": exit_code})
+                        break
+                elif kind == "exit":
+                    await websocket.send_json({"type": "exit", "code": val})
+                    break
+
+        write_task = asyncio.create_task(writer())
         while True:
             msg = await websocket.receive_json()
             mtype = msg.get("type")
@@ -226,7 +227,8 @@ async def run_terminal_session(websocket, machine: dict, cols: int = 100, rows: 
         pass
     finally:
         stop.set()
-        write_task.cancel()
+        if write_task is not None:
+            write_task.cancel()
         try:
             channel.close()
         except Exception:

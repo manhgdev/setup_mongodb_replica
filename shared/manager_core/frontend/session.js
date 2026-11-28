@@ -1,8 +1,28 @@
+let _zmRedirectingToLogin=false;
 function managerLogin(editAccount=false){
+  if(_zmRedirectingToLogin)return;
+  _zmRedirectingToLogin=true;
   const params=new URLSearchParams({next:location.pathname+location.search+location.hash});
   if(editAccount)params.set('account','1');
   location.replace('/login?'+params);
 }
+
+let _zmLastAuthCheck=0;
+async function _zmVerifySession(){
+  const now=Date.now();
+  if(now-_zmLastAuthCheck<30000||_zmRedirectingToLogin)return;
+  _zmLastAuthCheck=now;
+  try{
+    const res=await fetch('/api/auth/status',{headers:{'X-MongoDB-Manager':'1'},cache:'no-store'});
+    if(res.status===401){managerLogin();return;}
+    if(res.ok){
+      const data=await res.json().catch(()=>null);
+      if(data&&data.authenticated===false)managerLogin();
+    }
+  }catch{}
+}
+window.addEventListener('focus',_zmVerifySession);
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')_zmVerifySession();});
 
 window.addEventListener('storage',event=>{
   if(event.key==='mongo-manager-demo')location.reload();
@@ -12,6 +32,7 @@ window.zmStorageModal=async function({csrfToken,openModal,closeModal,onSwitched,
   const t=(vi,e)=>en?e:vi;
   const req=async(url,body)=>{
     const res=await fetch(url,{method:body?'POST':'GET',headers:{'Content-Type':'application/json','X-MongoDB-Manager':'1','X-CSRF-Token':csrfToken||'',...(window.zmWorkspaceHelper?window.zmWorkspaceHelper.headers():{})},body:body?JSON.stringify(body):undefined});
+    if(res.status===401){managerLogin();throw new Error('HTTP 401');}
     const data=await res.json().catch(()=>({}));
     if(!res.ok)throw new Error(typeof data.detail==='string'?data.detail:'HTTP '+res.status);
     return data;

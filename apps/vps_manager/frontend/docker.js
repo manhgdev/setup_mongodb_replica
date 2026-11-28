@@ -189,6 +189,7 @@ async function renderPortableStack(body,path,rev,guideHtml=''){
     try{
       const wsHeaders=window.zmWorkspaceHelper?window.zmWorkspaceHelper.headers():{};
       const res=await fetch('/api/vps/docker/bundles/upload?'+new URLSearchParams({filename:file.name}),{method:'POST',headers:{'Content-Type':'application/gzip','X-MongoDB-Manager':'1','X-CSRF-Token':csrf,...wsHeaders},body:file});
+      if(res.status===401){managerLogin();throw new Error('HTTP 401');}
       const data=await res.json();
       if(!res.ok)throw new Error(data.detail||vt('Tải lên thất bại','Upload failed'));
       uploadMsg.textContent='';uploadForm.reset();
