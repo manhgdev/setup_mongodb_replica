@@ -64,7 +64,7 @@ function hostnameControls(view,path){
   input.oninput=()=>input.setCustomValidity('');
 }
 
-function overviewPage(view,info,path){
+function overviewPage(view,info,path,{live=true}={}){
   const gib=n=>(n/2**30).toFixed(1)+' GiB';
   const resource=(label,value,caption,ratio)=>`<section><small>${label}</small><strong>${escapeHTML(value)}</strong>
     ${Number.isFinite(ratio)?'<progress max="1" value="'+Math.max(0,Math.min(1,ratio))+'" aria-label="'+label+'"></progress>':''}
@@ -116,22 +116,28 @@ function overviewPage(view,info,path){
     if(sys)sys.innerHTML=renderUptime({...info,...m});
     if(procsEl&&m.top_processes)procsEl.innerHTML=renderProcs(m.top_processes);
   };
-  if(info.top_processes===undefined){
-    populate($('#ov-processes'),path+'/metrics',fresh=>renderProcs(fresh.top_processes||[]));
-  }else{
+  if(window._vpsMetricsTimer){clearInterval(window._vpsMetricsTimer);window._vpsMetricsTimer=null;}
+  if(live){
+    if(info.top_processes===undefined){
+      populate($('#ov-processes'),path+'/metrics',fresh=>renderProcs(fresh.top_processes||[]));
+    }else{
+      $('#ov-processes').innerHTML=renderProcs(info.top_processes);
+    }
+    let polling=false,failures=0;
+    window._vpsMetricsTimer=setInterval(async()=>{
+      if(!view.isConnected||endpoint()!==path||(location.hash&&location.hash!=='#overview')){clearInterval(window._vpsMetricsTimer);window._vpsMetricsTimer=null;return;}
+      if(document.hidden||polling||failures>=2)return;
+      polling=true;
+      try{
+        const m=await api(path+'/metrics');
+        failures=0;
+        if(view.isConnected&&endpoint()===path)applyMetrics(m);
+      }catch{failures++;}
+      finally{polling=false;}
+    },10000);
+  }else if(info.top_processes!==undefined){
     $('#ov-processes').innerHTML=renderProcs(info.top_processes);
   }
-  let polling=false;
-  const timer=setInterval(async()=>{
-    if(!view.isConnected||endpoint()!==path||(location.hash&&location.hash!=='#overview')){clearInterval(timer);return;}
-    if(document.hidden||polling)return;
-    polling=true;
-    try{
-      const m=await api(path+'/metrics');
-      if(view.isConnected&&endpoint()===path)applyMetrics(m);
-    }catch{}
-    finally{polling=false;}
-  },3000);
   async function populate(el,url,format){
     el.textContent=vt('Đang kiểm tra…','Checking…');
     try{const data=await api(url);if(el.isConnected)el.innerHTML=format(data);}

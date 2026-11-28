@@ -545,6 +545,7 @@ async function render(){
       list.onclick=e=>{const button=e.target.closest('[data-action]');if(!button)return;const routes=groups[Number(button.closest('[data-row]').dataset.row)];const site=representative(routes);if(button.dataset.action==='renew-ssl'&&routes.filter(r=>r.https).length>1){const tls=routes.filter(r=>r.https);modal(labels['renew-ssl'],'<label class="field">Domain<select name="route">'+tls.map((r,i)=>'<option value="'+i+'">'+escapeHTML(r.domain+' · '+(r.renewal_names||[]).join(', '))+'</option>').join('')+'</select></label>',form=>{const r=tls[Number(form.get('route'))];return submit('renew-ssl',{file_id:r.file_id,domain:r.domain,revision:r.revision});});return;}if(button.dataset.action==='detail'||(button.dataset.action==='edit'&&!(site.managed&&site.port))){showWebsite(site,path,rev).catch(err=>{if(revision===rev)view.textContent=err.message;});}else openSite(button.dataset.action,site);};
       return;
     }
+    if(window._vpsMetricsTimer){clearInterval(window._vpsMetricsTimer);window._vpsMetricsTimer=null;}
     const target=section==='software'?softwarePage(view,path,$('#hosts').value):view;
     if(!target)return;
     const snapKey='vps-snap:'+path;
@@ -553,7 +554,7 @@ async function render(){
       const saved=JSON.parse(localStorage.getItem(snapKey)||'null');
       if(saved&&!vpsGetCache.has(path)){
         info=saved;
-        if(section==='overview')overviewPage(view,info,path);else softwareCenter(target,info);
+        if(section==='overview')overviewPage(view,info,path,{live:false});else softwareCenter(target,info);
       }else{
         target.innerHTML='<div class="loading"><span class="spinner"></span>'+escapeHTML(vt('Đang đọc thông tin VPS…','Reading server information…'))+'</div>';
       }
@@ -600,7 +601,7 @@ async function render(){
         finally{refresh.disabled=false;}
       }
       refresh.onclick=()=>update(false);
-      if(info.stale)update(true);
+      if(section==='software'&&info.stale)update(true);
       else if(section==='overview' && !info.disk_total && !legacySnapshots.has(path)){
         legacySnapshots.add(path);update(true);
       }

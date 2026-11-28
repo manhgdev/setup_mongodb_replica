@@ -15,10 +15,17 @@ function finish(){
 let csrf = '';
 let allowRegistration = true;
 async function api(path, data){
-  const response = await fetch('/api'+path,{method:data?'POST':'GET',headers:{'Content-Type':'application/json','X-MongoDB-Manager':'1','X-CSRF-Token':csrf},body:data?JSON.stringify(data):undefined});
-  const result = await response.json();
-  if(!response.ok)throw new Error(typeof result.detail==='string'?result.detail:'HTTP '+response.status);
-  return result;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 12000);
+  try{
+    const response = await fetch('/api'+path,{method:data?'POST':'GET',headers:{'Content-Type':'application/json','X-MongoDB-Manager':'1','X-CSRF-Token':csrf},body:data?JSON.stringify(data):undefined,signal:ctrl.signal});
+    const result = await response.json();
+    if(!response.ok)throw new Error(typeof result.detail==='string'?result.detail:'HTTP '+response.status);
+    return result;
+  }catch(err){
+    if(err&&err.name==='AbortError')throw new Error(dataLabel('Kết nối tới máy chủ quá thời gian (12s). Thử tải lại trang.','Server request timed out (12s). Please reload.'));
+    throw err;
+  }finally{clearTimeout(timer);}
 }
 function languagePicker(){
   return '<select class="language-picker" data-language aria-label="Language"><option value="vi" '+(!en?'selected':'')+'>Tiếng Việt</option><option value="en" '+(en?'selected':'')+'>English</option></select>';
