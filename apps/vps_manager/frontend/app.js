@@ -224,7 +224,21 @@ async function render(){
       view.innerHTML='<article class="panel"><div class="panel-head"><input class="domain-search" type="search" id="find-site" aria-label="Domain" placeholder="'+vt('Tìm tên miền…','Find domain…')+'"><div class="actions"><button id="refresh-nginx" class="button" data-tone="info"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg> '+vt('Làm mới','Refresh')+'</button><button id="reload-nginx" class="button" data-tone="configure"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg> Reload Nginx</button><button id="copy-sites" class="button" data-tone="info"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> '+vt('Copy giữa các VPS','Copy across servers')+'</button><button id="delete-selected-sites" class="button" data-tone="remove" hidden>'+vt('Xóa đã chọn','Delete selected')+'</button><button id="create-site" class="button" data-tone="create"><span aria-hidden="true">+</span> Thêm tên miền</button></div></div><div class="ssl-renew-bar"><span class="ssl-renew-info"><span class="site-tag" data-state="'+(sslRenewal.enabled?'on':'off')+'">'+(sslRenewal.enabled?vt('Tự gia hạn SSL · Đang bật','SSL auto-renew · Active'):vt('Tự gia hạn SSL · Chưa bật','SSL auto-renew · Off'))+'</span>'+(sslRenewal.detail?'<code>'+escapeHTML(sslRenewal.detail)+'</code>':'')+'</span><div class="actions"><button type="button" id="cf-token-btn" class="button small" data-tone="configure">'+vt('Token Cloudflare','Cloudflare Token')+'</button>'+(sslRenewal.enabled?(hasHttps?'<button type="button" id="test-ssl-renew" class="button small" data-tone="info">'+vt('Thử gia hạn SSL','Test SSL renewal')+'</button>':''):'<button type="button" id="enable-ssl-renew" class="button small" data-tone="create">'+vt('Bật tự gia hạn SSL','Enable SSL auto-renew')+'</button>')+'</div></div><div class="panel-body" id="site-list"></div></article>';
       const list=$('#site-list');
       for(const message of inventory.diagnostics){
-        const note=document.createElement('p');note.textContent=message;list.append(note);
+        if(message.includes('Cần cài Nginx')){
+          const box=document.createElement('div');
+          box.className='callout';
+          box.style.cssText='display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:14px 0 8px';
+          box.innerHTML='<span>'+escapeHTML(vt('Nginx chưa được cài đặt trên VPS này.','Nginx is not installed on this server.'))+'</span>'
+            +'<div class="actions">'
+            +'<button type="button" class="button small" data-tone="create" id="nginx-install-now">'+vt('Cài Nginx ngay','Install Nginx now')+'</button>'
+            +'<button type="button" class="button small" data-tone="info" id="nginx-go-software">'+vt('Mở Software Center →','Open Software Center →')+'</button>'
+            +'</div>';
+          box.querySelector('#nginx-install-now').onclick=()=>modal(vt('Cài đặt Nginx','Install Nginx'),'<p>'+vt('Cài đặt gói <code>nginx</code> trên máy chủ đang chọn?','Install <code>nginx</code> on the selected server?')+'</p>',()=>submit('install',{packages:['nginx']}));
+          box.querySelector('#nginx-go-software').onclick=()=>{location.hash='#software';};
+          list.append(box);
+        }else{
+          const note=document.createElement('p');note.textContent=message;list.append(note);
+        }
       }
       for(const link of inventory.broken||[]){
         const fix=document.createElement('button');fix.className='button small';fix.textContent='Gỡ symlink hỏng · '+link.path;

@@ -13,7 +13,7 @@ Trong **Tổng quan VPS**, nhập **Hostname mới**, bấm **Đổi hostname** 
 
 ![Tổng quan tài nguyên và hoạt động trên Ubuntu ARM64](previews/vps-manager/server-health.jpg)
 
-Trong **Nginx & tên miền**, chọn VPS và bấm trực tiếp các nút sửa, bật, tắt hoặc xóa trên dòng website. Các nút hiển thị theo trạng thái và cấu hình của site. **Cấp SSL** hỗ trợ Certbot HTTP-01 và Cloudflare DNS-01. [Xem giao diện quản lý tên miền](previews/vps-manager/nginx-direct-actions.jpg).
+Trong **Nginx & tên miền**, chọn VPS và bấm trực tiếp các nút sửa, bật, tắt hoặc xóa trên dòng website. Nếu VPS chưa có Nginx, giao diện hiển thị nút **Cài Nginx ngay** hoặc **Mở Software Center →** ngay trên trang. Các nút hiển thị theo trạng thái và cấu hình của site. **Cấp SSL** hỗ trợ Certbot HTTP-01 và Cloudflare DNS-01. [Xem giao diện quản lý tên miền](previews/vps-manager/nginx-direct-actions.jpg).
 
 **VPS mới chỉ có SSH key:** chọn **Thêm VPS**, nhập user của image (ví dụ `ubuntu` hoặc `opc`), chọn **SSH key** và đường dẫn private key trên máy chạy Manager. Bấm **Kiểm tra kết nối**, đối chiếu fingerprint với console VPS rồi xác nhận tin cậy. Trong **Tổng quan VPS → Tài khoản & SSH**, đặt mật khẩu Linux cho user đang kết nối. Chỉ đánh dấu tùy chọn SSH bằng mật khẩu khi muốn mở phương thức đăng nhập này. [Ảnh quản lý tài khoản](previews/vps-manager/account-ssh.jpg).
 
