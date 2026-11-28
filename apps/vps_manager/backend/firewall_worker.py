@@ -159,6 +159,47 @@ def oracle():
             "tenancy_id": meta.get("tenantId", "")}
 
 
+def _iptables_rule_args(proto, lo, hi, source):
+    spec = str(lo) if lo == hi else f"{lo}:{hi}"
+    args = ["-p", proto, "-m", proto, "--dport", spec]
+    if source and source != "any" and ":" not in source:
+        args += ["-s", source]
+    args += ["-j", "ACCEPT"]
+    return args
+
+
+def _sync_iptables_port(op, proto, lo, hi, source, ufw_active):
+    """Ensure Oracle/netfilter-persistent iptables INPUT rules do not block an opened port."""
+    if not shutil.which("iptables"):
+        return
+    if source and source != "any" and ":" in source:
+        return
+    rules_out = run(["iptables", "-S", "INPUT"])
+    if rules_out.returncode:
+        return
+    lines = [ln.strip() for ln in rules_out.stdout.splitlines() if ln.strip()]
+    changed = False
+    has_oracle_reject = any(" -j REJECT" in ln and "icmp-host-prohibited" in ln for ln in lines)
+    if op == "open" and ufw_active and has_oracle_reject:
+        emit("Xóa rule REJECT mặc định trên iptables INPUT để UFW có hiệu lực")
+        while run(["iptables", "-D", "INPUT", "-j", "REJECT", "--reject-with", "icmp-host-prohibited"]).returncode == 0:
+            changed = True
+    elif not ufw_active:
+        has_drop_or_reject = any(" -j REJECT" in ln or " -j DROP" in ln for ln in lines)
+        rule = _iptables_rule_args(proto, lo, hi, source)
+        if op == "open" and has_drop_or_reject:
+            if run(["iptables", "-C", "INPUT", *rule]).returncode != 0:
+                pos = next((idx for idx, ln in enumerate(lines[1:], start=1) if " -j REJECT" in ln or " -j DROP" in ln), 1)
+                emit(f"iptables INSERT INPUT {pos} allow {proto}/{lo if lo == hi else f'{lo}-{hi}'}")
+                if run(["iptables", "-I", "INPUT", str(pos), *rule]).returncode == 0:
+                    changed = True
+        elif op == "close":
+            while run(["iptables", "-D", "INPUT", *rule]).returncode == 0:
+                changed = True
+    if changed and shutil.which("netfilter-persistent"):
+        run(["netfilter-persistent", "save"])
+
+
 def exists(rules, proto, lo, hi, source, action="allow"):
     return any(r["action"] == action and r["proto"] == proto and r["min"] == lo and r["max"] == hi and r["source"] == source for r in rules)
 
@@ -195,16 +236,18 @@ def change(p):
         base = ["proto", proto, "from", "any" if source == "any" else source, "to", "any", "port", spec]
         present = exists(state["rules"], proto, lo, hi, source)
         if op == "open":
+            _sync_iptables_port("open", proto, lo, hi, source, state["active"])
             if present:
                 results.append({"layer": "ufw", "proto": proto, "status": "exists", "detail": "UFW đã có rule " + label}); continue
             emit("ufw allow " + label)
             done = run(["ufw", "allow", *base])
             if done.returncode:
                 raise ValueError("UFW · " + (done.stderr.strip() or done.stdout.strip())[:300])
-            results.append({"layer": "ufw", "proto": proto, "status": "created", "detail": "Đã mở " + label + (" (UFW đang tắt, rule chưa có hiệu lực)" if not state["active"] else "")})
+            results.append({"layer": "ufw", "proto": proto, "status": "created", "detail": "Đã mở " + label + (" (UFW đang tắt, đã mở kèm iptables)" if not state["active"] else "")})
         else:
             if proto == "tcp" and any(lo <= port <= hi for port in protected):
                 raise ValueError("Từ chối: dải port chứa cổng SSH " + ", ".join(map(str, protected)) + ".")
+            _sync_iptables_port("close", proto, lo, hi, source, state["active"])
             if not present:
                 results.append({"layer": "ufw", "proto": proto, "status": "missing", "detail": "UFW không có rule allow khớp chính xác " + label}); continue
             emit("ufw delete allow " + label)

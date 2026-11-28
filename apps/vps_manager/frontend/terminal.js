@@ -431,6 +431,7 @@ async function terminalPage(view,path,rev){
       +'<div class="term-pane-head" title="'+vt('Kéo tiêu đề để di chuyển tự do ô này','Drag header to move this pane freely')+'">'
         +'<div class="term-pane-meta"><span class="term-drag-grip" aria-hidden="true">⋮⋮</span><span class="term-dot" data-state="'+pane.status+'"></span><strong>'+escapeHTML(pane.title)+'</strong><small>'+escapeHTML(pane.subtitle)+'</small></div>'
         +'<div class="term-pane-actions">'
+          +'<button type="button" class="term-pane-btn term-pane-sftp" title="'+vt('Mở SFTP cho VPS này','Open SFTP for this server')+'">SFTP</button>'
           +'<button type="button" class="term-pane-btn term-pane-bcast" title="Broadcast">B</button>'
           +'<button type="button" class="term-pane-btn term-pane-max" title="Phóng to">⛶</button>'
           +'<button type="button" class="term-pane-btn term-pane-reconn" title="Kết nối lại">↻</button>'
@@ -524,6 +525,7 @@ async function terminalPage(view,path,rev){
       ws.activePaneId=pane.id;
       renderStage();
     };
+    wrap.querySelector('.term-pane-sftp').onclick=e=>{e.stopPropagation();window.openSftpForMachine?.(pane.machineId);};
     wrap.querySelector('.term-pane-reconn').onclick=e=>{e.stopPropagation();connectPane(pane);};
     wrap.querySelector('.term-pane-close').onclick=e=>{
       e.stopPropagation();

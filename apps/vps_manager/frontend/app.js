@@ -29,12 +29,14 @@ function modal(title,html,submit){
 }
 $('#cancel').onclick=$('#modal-x').onclick=()=>$('dialog').close();
 $('#popup').onsubmit=async e=>{
-  e.preventDefault();const button=e.submitter;button.disabled=true;
+  e.preventDefault();const button=e.submitter,origHtml=button.innerHTML;
+  $('#fields [role=alert]')?.remove();
+  button.disabled=true;button.innerHTML='<span class="spinner"></span> '+escapeHTML(button.textContent.trim());
   try{const res=await onConfirm(new FormData(e.target));if(res!==false)$('dialog').close();}
   catch(err){let p=$('#fields [role=alert]');if(!p){p=document.createElement('p');p.setAttribute('role','alert');$('#fields').append(p);}p.textContent=err.message;}
-  finally{button.disabled=false;}
+  finally{button.disabled=false;button.innerHTML=origHtml;}
 };
-const titles={servers:'Máy chủ',git:'Git & SSH Key',overview:'Tổng quan VPS',software:'Software Center',docker:'Docker & Compose',firewall:'Firewall',terminal:'SSH Terminal',sysadmin:'User & Ổ đĩa',domains:'Nginx & tên miền',jobs:'Lịch sử tác vụ',settings:'Cài đặt',users:'Người dùng'};
+const titles={servers:'Máy chủ',git:'Git & SSH Key',overview:'Tổng quan VPS',software:'Software Center',docker:'Docker & Compose',firewall:'Firewall',terminal:'SSH Terminal',sftp:'SFTP',sysadmin:'User & Ổ đĩa',domains:'Nginx & tên miền',jobs:'Lịch sử tác vụ',settings:'Cài đặt',users:'Người dùng'};
 function certificateWarning(days){
   const threshold=[0,7,14,30].find(limit=>days<=limit);
   if(threshold===undefined||days===null)return '';
@@ -42,37 +44,69 @@ function certificateWarning(days){
   return label+' ('+days+(vpsEnglish?' days':' ngày')+')';
 }
 const endpoint=()=> 'vps/machines/'+encodeURIComponent($('#hosts').value);
+async function trackJobBanner(jobId,{prefix='',onDone}={}){
+  if(!jobId)return;
+  const stack=vpsToastStack();
+  if(stack.querySelector('.fw-job-banner[data-job="'+CSS.escape(jobId)+'"]'))return;
+  const banner=document.createElement('div');banner.className='fw-job-banner';banner.dataset.job=jobId;
+  banner.innerHTML='<span class="spinner"></span><span></span><button type="button" class="banner-close" aria-label="Đóng">×</button>';
+  banner.querySelector('.banner-close').onclick=()=>banner.remove();
+  stack.append(banner);
+  const spin=banner.querySelector('.spinner'),msg=banner.querySelector('span:not(.spinner)');
+  if(spin)spin.hidden=false;
+  banner.dataset.state='running';
+  msg.textContent=prefix+vt('Đang thực hiện…','Running…');
+  for(let i=0;i<600;i++){
+    const j=await api('vps/jobs/'+encodeURIComponent(jobId)).catch(()=>null);
+    if(j){
+      const last=j.events?.at(-1)?.message;
+      const started=j.created_at?Date.parse(j.created_at):NaN;
+      const elapsed=Number.isFinite(started)?Math.max(1,Math.round((Date.now()-started)/1000)):(i+1);
+      msg.textContent=prefix+(last||vt('Đang thực hiện…','Running…'))+' ('+elapsed+'s)';
+      if(j.status==='succeeded'){
+        banner.dataset.state='ok';if(spin)spin.hidden=true;
+        msg.textContent='✓ '+prefix+(j.label||vt('Hoàn tất','Done'));
+        setTimeout(()=>banner.remove(),6000);
+        vpsGetCache.clear();
+        if(onDone)await onDone(j);else await render();
+        return;
+      }
+      if(j.status==='failed'||j.status==='interrupted'){
+        banner.remove();
+        const logs=(j.events||[]).map(e=>e.message).filter(Boolean).slice(-8).join('\n');
+        modal('✗ '+prefix+(j.label||vt('Thất bại','Failed')),'<div class="callout error" style="white-space:pre-wrap">'+escapeHTML(j.error||vt('Thao tác bị gián đoạn hoặc thất bại.','Action interrupted or failed.'))+'</div>'+(logs?'<details><summary>'+vt('Nhật ký gần nhất','Recent logs')+'</summary><pre>'+escapeHTML(logs)+'</pre></details>':''),async()=>{});
+        return false;
+      }
+    }
+    await new Promise(r=>setTimeout(r,1000));
+  }
+}
+async function resumeActiveJobs(){
+  if(previewMode)return;
+  const hostId=$('#hosts')?.value;
+  const seen=new Set();
+  const candidates=[];
+  if(hostId){
+    const list=await api('vps/machines/'+encodeURIComponent(hostId)+'/jobs').catch(()=>[]);
+    for(const j of list){if((j.status==='running'||j.status==='queued')&&!seen.has(j.id)){seen.add(j.id);candidates.push({id:j.id,prefix:j.target?j.target+' · ':''});}}
+  }
+  try{
+    const batch=JSON.parse(sessionStorage.getItem('vps-batch')||'[]');
+    for(const row of batch){if(row.job&&!seen.has(row.job)){seen.add(row.job);candidates.push({id:row.job,prefix:row.name?row.name+' · ':''});}}
+  }catch{}
+  for(const item of candidates){
+    const j=await api('vps/jobs/'+encodeURIComponent(item.id)).catch(()=>null);
+    if(j&&(j.status==='running'||j.status==='queued'))trackJobBanner(item.id,{prefix:item.prefix});
+  }
+}
 async function submit(action,data){
   try{selectedJob=(await api(endpoint()+'/'+action,data)).id;}
   catch(err){if(!err.job)throw err;selectedJob=err.job;}
+  sessionStorage.setItem('vps-selected-job',selectedJob);
   if($('dialog')?.open)$('dialog').close();
-  const view=$('#view');
-  const stack=vpsToastStack();
-  if(stack.querySelector('.fw-job-banner[data-job="'+CSS.escape(selectedJob)+'"]'))return;
-  const banner=document.createElement('div');banner.className='fw-job-banner';banner.dataset.job=selectedJob;banner.innerHTML='<span class="spinner"></span><span></span><button type="button" class="banner-close" aria-label="Đóng">×</button>';banner.querySelector('.banner-close').onclick=()=>banner.remove();stack.append(banner);
-  const spin=banner.querySelector('.spinner'),msg=banner.querySelector('span:not(.spinner)');if(spin)spin.hidden=false;
-  banner.dataset.state='running';
-  msg.textContent=vt('Đang thực hiện…','Running…');
-  for(let i=0;i<600;i++){
-    await new Promise(r=>setTimeout(r,1000));
-    const j=await api('vps/jobs/'+encodeURIComponent(selectedJob)).catch(()=>null);
-    if(!j)continue;
-    const last=j.events?.at(-1)?.message;
-    msg.textContent=(last||vt('Đang thực hiện…','Running…'))+' ('+(i+1)+'s)';
-    if(j.status==='succeeded'){
-      banner.dataset.state='ok';if(spin)spin.hidden=true;
-      msg.textContent='✓ '+(j.label||vt('Hoàn tất','Done'));
-      setTimeout(()=>banner.remove(),6000);
-      vpsGetCache.clear();if(action==='hostname')await loadHosts($('#hosts').value);else await render();
-      return;
-    }
-    if(j.status==='failed'||j.status==='interrupted'){
-      banner.remove();
-      const logs=(j.events||[]).map(e=>e.message).filter(Boolean).slice(-8).join('\n');
-      modal('✗ '+(j.label||vt('Thất bại','Failed')),'<div class="callout error" style="white-space:pre-wrap">'+escapeHTML(j.error||vt('Thao tác bị gián đoạn hoặc thất bại.','Action interrupted or failed.'))+'</div>'+(logs?'<details><summary>'+vt('Nhật ký gần nhất','Recent logs')+'</summary><pre>'+escapeHTML(logs)+'</pre></details>':''),async()=>{});
-      return false;
-    }
-  }
+  return trackJobBanner(selectedJob,{
+    onDone:async()=>{if(action==='hostname')await loadHosts($('#hosts').value);else await render();}
+  });
 }
 function machineChoices(allChecked=false){
   const opts=Array.from($('#hosts').options);
@@ -105,33 +139,8 @@ async function submitTargets(form,action,data){
       }
       continue;
     }
-    (async()=>{
-      const banner=document.createElement('div');banner.className='fw-job-banner';banner.innerHTML='<span class="spinner"></span><span></span><button type="button" class="banner-close" aria-label="Đóng">×</button>';
-      banner.querySelector('.banner-close').onclick=()=>banner.remove();
-      vpsToastStack().append(banner);
-      const spin=banner.querySelector('.spinner'),msg=banner.querySelector('span:not(.spinner)');
-      banner.dataset.state='running';msg.textContent=(names.get(row.machine)||'')+' · '+vt('Đang thực hiện…','Running…');
-      for(let i=0;i<600;i++){
-        await new Promise(r=>setTimeout(r,1000));
-        const j=await api('vps/jobs/'+encodeURIComponent(row.job)).catch(()=>null);
-        if(!j)continue;
-        const last=j.events?.at(-1)?.message;
-        msg.textContent=(names.get(row.machine)||'')+' · '+(last||vt('Đang thực hiện…','Running…'))+' ('+(i+1)+'s)';
-        if(j.status==='succeeded'){
-          banner.dataset.state='ok';if(spin)spin.hidden=true;
-          msg.textContent='✓ '+(names.get(row.machine)||'')+' · '+(j.label||vt('Hoàn tất','Done'));
-          setTimeout(()=>banner.remove(),6000);
-          vpsGetCache.clear();await render();
-          return;
-        }
-        if(j.status==='failed'||j.status==='interrupted'){
-          banner.remove();
-          const logs=(j.events||[]).map(e=>e.message).filter(Boolean).slice(-8).join('\n');
-          modal('✗ '+(names.get(row.machine)||'')+' · '+(j.label||vt('Thất bại','Failed')),'<div class="callout error" style="white-space:pre-wrap">'+escapeHTML(j.error||vt('Thao tác bị gián đoạn hoặc thất bại.','Action interrupted or failed.'))+'</div>'+(logs?'<details><summary>'+vt('Nhật ký gần nhất','Recent logs')+'</summary><pre>'+escapeHTML(logs)+'</pre></details>':''),async()=>{});
-          return;
-        }
-      }
-    })();
+    const name=names.get(row.machine)||'';
+    trackJobBanner(row.job,{prefix:name?name+' · ':''});
   }
 }
 async function batchHistory(view,rev){
@@ -169,6 +178,7 @@ async function render(){
     servers:['Quản lý kết nối SSH, cài đặt và dịch vụ trên từng máy.','Manage SSH connections, installs and services on each server.'],
     firewall:['Quản lý UFW và Oracle Cloud Firewall, mở hoặc đóng port ở cả hai lớp.','Manage UFW and Oracle Cloud Firewall, opening or closing ports on both layers.'],
     terminal:['Kết nối SSH trực tiếp dạng terminal (giống Termius) nhiều tab cùng lúc.','Interactive multi-tab SSH terminal (Termius-style) right in your browser.'],
+    sftp:['Quản lý và truyền file SFTP 2 khung song song (giống Termius) giữa máy tính và các VPS.','Termius-style dual-pane SFTP file manager for transfers between your computer and servers.'],
     sysadmin:['Tạo user Linux, phân quyền sudo/nhóm/SSH keys và chia ổ, mount, phân quyền thư mục.','Create Linux users, manage sudo/groups/SSH keys, partitions, mounts and folder permissions.'],
     domains:['Quản lý cấu hình website, định tuyến và chứng chỉ SSL trên VPS.','Manage website configurations, routes and SSL certificates on this server.'],
     jobs:['Theo dõi tiến độ và mở nhật ký để xem kết quả của từng tác vụ.','Track progress and open the logs to inspect each job’s result.'],
@@ -192,6 +202,7 @@ async function render(){
     if(section==='servers'){await serversPage(view,path,rev);return;}
     if(section==='firewall'){await firewallPage(view,path,rev);return;}
     if(section==='terminal'){await terminalPage(view,path,rev);return;}
+    if(section==='sftp'){await sftpPage(view,path,rev);return;}
     if(section==='sysadmin'){await sysadminPage(view,path,rev);return;}
     if(section==='jobs'){
       const jobs=await api(path+'/jobs');if(rev!==revision)return;
@@ -654,6 +665,7 @@ async function start(){
  banner.textContent=vpsEnglish?'Sample data · VPS actions are simulated.':'Dữ liệu minh họa · Các thao tác xem thử không thay đổi VPS.';
  const links=await api('manager-links').catch(()=>({mongo:'/'}));const url=new URL(links.mongo||'/',location.href);url.hash=sessionStorage.getItem('zm-mongo-route')||'';$('#mongo').href=$('#mobile-mongo').href=url;
  await loadHosts(new URLSearchParams(location.search).get('machine'));
+ resumeActiveJobs();
 }
 $('#language').value=vpsEnglish?'en':'vi';
 $('#language').onchange=e=>{localStorage.setItem('mongo-manager-language',e.target.value);location.reload();};
@@ -685,15 +697,20 @@ function openNginxCopy(){
       const results=await api('vps/nginx/copy',{source_machine:form.get('source_machine'),target_machines,file_ids,include_ssl:!!form.get('include_ssl'),overwrite:!!form.get('overwrite'),reissue_ssl:!!form.get('reissue_ssl'),email});
       const names=new Map(opts.map(o=>[o.value,o.textContent]));
       sessionStorage.setItem('vps-batch',JSON.stringify(results.map(r=>({...r,name:names.get(r.machine)}))));
-      const jobIds=results.map(r=>r.job).filter(Boolean);
-      if(jobIds.length){
-        for(let i=0;i<30;i++){
-          await new Promise(r=>setTimeout(r,1000));
-          const states=await Promise.all(jobIds.map(id=>api('vps/jobs/'+encodeURIComponent(id)).catch(()=>null)));
-          if(states.every(j=>!j||j.status==='succeeded'||j.status==='failed'))break;
+      if($('dialog')?.open)$('dialog').close();
+      for(const row of results){
+        const name=names.get(row.machine)||row.machine;
+        if(!row.job){
+          if(row.error){
+            const errBanner=document.createElement('div');errBanner.className='fw-job-banner';errBanner.dataset.state='error';
+            errBanner.innerHTML='<span>✗ '+escapeHTML(name+' · '+row.error)+'</span><button type="button" class="banner-close" aria-label="Đóng">×</button>';
+            errBanner.querySelector('.banner-close').onclick=()=>errBanner.remove();
+            vpsToastStack().append(errBanner);
+          }
+          continue;
         }
+        trackJobBanner(row.job,{prefix:name+' · '});
       }
-      vpsGetCache.clear();await render();
     });
   const srcSel=$('#copy-src'),srcList=$('#copy-src-sites'),tgtList=$('#copy-targets'),tgtAll=$('#copy-targets-all');
   const reissueBox=$('#popup').elements.reissue_ssl,emailWrap=$('#copy-ssl-email-wrap');

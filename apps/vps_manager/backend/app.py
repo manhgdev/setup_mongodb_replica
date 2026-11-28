@@ -11,11 +11,11 @@ from pathlib import Path
 from uuid import uuid4
 from typing import Literal
 from .hostname_worker import valid_hostname
-from . import firewall_service, oci_firewall, stack_transfer
+from . import firewall_service, oci_firewall, sftp_service, stack_transfer
 from .terminal import run_terminal_session
 
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, SecretStr
 from shared.manager_core.ssh_transport import fingerprint, probe_host_key, enroll_host_key
@@ -797,7 +797,7 @@ def register(app):
     def queue_job(ident,action,body,machine,actor=None):
         key = uuid4().hex
         try:
-            app.state.slots.reserve(key, set(), set(), job_id=key)
+            app.state.slots.reserve(key, set(), machine_keys(machine), job_id=key)
         except Busy as exc:
             raise HTTPException(
                 409,
@@ -992,6 +992,142 @@ def register(app):
             except HTTPException as exc:
                 results.append({"machine": ident, "error": exc.detail})
         return results
+
+    sftp_transfers = sftp_service.TransferManager()
+
+    class SftpPathBody(BaseModel):
+        path: str = Field(min_length=1, max_length=4096)
+
+    class SftpRenameBody(BaseModel):
+        old_path: str = Field(min_length=1, max_length=4096)
+        new_path: str = Field(min_length=1, max_length=4096)
+
+    class SftpDeleteBody(BaseModel):
+        paths: list[str] = Field(min_length=1)
+
+    class SftpChmodBody(BaseModel):
+        path: str = Field(min_length=1, max_length=4096)
+        mode: str = Field(min_length=1, max_length=8)
+        recursive: bool = False
+
+    class SftpWriteFileBody(BaseModel):
+        path: str = Field(min_length=1, max_length=4096)
+        content: str = ""
+
+    class SftpTransferBody(BaseModel):
+        source_machine: str = Field(min_length=1)
+        target_machine: str = Field(min_length=1)
+        paths: list[str] = Field(min_length=1)
+        target_dir: str = Field(min_length=1, max_length=4096)
+        op: Literal["copy", "move"] = "copy"
+
+    @app.get("/api/vps/machines/{ident}/sftp/list")
+    def sftp_list(ident: str, path: str = Query(default="", max_length=4096), show_hidden: bool = False):
+        try:
+            return sftp_service.list_dir(record("machines", ident), path=path, show_hidden=show_hidden, store=app.state.store)
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise HTTPException(422, str(exc)) from None
+
+    @app.post("/api/vps/machines/{ident}/sftp/mkdir")
+    def sftp_mkdir(ident: str, body: SftpPathBody):
+        try:
+            return sftp_service.mkdir(record("machines", ident), body.path, store=app.state.store)
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise HTTPException(422, str(exc)) from None
+
+    @app.post("/api/vps/machines/{ident}/sftp/touch")
+    def sftp_touch(ident: str, body: SftpPathBody):
+        try:
+            return sftp_service.touch(record("machines", ident), body.path, store=app.state.store)
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise HTTPException(422, str(exc)) from None
+
+    @app.post("/api/vps/machines/{ident}/sftp/rename")
+    def sftp_rename(ident: str, body: SftpRenameBody):
+        try:
+            return sftp_service.rename(record("machines", ident), body.old_path, body.new_path, store=app.state.store)
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise HTTPException(422, str(exc)) from None
+
+    @app.post("/api/vps/machines/{ident}/sftp/delete")
+    def sftp_delete(ident: str, body: SftpDeleteBody):
+        try:
+            return sftp_service.delete_paths(record("machines", ident), body.paths, store=app.state.store)
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise HTTPException(422, str(exc)) from None
+
+    @app.post("/api/vps/machines/{ident}/sftp/chmod")
+    def sftp_chmod(ident: str, body: SftpChmodBody):
+        try:
+            return sftp_service.chmod(record("machines", ident), body.path, body.mode, recursive=body.recursive, store=app.state.store)
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise HTTPException(422, str(exc)) from None
+
+    @app.get("/api/vps/machines/{ident}/sftp/file")
+    def sftp_read_file(ident: str, path: str = Query(min_length=1, max_length=4096)):
+        try:
+            return sftp_service.read_text_file(record("machines", ident), path, store=app.state.store)
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise HTTPException(422, str(exc)) from None
+
+    @app.put("/api/vps/machines/{ident}/sftp/file")
+    def sftp_write_file(ident: str, body: SftpWriteFileBody):
+        try:
+            return sftp_service.write_text_file(record("machines", ident), body.path, body.content, store=app.state.store)
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise HTTPException(422, str(exc)) from None
+
+    @app.get("/api/vps/machines/{ident}/sftp/download")
+    def sftp_download(ident: str, paths: list[str] = Query(min_length=1)):
+        try:
+            filename, media_type, iterator = sftp_service.prepare_download(record("machines", ident), paths, store=app.state.store)
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise HTTPException(422, str(exc)) from None
+        safe_hdr = filename.replace('"', "")
+        return StreamingResponse(
+            iterator,
+            media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename="{safe_hdr}"'},
+        )
+
+    @app.post("/api/vps/machines/{ident}/sftp/upload")
+    async def sftp_upload(
+        ident: str,
+        request: Request,
+        path: str = Query(default="~", max_length=4096),
+        filename: str = Query(min_length=1, max_length=255),
+    ):
+        try:
+            return await sftp_service.upload_from_request_stream(
+                record("machines", ident), path, filename, request, store=app.state.store
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise HTTPException(422, str(exc)) from None
+
+    @app.post("/api/vps/sftp/transfer", status_code=202)
+    def sftp_transfer(body: SftpTransferBody):
+        try:
+            src = record("machines", body.source_machine)
+            dst = record("machines", body.target_machine)
+            return sftp_transfers.start(
+                current_workspace_id(), src, dst, body.paths, body.target_dir, op=body.op, store=app.state.store
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise HTTPException(422, str(exc)) from None
+
+    @app.get("/api/vps/sftp/transfers/{transfer_id}")
+    def sftp_transfer_status(transfer_id: str):
+        try:
+            return sftp_transfers.get(transfer_id, current_workspace_id())
+        except KeyError:
+            raise HTTPException(404, "Không tìm thấy tác vụ truyền file.") from None
+
+    @app.post("/api/vps/sftp/transfers/{transfer_id}/cancel")
+    def sftp_transfer_cancel(transfer_id: str):
+        try:
+            return sftp_transfers.cancel(transfer_id, current_workspace_id())
+        except KeyError:
+            raise HTTPException(404, "Không tìm thấy tác vụ truyền file.") from None
 
     @app.get("/vps/")
     def index():

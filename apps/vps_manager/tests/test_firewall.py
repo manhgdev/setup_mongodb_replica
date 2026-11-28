@@ -121,3 +121,29 @@ def test_generate_oci_keypair(tmp_path):
         assert "BEGIN PRIVATE KEY" in data["private_key"]
         assert "BEGIN PUBLIC KEY" in data["public_key"]
         assert len(data["fingerprint"].split(":")) == 16
+
+
+def test_sync_iptables_handles_oracle_reject(monkeypatch):
+    calls = []
+    def run(args, timeout=30):
+        calls.append(args)
+        if args == ["iptables", "-S", "INPUT"]:
+            return Done("-P INPUT ACCEPT\n-A INPUT -p tcp -m tcp --dport 22 -j ACCEPT\n-A INPUT -j REJECT --reject-with icmp-host-prohibited\n")
+        if args[:3] == ["iptables", "-C", "INPUT"]:
+            return Done(code=1)
+        if args[:3] == ["iptables", "-D", "INPUT"]:
+            count = sum(1 for c in calls if c[:3] == ["iptables", "-D", "INPUT"])
+            return Done(code=0 if count == 1 else 1)
+        return Done()
+    monkeypatch.setattr(fw, "run", run)
+    monkeypatch.setattr(fw.shutil, "which", lambda name: "/usr/sbin/" + name)
+
+    # Inactive UFW: inserts ACCEPT before Oracle's REJECT rule and saves.
+    fw._sync_iptables_port("open", "tcp", 27017, 27017, "any", ufw_active=False)
+    assert ["iptables", "-I", "INPUT", "2", "-p", "tcp", "-m", "tcp", "--dport", "27017", "-j", "ACCEPT"] in calls
+    assert ["netfilter-persistent", "save"] in calls
+
+    # Active UFW: removes Oracle's leftover icmp-host-prohibited REJECT from INPUT.
+    calls.clear()
+    fw._sync_iptables_port("open", "tcp", 27017, 27017, "any", ufw_active=True)
+    assert ["iptables", "-D", "INPUT", "-j", "REJECT", "--reject-with", "icmp-host-prohibited"] in calls

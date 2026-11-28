@@ -27,6 +27,8 @@ Trong **Nginx & tên miền**, chọn VPS và bấm trực tiếp các nút sử
 
 **SSH Terminal** mở phiên SSH tương tác nhiều tab ngay trên trình duyệt bằng `xterm.js` + WebSocket PTY, hỗ trợ truecolor, ký tự box-drawing (`btop`, `htop`), con trỏ khối rõ nét và giải mã UTF-8 theo luồng để không lỗi ký tự khi truyền qua chunk. Hỗ trợ **chia khung nhiều VPS (Split-pane)** qua **+ Mở nhiều VPS** hoặc **+ Chia vào tab này**, kéo thả tiêu đề khung để chia/đổi vị trí, kéo thanh chia để đổi kích thước, phóng to từng khung và bật **Broadcast** để gõ lệnh đồng thời lên nhiều VPS. [Ảnh SSH Terminal chạy btop](previews/vps-manager/ssh-terminal-btop.png) · [Ảnh SSH Terminal nhiều VPS + Broadcast](previews/vps-manager/ssh-terminal-multi.png).
 
+**SFTP** cung cấp trình quản lý và truyền file 2 khung song song (phong cách Termius) nhiều tab ngay trên trình duyệt: mỗi khung kết nối độc lập tới bất kỳ VPS nào trong workspace để **chép/di chuyển file trực tiếp giữa 2 VPS**, kéo-thả hoặc tải lên/tải xuống từ máy tính cá nhân (hỗ trợ nén `.tar.gz` khi tải thư mục hoặc nhiều mục), tạo file/thư mục, đổi tên, phân quyền `chmod` (ma trận rwx + mã octal), sửa file text trực tiếp và theo dõi tiến trình ở **Hàng đợi truyền file**. Có nút **SFTP** trên từng khung **SSH Terminal** để mở nhanh. [Ảnh SFTP 2 khung song song](previews/vps-manager/sftp-dual-pane.png).
+
 Sidebar VPS chia theo workspace, quản trị và hoạt động. Trên desktop, nút « thu gọn sidebar thành dải biểu tượng và lưu lựa chọn cho lần mở sau.
 
 Trong **Software Center → Bộ cài của tôi → Tiếp tục** hoặc **Nginx & tên miền → + Thêm tên miền**, đánh dấu các **Máy chủ đích** để cài cùng bộ gói hoặc tạo cùng một website trên nhiều VPS. **Lịch sử tác vụ → Tác vụ nhiều máy** hiển thị kết quả riêng và mở log theo máy. [Ảnh chọn máy đích](previews/vps-manager/multi-targets.jpg).
@@ -399,3 +401,11 @@ Khi thêm hoặc kiểm tra kết nối máy chủ bằng file SSH key đã nh�
 Khi phiên đăng nhập hết hạn hoặc bị đăng xuất (`HTTP 401`, WebSocket `4401`, hoặc quay lại tab sau khi hết phiên), cả MongoDB Manager và VPS Manager đều tự chuyển về `/login` thay vì tiếp tục ở lại giao diện và báo lỗi ở các thao tác tiếp theo.
 
 Thanh lệnh nhanh trên **SSH Terminal** có thêm nút `bench.sh` chạy `curl -Lso- bench.sh | bash`. Khi kết nối lại hoặc đóng khung terminal, socket cũ được ngắt sạch để không báo lỗi `WebSocket bị đóng trước khi kết nối (mã 1005)` đè lên phiên mới.
+
+Các tác vụ thay đổi hệ thống/cài đặt phần mềm trên cùng một VPS được khóa theo `machine_keys` để không chạy song song nhiều job cài gói trùng nhau trên cùng máy và không tạo nhiều banner thông báo trùng lặp. Nếu người dùng F5 tải lại trang trong khi tác vụ đang chạy, giao diện tự khôi phục banner theo dõi tiến trình và thời gian đã chạy từ server.
+
+Nhóm kit **SSL & Certbot** trong Software Center giữ gọn `certbot`, `python3-certbot-dns-cloudflare`, `openssl` và `ca-certificates`. Khi bấm **Xác nhận** trong popup (như **Copy Nginx & SSL giữa các VPS**), lỗi cũ được xóa ngay, nút hiển thị spinner xử lý và đóng popup để theo dõi tiến trình trực tiếp qua banner.
+
+Đã bổ sung tab **SFTP** (`#sftp`) theo mô hình Termius 2 khung song song nhiều tab: duyệt thư mục, ẩn/hiện file ẩn, tìm kiếm/sắp xếp, kéo-thả upload với tiến trình, tải xuống file lẻ hoặc `.tar.gz`, truyền file giữa 2 VPS, `chmod` trực quan, sửa file text trong popup và nút mở nhanh **SFTP** từ từng khung **SSH Terminal**. [Ảnh SFTP 2 khung](previews/vps-manager/sftp-dual-pane.png).
+
+Khi mở port trong **Firewall**, ngoài UFW và Oracle Cloud, Manager tự động xử lý rule `REJECT --reject-with icmp-host-prohibited` mặc định trên `iptables` (hoặc chèn rule `ACCEPT` trước `REJECT` nếu UFW đang tắt và lưu `netfilter-persistent`) để port thông ngay từ bên ngoài.

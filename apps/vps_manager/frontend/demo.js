@@ -62,6 +62,34 @@ async function previewVps(path,data){
       case machine+'/nginx/web/logs':
       case machine+'/pm2':return [];
       case machine+'/jobs':return [{id:'sample',target:'web-demo',label:'Nginx',status:'succeeded',events:[{message:'nginx -t · OK'}]}];
+      case machine+'/sftp/list':{
+        const params=new URL(path,location.origin).searchParams;
+        const p=params.get('path')||'/root';
+        const showHidden=params.get('show_hidden')==='true';
+        const now=Math.floor(Date.now()/1000)-3600;
+        const trees={
+          '/root':[
+            {name:'.ssh',path:'/root/.ssh',type:'dir',size:4096,mode:0o700,octal:'0700',perms:'drwx------',mtime:now-7200},
+            {name:'.env',path:'/root/.env',type:'file',size:312,mode:0o600,octal:'0600',perms:'-rw-------',mtime:now-1200},
+            {name:'app',path:'/root/app',type:'dir',size:4096,mode:0o755,octal:'0755',perms:'drwxr-xr-x',mtime:now-500},
+            {name:'etc-nginx',path:'/etc/nginx',type:'dir',size:4096,mode:0o755,octal:'0755',perms:'drwxr-xr-x',mtime:now-86400},
+            {name:'docker-compose.yml',path:'/root/docker-compose.yml',type:'file',size:1480,mode:0o644,octal:'0644',perms:'-rw-r--r--',mtime:now-300},
+            {name:'deploy.sh',path:'/root/deploy.sh',type:'file',size:840,mode:0o755,octal:'0755',perms:'-rwxr-xr-x',mtime:now-180},
+            {name:'backup-2026.tar.gz',path:'/root/backup-2026.tar.gz',type:'file',size:18432000,mode:0o644,octal:'0644',perms:'-rw-r--r--',mtime:now-43200}
+          ],
+          '/etc/nginx':[
+            {name:'sites-available',path:'/etc/nginx/sites-available',type:'dir',size:4096,mode:0o755,octal:'0755',perms:'drwxr-xr-x',mtime:now-86400},
+            {name:'sites-enabled',path:'/etc/nginx/sites-enabled',type:'dir',size:4096,mode:0o755,octal:'0755',perms:'drwxr-xr-x',mtime:now-86400},
+            {name:'nginx.conf',path:'/etc/nginx/nginx.conf',type:'file',size:1520,mode:0o644,octal:'0644',perms:'-rw-r--r--',mtime:now-86400}
+          ]
+        };
+        const entries=(trees[p]||trees['/root']).filter(e=>showHidden||!e.name.startsWith('.'));
+        return {cwd:trees[p]?p:'/root',home:'/root',entries};
+      }
+      case machine+'/sftp/file':{
+        const p=new URL(path,location.origin).searchParams.get('path')||'/root/docker-compose.yml';
+        return {path:p,size:240,octal:'0644',content:'services:\n  api:\n    image: node:22-alpine\n    restart: unless-stopped\n    ports:\n      - "127.0.0.1:3000:3000"\n'};
+      }
     }
   }
   throw new Error(vpsEnglish?'Preview mode uses sample data. Switch to live data to run this action.':'Đang xem dữ liệu minh họa. Chuyển sang dữ liệu thật để thực hiện thao tác.');
