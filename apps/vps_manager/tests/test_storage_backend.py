@@ -88,3 +88,38 @@ def test_mongo_backend_encrypts_secrets_and_migrates(tmp_path):
     assert updated["name"] == "vps-renamed"
     assert mb.update_fields("machines", saved["id"], {"name": "nope"}, expected={"name": "wrong"}) is None
     assert mb.delete("machines", saved["id"]) is True
+
+
+def test_identity_file_resolves_db_ssh_key_across_multiple_stores(tmp_path):
+    import pytest
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+    from shared.manager_core.ssh_transport import identity_file, save_ssh_key_to_store
+    from shared.manager_core.workspaces import use_store
+
+    private_key = ed25519.Ed25519PrivateKey.generate()
+    pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.OpenSSH,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode("utf-8")
+
+    store_a = Store(tmp_path / "ws_a")
+    saved = save_ssh_key_to_store(store_a, "ssh-key-test.key", pem)
+    # Register another workspace store afterwards that does not contain the key.
+    store_b = Store(tmp_path / "ws_b")
+    assert store_b is not store_a
+
+    with use_store(store_a, "ws_a"):
+        with identity_file({"identity": saved["path"]}) as path:
+            assert path is not None
+            with open(path, "r", encoding="utf-8") as f:
+                assert "BEGIN OPENSSH PRIVATE KEY" in f.read()
+
+    # Without _ACTIVE_STORE set, fallback still finds key in store_a without crashing on store_b KeyError.
+    with identity_file({"identity": saved["path"]}) as path:
+        assert path is not None
+
+    with pytest.raises(RuntimeError, match="Không tìm thấy SSH key"):
+        with identity_file({"identity": "db://ssh-keys/key_missing000"}):
+            pass

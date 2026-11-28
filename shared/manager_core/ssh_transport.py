@@ -175,11 +175,22 @@ def register_key_store(store) -> None:
 
 
 def _iter_key_stores(store=None):
+    seen = set()
     if store is not None:
+        seen.add(id(store))
         yield store
+    try:
+        from shared.manager_core.workspaces import _ACTIVE_STORE
+        active = _ACTIVE_STORE.get()
+        if active is not None and id(active) not in seen:
+            seen.add(id(active))
+            yield active
+    except Exception:
+        pass
     for ref in reversed(_KEY_STORES):
         s = ref()
-        if s is not None and s is not store:
+        if s is not None and id(s) not in seen:
+            seen.add(id(s))
             yield s
 
 
@@ -222,7 +233,10 @@ def identity_file(machine: dict, store=None):
         key_id = identity.removeprefix("db://ssh-keys/").strip()
         rec = None
         for candidate in _iter_key_stores(store):
-            rec = candidate.get("ssh-keys", key_id)
+            try:
+                rec = candidate.get("ssh-keys", key_id)
+            except KeyError:
+                continue
             if rec:
                 break
         secret = (rec or {}).get("private_key") or (rec or {}).get("content") or ""
